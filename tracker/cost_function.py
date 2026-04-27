@@ -5,6 +5,7 @@
 import math
 import cv2
 import numpy as np
+import torch
 
 from utils.utils import orientation_similarity
 
@@ -250,3 +251,124 @@ def cal_sdiou_inrv(box_trk, box_det, cfg, cal_flag=None):
     ) + area_ratio * distanceRatio * aspect_ratio
 
     return sdiou_inbev
+
+
+# ============================================================
+# Module C: Uncertainty-Aware Association Cost
+# ============================================================
+# Combines three signals into a single cost:
+#   1. Kinematic Affinity  : Ro_GDIoU (existing geometric cost)
+#   2. Semantic Affinity   : Cosine similarity from Mamba temporal embeddings
+#   3. Uncertainty Penalty : trace(P_pos[:3,:3]) + trace(P_ori) from the
+#                            Position and Orientation filter covariances
+#
+# cost = (1 - w_sem) * (1 - Ro_GDIoU) + w_sem * (1 - cos_sim) + w_unc * penalty
+#
+# Higher uncertainty → larger penalty → more tolerant matching (wider gate)
+
+def compute_cosine_similarity_matrix(
+    emb_trk: np.ndarray,
+    emb_det: np.ndarray,
+) -> np.ndarray:
+    """
+    Compute pairwise cosine similarity between trajectory and detection embeddings.
+
+    # cos_sim(a, b) = (a · b) / (||a|| * ||b|| + eps)
+
+    Args:
+        emb_trk : [N_trk, D] — temporal embeddings of active trajectories
+        emb_det : [N_det, D] — temporal embeddings of detections (or initial)
+
+    Returns:
+        cos_sim : [N_trk, N_det] — pairwise cosine similarity in [-1, 1]
+    """
+    eps = 1e-8
+    # normalise each row
+    norm_trk = emb_trk / (np.linalg.norm(emb_trk, axis=1, keepdims=True) + eps)
+    norm_det = emb_det / (np.linalg.norm(emb_det, axis=1, keepdims=True) + eps)
+    # [N_trk, D] @ [D, N_det] → [N_trk, N_det]
+    return norm_trk @ norm_det.T
+
+
+def compute_uncertainty_penalty(
+    pos_P_list: list,
+    ori_P_list: list,
+) -> np.ndarray:
+    """
+    Compute per-trajectory uncertainty from the Position and Orientation
+    filter covariances.
+
+    # penalty_i = trace(P_pos_i[:3, :3]) + trace(P_ori_i)
+    #
+    # P_pos[:3, :3] captures xyz position variance.
+    # P_ori (2x2) captures theta/omega variance.
+
+    Args:
+        pos_P_list : list of [8, 8] np arrays — position covariance per trajectory
+        ori_P_list : list of [2, 2] np arrays — orientation covariance per trajectory
+
+    Returns:
+        penalty : [N_trk] — uncertainty scalar per trajectory
+    """
+    N = len(pos_P_list)
+    penalty = np.zeros(N, dtype=np.float64)
+    for i in range(N):
+        # trace of position sub-block (xyz) = var(x) + var(y) + var(z)
+        pos_trace = np.trace(pos_P_list[i][:3, :3])
+        # trace of orientation covariance = var(theta) + var(omega)
+        ori_trace = np.trace(ori_P_list[i])
+        penalty[i] = pos_trace + ori_trace
+    return penalty
+
+
+def cal_uncertainty_aware_cost(
+    box_trk: object,
+    box_det: object,
+    cfg: dict,
+    cal_flag: str = "Predict",
+    cos_sim: float = 0.0,
+    uncertainty: float = 0.0,
+) -> float:
+    """
+    Module C: Uncertainty-aware cost combining geometric, semantic, and
+    uncertainty signals for a single (trajectory, detection) pair.
+
+    # cost = (1 - w_sem) * geometric_cost
+    #        + w_sem     * semantic_cost
+    #        + w_unc     * uncertainty_penalty
+    #
+    # geometric_cost = 1 - Ro_GDIoU    (lower GDIoU → higher cost)
+    # semantic_cost  = 1 - cos_sim      (lower similarity → higher cost)
+    # The uncertainty penalty enlarges the cost when the tracker is uncertain,
+    # effectively widening the matching gate during high-uncertainty phases.
+
+    Args:
+        box_trk      : Trajectory object
+        box_det      : BBox detection object
+        cfg          : Config dict (must contain THRESHOLD.BEV.W_SEMANTIC,
+                       THRESHOLD.BEV.W_UNCERTAINTY)
+        cal_flag     : "Predict" or "BackPredict"
+        cos_sim      : Precomputed cosine similarity in [-1, 1] for this pair
+        uncertainty  : Precomputed uncertainty scalar for this trajectory
+
+    Returns:
+        cost : float — combined cost (lower = better match)
+    """
+    # geometric cost from existing Ro_GDIoU
+    ro_gdiou = cal_rotation_gdiou_inbev(box_trk, box_det, cfg, cal_flag)
+    geometric_cost = 1.0 - ro_gdiou
+
+    # semantic cost from Mamba embeddings
+    semantic_cost = 1.0 - cos_sim
+
+    # read weights from config (with safe defaults)
+    category_num = cfg["CATEGORY_MAP_TO_NUMBER"][box_trk.bboxes[-1].category]
+    w_sem = cfg.get("THRESHOLD", {}).get("BEV", {}).get("W_SEMANTIC", [0.3])[category_num] \
+        if "W_SEMANTIC" in cfg.get("THRESHOLD", {}).get("BEV", {}) else 0.3
+    w_unc = cfg.get("THRESHOLD", {}).get("BEV", {}).get("W_UNCERTAINTY", [0.1])[category_num] \
+        if "W_UNCERTAINTY" in cfg.get("THRESHOLD", {}).get("BEV", {}) else 0.1
+
+    # combined cost
+    cost = (1.0 - w_sem) * geometric_cost + w_sem * semantic_cost + w_unc * uncertainty
+
+    return cost

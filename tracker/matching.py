@@ -209,3 +209,170 @@ def cost_calculate_general(trajs, dets, cfg, transform_matrix, is_rv=False):
     cost_matrix[same_category_mask == 0] = -np.inf
 
     return 1 - cost_matrix, trajs_category, dets_category
+
+
+# ============================================================
+# Module C: Uncertainty-Aware Cost Calculation
+# ============================================================
+# Upgrades the pure-geometric Ro_GDIoU cost matrix to incorporate:
+#   1. Mamba temporal embedding cosine similarity (semantic affinity)
+#   2. Position/Orientation covariance trace (uncertainty penalty)
+#
+# This function is called instead of cost_calculate_general when the
+# Mamba module is active.
+
+def cost_calculate_uncertainty_aware(
+    trajs: list,
+    dets: list,
+    cfg: dict,
+    trk_embeddings: np.ndarray,
+    det_embeddings: np.ndarray,
+    trk_pos_P: list,
+    trk_ori_P: list,
+    is_rv: bool = False,
+) -> tuple:
+    """
+    Compute uncertainty-aware cost matrix combining geometric affinity,
+    semantic affinity (Mamba embeddings), and uncertainty penalty (P trace).
+
+    # For each (trk, det) pair:
+    #   cos_sim     = cosine_similarity(emb_trk, emb_det)
+    #   penalty     = trace(P_pos[:3,:3]) + trace(P_ori)
+    #   cost_i,j    = (1-w_s) * (1 - Ro_GDIoU)
+    #                 + w_s   * (1 - cos_sim)
+    #                 + w_u   * penalty
+    #
+    # The uncertainty penalty dynamically widens the matching gate when the
+    # filter is uncertain (high covariance), and tightens it when confident.
+
+    Args:
+        trajs          : list of Trajectory objects              (N_trk)
+        dets           : list of BBox detection objects           (N_det)
+        cfg            : config dict
+        trk_embeddings : [N_trk, embed_dim] — Mamba temporal embeddings
+        det_embeddings : [N_det, embed_dim] — detection embeddings
+                         (for new dets with no history, use zero vectors)
+        trk_pos_P      : list of [8, 8] np arrays — position covariance
+        trk_ori_P      : list of [2, 2] np arrays — orientation covariance
+        is_rv          : flag for re-projected view matching
+
+    Returns:
+        cost_matrix       : [N_trk, N_det] — combined cost (lower = better)
+        trajs_category    : [N_trk] — category labels
+        dets_category     : [N_det] — category labels
+    """
+    N_trk = len(trajs)
+    N_det = len(dets)
+    cost_matrix = np.zeros((N_trk, N_det))
+
+    # ---- precompute pairwise cosine similarity ----
+    # [N_trk, N_det]
+    if trk_embeddings is not None and det_embeddings is not None:
+        cos_sim_matrix = compute_cosine_similarity_matrix(trk_embeddings, det_embeddings)
+    else:
+        cos_sim_matrix = np.zeros((N_trk, N_det))
+
+    # ---- precompute per-trajectory uncertainty penalty ----
+    # [N_trk]
+    if trk_pos_P is not None and trk_ori_P is not None:
+        uncertainty_vec = compute_uncertainty_penalty(trk_pos_P, trk_ori_P)
+    else:
+        uncertainty_vec = np.zeros(N_trk)
+
+    # ---- compute combined cost per pair ----
+    for t, trk in enumerate(trajs):
+        for d, det in enumerate(dets):
+            cost_matrix[t, d] = cal_uncertainty_aware_cost(
+                trk, det, cfg,
+                cal_flag="Predict",
+                cos_sim=float(cos_sim_matrix[t, d]),
+                uncertainty=float(uncertainty_vec[t]),
+            )
+
+    # ---- mask cross-category pairs ----
+    trajs_category = np.array([traj.bboxes[-1].category for traj in trajs])
+    dets_category = np.array([det.category for det in dets])
+    same_category_mask = (trajs_category[:, np.newaxis] == dets_category).astype(int)
+    cost_matrix[same_category_mask == 0] = np.inf
+
+    return cost_matrix, trajs_category, dets_category
+
+
+def match_trajs_and_dets_uncertainty_aware(
+    trajs: list,
+    dets: list,
+    cfg: dict,
+    trk_embeddings: np.ndarray = None,
+    det_embeddings: np.ndarray = None,
+    trk_pos_P: list = None,
+    trk_ori_P: list = None,
+) -> tuple:
+    """
+    Uncertainty-aware matching pipeline (Module C entry point).
+
+    Replaces match_trajs_and_dets when Mamba module is active.
+    Falls back to original geometric matching when embeddings/covariances
+    are not provided.
+
+    Args:
+        trajs          : list of Trajectory objects
+        dets           : list of BBox detections
+        cfg            : config dict
+        trk_embeddings : [N_trk, embed_dim] or None
+        det_embeddings : [N_det, embed_dim] or None
+        trk_pos_P      : list of [8,8] arrays or None
+        trk_ori_P      : list of [2,2] arrays or None
+
+    Returns:
+        matched_indices : [M, 2] — (trajectory_idx, detection_idx) pairs
+        costs           : [M]   — matching costs for each pair
+    """
+    if len(trajs) == 0 or len(dets) == 0:
+        return np.empty((0, 2), dtype=int), np.empty((0,), dtype=float)
+
+    # fallback to original if no Mamba outputs available
+    has_mamba = (trk_embeddings is not None and det_embeddings is not None)
+    if not has_mamba:
+        return match_trajs_and_dets(trajs, dets, cfg)
+
+    cost_matrix, trajs_category, dets_category = cost_calculate_uncertainty_aware(
+        trajs, dets, cfg,
+        trk_embeddings, det_embeddings,
+        trk_pos_P, trk_ori_P,
+    )
+
+    category_map = cfg["CATEGORY_MAP_TO_NUMBER"]
+    vectorized_map = np.vectorize(category_map.get)
+    dets_label = vectorized_map(dets_category)
+    trajs_label = vectorized_map(trajs_category)
+
+    cls_num = len(cfg["CATEGORY_LIST"])
+    valid_mask = mask_tras_dets(cls_num, trajs_label, dets_label)
+
+    # cost_matrix is already [N_trk, N_det], transpose to [N_det, N_trk]
+    trans_cost_matrix = cost_matrix.T
+    trans_cost_matrix = trans_cost_matrix[None, :, :].repeat(cls_num, axis=0)
+    trans_valid_mask = valid_mask.transpose(0, 2, 1)
+    trans_cost_matrix[np.where(~trans_valid_mask)] = np.inf
+
+    if min(cost_matrix.shape) > 0:
+        matching_mode = cfg["MATCHING"]["BEV"]["MATCHING_MODE"]
+        if matching_mode == "Hungarian":
+            m_det, m_tra, um_det, um_tra, costs = Hungarian(
+                trans_cost_matrix,
+                cfg["THRESHOLD"]["BEV"]["COST_THRE"],
+            )
+        elif matching_mode == "Greedy":
+            m_det, m_tra, um_det, um_tra, costs = Greedy(
+                trans_cost_matrix,
+                cfg["THRESHOLD"]["BEV"]["COST_THRE"],
+            )
+        else:
+            raise ValueError(f"Unknown matching mode: {matching_mode}")
+        assert len(m_det) == len(m_tra)
+        matched_indices = np.column_stack((m_tra, m_det))
+    else:
+        matched_indices = np.empty(shape=(0, 2))
+        costs = np.empty(shape=(0,))
+
+    return matched_indices, costs

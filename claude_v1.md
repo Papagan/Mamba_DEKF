@@ -108,3 +108,4 @@ After tracking, results are converted back to dataset-native formats:
 
 - `static_evaluation/kitti/`, `static_evaluation/nuscenes/`, `static_evaluation/waymo/` — standard MOT metrics (HOTA, MOTA, AMOTA)
 - `eval_motion.py` — custom motion quality metrics (velocity/acceleration accuracy), nuScenes only, configured via `config/nuscenes_motion_eval.yaml`
+
