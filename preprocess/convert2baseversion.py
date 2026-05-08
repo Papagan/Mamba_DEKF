@@ -6,7 +6,13 @@ import argparse
 
 from convert_kitti import kitti_main
 from convert_nuscenes import nuscenes_main
-from convert_waymo import waymo_main
+
+try:
+    from convert_waymo import waymo_main as _waymo_main
+    _HAS_WAYMO = True
+except ImportError:
+    _HAS_WAYMO = False
+    _waymo_main = None
 
 kitti_cfg = {
     "raw_data_path": "data/kitti/datasets",
@@ -57,7 +63,12 @@ if __name__ == "__main__":
             nuscenes_cfg["split"],
         )
     elif args.dataset == "waymo":
-        waymo_main(
+        if not _HAS_WAYMO:
+            raise ImportError(
+                "waymo-open-dataset is not installed. "
+                "See https://github.com/waymo-research/waymo-open-dataset"
+            )
+        _waymo_main(
             waymo_cfg["raw_data_path"],
             waymo_cfg["dets_path"],
             waymo_cfg["detector"],
