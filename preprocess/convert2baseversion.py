@@ -23,17 +23,17 @@ kitti_cfg = {
 }
 
 nuscenes_cfg = {
-    "raw_data_path": "s3://wangxiyang/open_datasets/nuscenes/raw_data/",
-    "dets_path": "data/nuscenes/detectors/",
-    "save_path": "data/base_version/nuscenes/",
+    "raw_data_path": "/root/autodl-tmp/data/nuscenes/raw_data/",
+    "dets_path": "/root/autodl-tmp/data/nuscenes/detectors/",
+    "save_path": "/root/autodl-tmp/data/base_version/nuscenes/",
     "detector": "largekernel",  #  centerpoint(val) / largekernel(test) / ....
     "split": "test",  # val / test
 }
 
 waymo_cfg = {
-    "raw_data_path": "data/waymo/datasets/",
-    "dets_path": "data/waymo/detectors/",
-    "save_path": "data/base_version/waymo/",
+    "raw_data_path": "/root/autodl-tmp/data/waymo/datasets/",
+    "dets_path": "/root/autodl-tmp/data/waymo/detectors/",
+    "save_path": "/root/autodl-tmp/data/base_version/waymo/",
     "detector": "ctrl",
     "split": "val",  # val / test
 }

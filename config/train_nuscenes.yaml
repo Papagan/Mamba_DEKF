@@ -5,10 +5,10 @@
 # ---- Data ----
 DATA:
   NUSC_VERSION: v1.0-trainval
-  NUSC_DATAROOT: root/autodl-tmp/data/nuscenes/datasets/
+  NUSC_DATAROOT: /root/autodl-tmp/data/nuscenes/datasets/
   TRAIN_SPLIT: train
   VAL_SPLIT: val
-  TRACKLET_CACHE_DIR: root/autodl-tmp/data/training_cache/nuscenes/
+  TRACKLET_CACHE_DIR: /root/autodl-tmp/data/training_cache/nuscenes/
   CATEGORY_FILTER: null   # null = all categories; or ["car", "pedestrian"]
 
 # ---- Model (TemporalMamba) ----
@@ -31,7 +31,7 @@ TRAINING:
   WARMUP_EPOCHS: 3
   GRAD_CLIP_NORM: 1.0
   LOG_EVERY: 50
-  SAVE_EVERY: 5
+  SAVE_EVERY: 10
   SAVE_DIR: checkpoints/mamba_dekf/
 
 # ---- Loss ----
