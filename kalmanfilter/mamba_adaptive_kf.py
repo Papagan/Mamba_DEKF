@@ -123,9 +123,9 @@ class PositionFilter(nn.Module):
         self.H[1, 1] = 1.0
         self.H[2, 2] = 1.0
 
-        # default Q/R when Module B is not yet active
-        self.register_buffer("_default_Q", 0.01 * torch.eye(self.STATE_DIM))
-        self.register_buffer("_default_R", 0.1 * torch.eye(self.OBS_DIM))
+        # default Q/R when Module B is not yet active (explicit .to(device) avoids CPU/GPU mismatch)
+        self.register_buffer("_default_Q", (0.01 * torch.eye(self.STATE_DIM)).to(device))
+        self.register_buffer("_default_R", (0.1 * torch.eye(self.OBS_DIM)).to(device))
 
     def init_state(self, x0: Tensor, P0: Tensor) -> None:
         """
@@ -309,8 +309,8 @@ class SizeFilter(nn.Module):
         self.x: Tensor = torch.zeros(batch_size, self.STATE_DIM, 1, device=device)
         self.P: Tensor = torch.eye(self.STATE_DIM, device=device).unsqueeze(0).repeat(batch_size, 1, 1)
 
-        self.register_buffer("_default_Q", 0.001 * torch.eye(self.STATE_DIM))
-        self.register_buffer("_default_R", 0.05 * torch.eye(self.OBS_DIM))
+        self.register_buffer("_default_Q", (0.001 * torch.eye(self.STATE_DIM)).to(device))
+        self.register_buffer("_default_R", (0.05 * torch.eye(self.OBS_DIM)).to(device))
 
     def init_state(self, x0: Tensor, P0: Tensor) -> None:
         """
@@ -443,8 +443,8 @@ class OrientationFilter(nn.Module):
         # H = [[1, 0]]  — observe only theta
         self.register_buffer("H", torch.tensor([[1.0, 0.0]]))
 
-        self.register_buffer("_default_Q", 0.01 * torch.eye(self.STATE_DIM))
-        self.register_buffer("_default_R", 0.1 * torch.eye(self.OBS_DIM))
+        self.register_buffer("_default_Q", (0.01 * torch.eye(self.STATE_DIM)).to(device))
+        self.register_buffer("_default_R", (0.1 * torch.eye(self.OBS_DIM)).to(device))
 
     def init_state(self, x0: Tensor, P0: Tensor) -> None:
         """
