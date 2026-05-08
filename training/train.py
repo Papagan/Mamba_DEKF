@@ -24,6 +24,7 @@ import argparse
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
 
 # Project root
@@ -275,6 +276,11 @@ def main():
         milestones=[warmup_epochs],
     )
 
+    # ---- TensorBoard ----
+    tb_dir = os.path.join(save_dir, "tensorboard")
+    writer = SummaryWriter(tb_dir)
+    logger.info(f"TensorBoard logs → {tb_dir}  (view: tensorboard --logdir {tb_dir})")
+
     grad_clip = train_cfg.get("GRAD_CLIP_NORM", 1.0)
     log_every = train_cfg.get("LOG_EVERY", 50)
     save_every = train_cfg.get("SAVE_EVERY", 5)
@@ -334,6 +340,8 @@ def main():
             if (batch_idx + 1) % log_every == 0:
                 avg = epoch_loss / n_batches
                 lr = optimizer.param_groups[0]["lr"]
+                writer.add_scalar("train/loss_batch", avg, epoch * len(train_loader) + batch_idx)
+                writer.add_scalar("train/lr", lr, epoch * len(train_loader) + batch_idx)
                 logger.info(
                     f"  [{epoch+1}/{epochs}] batch {batch_idx+1}/{len(train_loader)} "
                     f"loss={avg:.4f} lr={lr:.2e}"
@@ -360,6 +368,18 @@ def main():
             f"NaN={nan_count}"
         )
 
+        # ---- TensorBoard per-epoch scalars ----
+        step = epoch
+        writer.add_scalar("train/loss_total", avg_train.get("loss_total", 0), step)
+        writer.add_scalar("train/loss_pos", avg_train.get("loss_pos", 0), step)
+        writer.add_scalar("train/loss_siz", avg_train.get("loss_siz", 0), step)
+        writer.add_scalar("train/loss_ori", avg_train.get("loss_ori", 0), step)
+        writer.add_scalar("train/loss_contrastive", avg_train.get("loss_contrastive", 0), step)
+        writer.add_scalar("val/loss_total", avg_val.get("loss_total", 0), step)
+        writer.add_scalar("val/loss_pos", avg_val.get("loss_pos", 0), step)
+        writer.add_scalar("train/epoch_time", dt_epoch, step)
+        writer.add_scalar("train/nan_count", nan_count, step)
+
         # ---- Checkpoint ----
         val_total = avg_val.get("loss_total", float("inf"))
 
@@ -384,6 +404,7 @@ def main():
             }, best_path)
             logger.info(f"  New best model → {best_path} (val_loss={val_total:.4f})")
 
+    writer.close()
     logger.info(f"Training complete. Best val_loss={best_val_loss:.4f}")
 
 
