@@ -23,6 +23,18 @@ CATEGORY_MAP_TO_NUMBER : {
     "car": 0,
 }
 
+# ---- Mamba-Decoupled-EKF Track (Module A + B) ----
+MAMBA:
+  CHECKPOINT_PATH: "checkpoints/mamba_dekf/best.pt"
+  D_MODEL: 64
+  D_STATE: 16
+  D_CONV: 4
+  EXPAND: 2
+  N_MAMBA_LAYERS: 2
+  EMBED_DIM: 32
+  HISTORY_LEN: 10
+  MAX_BATCH_SIZE: 256
+
 MATCHING:
   BEV:
     # Predict, BackPredict, Fusion
@@ -47,9 +59,12 @@ THRESHOLD:
   COST_STATE_PREDICT_RATION: {0: 0.5}
   NMS_THRE: {0: 0.08} 
   BEV:
-    COST_THRE: {0: 1.4} 
+    COST_THRE: {0: 1.4}
     # Notes: You need to ensure that w1 + w2 = 2 , otherwise you will need to readjust the threshold of RO_GDIOU.
     WEIGHT_RO_GDIOU: {0: {"w1": 1.0, "w2": 1.0}}
+    # Module C weights
+    W_SEMANTIC:    {0: 0.30}
+    W_UNCERTAINTY: {0: 0.10}
   RV:
     COST_THRE: {0: -0.3} 
 

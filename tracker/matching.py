@@ -119,7 +119,7 @@ def match_trajs_and_dets(trajs, dets, cfg, transform_matrix=None, is_rv=False):
             costs: np.array, corresponding costs for each match.
     """
     if len(trajs) == 0 or len(dets) == 0:
-        return np.empty((0, 2), dtype=int), np.empty((0, 2), dtype=int)
+        return np.empty((0, 2), dtype=int), np.empty((0,), dtype=float)
 
     cost_matrix, trajs_category, dets_category = cost_calculate_general(
         trajs, dets, cfg, transform_matrix, is_rv

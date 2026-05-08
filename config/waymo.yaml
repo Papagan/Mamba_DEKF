@@ -20,6 +20,18 @@ CATEGORY_MAP_TO_NUMBER : {
     "bicycle": 2
 }
 
+# ---- Mamba-Decoupled-EKF Track (Module A + B) ----
+MAMBA:
+  CHECKPOINT_PATH: "checkpoints/mamba_dekf/best.pt"
+  D_MODEL: 64
+  D_STATE: 16
+  D_CONV: 4
+  EXPAND: 2
+  N_MAMBA_LAYERS: 2
+  EMBED_DIM: 32
+  HISTORY_LEN: 10
+  MAX_BATCH_SIZE: 256
+
 
 MATCHING:
   BEV:
@@ -45,12 +57,15 @@ THRESHOLD:
   COST_STATE_PREDICT_RATION: {0: 0.5, 1: 0.5, 2: 0.5}
   NMS_THRE: {0: 0.04, 1: 0.08, 2: 0.08}  
   BEV:
-    COST_THRE: {0: 1.5, 1: 1.4, 2: 2.2} 
+    COST_THRE: {0: 1.5, 1: 1.4, 2: 2.2}
     WEIGHT_RO_GDIOU: {
-      0: {"w1": 1.0, "w2": 1.0}, 
-      1: {"w1": 1.0, "w2": 1.0}, 
+      0: {"w1": 1.0, "w2": 1.0},
+      1: {"w1": 1.0, "w2": 1.0},
       2: {"w1": 1.0, "w2": 1.0},
     }
+    # Module C weights
+    W_SEMANTIC:    {0: 0.30, 1: 0.30, 2: 0.30}
+    W_UNCERTAINTY: {0: 0.10, 1: 0.10, 2: 0.10}
   RV:
     COST_THRE: {0: 0.8, 1: 0.8, 2: 0.8} 
 

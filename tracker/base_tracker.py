@@ -77,10 +77,25 @@ class Base3DTracker:
 
         # ---- Load trained weights if checkpoint path is provided ----
         ckpt_path = mamba_cfg.get("CHECKPOINT_PATH", None)
-        if ckpt_path and os.path.exists(ckpt_path):
-            ckpt = torch.load(ckpt_path, map_location=self.device)
-            self.mamba_ekf.mamba.load_state_dict(ckpt["model_state_dict"])
-            print(f"[Base3DTracker] Loaded Mamba weights from {ckpt_path}")
+        if ckpt_path:
+            if os.path.exists(ckpt_path):
+                ckpt = torch.load(ckpt_path, map_location=self.device)
+                # checkpoints saved by training/train.py contain "model_state_dict"
+                state_dict = ckpt.get("model_state_dict", ckpt)
+                missing, unexpected = self.mamba_ekf.mamba.load_state_dict(
+                    state_dict, strict=False,
+                )
+                if missing:
+                    print(f"[Base3DTracker] WARNING: missing keys in checkpoint: {missing}")
+                if unexpected:
+                    print(f"[Base3DTracker] WARNING: unexpected keys in checkpoint: {unexpected}")
+                print(f"[Base3DTracker] Loaded Mamba weights from {ckpt_path}")
+            else:
+                print(f"[Base3DTracker] WARNING: CHECKPOINT_PATH={ckpt_path} not found. "
+                      f"Running with RANDOM Mamba weights — results will be poor.")
+        else:
+            print("[Base3DTracker] WARNING: cfg['MAMBA']['CHECKPOINT_PATH'] not set. "
+                  "Running with RANDOM Mamba weights — set CHECKPOINT_PATH to load trained weights.")
 
         self.mamba_ekf.eval()
 
