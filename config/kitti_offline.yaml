@@ -7,9 +7,9 @@ DATASET: 'kitti'
 # dataset info
 SPLIT: 'val' # val, test
 DETECTOR: virconv  # casa, virconv point_rcnn
-DATASET_ROOT: "data/kitti/datasets/"
-DETECTIONS_ROOT: "data/base_version/kitti/"
-SAVE_PATH: 'results/kitti'
+DATASET_ROOT: "root/autodl-tmp/data/kitti/datasets/"
+DETECTIONS_ROOT: "root/autodl-tmp/data/base_version/kitti/"
+SAVE_PATH: 'root/autodl-tmp/results/kitti'
 TRACKING_MODE: 'GLOBAL' # ONLINE / GLOBAL
 IS_RV_MATCHING: True  # True / False
 FRAME_RATE: 10
