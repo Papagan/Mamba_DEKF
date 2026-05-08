@@ -118,7 +118,7 @@ class PositionFilter(nn.Module):
         # H = [[1,0,0,0,0,0,0,0],
         #      [0,1,0,0,0,0,0,0],
         #      [0,0,1,0,0,0,0,0]]   shape: [3, 8]
-        self.register_buffer("H", torch.zeros(self.OBS_DIM, self.STATE_DIM))
+        self.register_buffer("H", torch.zeros(self.OBS_DIM, self.STATE_DIM, device=device))
         self.H[0, 0] = 1.0
         self.H[1, 1] = 1.0
         self.H[2, 2] = 1.0
@@ -441,7 +441,7 @@ class OrientationFilter(nn.Module):
         self.P: Tensor = torch.eye(self.STATE_DIM, device=device).unsqueeze(0).repeat(batch_size, 1, 1)
 
         # H = [[1, 0]]  — observe only theta
-        self.register_buffer("H", torch.tensor([[1.0, 0.0]]))
+        self.register_buffer("H", torch.tensor([[1.0, 0.0]], device=device))
 
         self.register_buffer("_default_Q", (0.01 * torch.eye(self.STATE_DIM)).to(device))
         self.register_buffer("_default_R", (0.1 * torch.eye(self.OBS_DIM)).to(device))
@@ -707,6 +707,9 @@ class CholeskyHead(nn.Module):
             hidden_dim: Hidden layer width.
 
         The MLP predicts D*(D+1)/2 free parameters — the lower-triangular entries.
+        tril indices are created lazily in forward() so they always live on the
+        correct device, avoiding CPU/GPU mismatch regardless of how the module
+        is moved via .to(device).
         """
         super().__init__()
         self.mat_dim = mat_dim
@@ -719,15 +722,10 @@ class CholeskyHead(nn.Module):
             nn.Linear(hidden_dim, n_tril),
         )
 
-        # precompute tril indices
-        self.register_buffer(
-            "_tril_rows",
-            torch.tril_indices(mat_dim, mat_dim)[0],
-        )
-        self.register_buffer(
-            "_tril_cols",
-            torch.tril_indices(mat_dim, mat_dim)[1],
-        )
+        # pre-allocated container for lazily-created tril indices
+        # (created on correct device in forward(); avoids register_buffer device issues)
+        self._tril_rows: Optional[Tensor] = None
+        self._tril_cols: Optional[Tensor] = None
 
     def forward(self, embedding: Tensor) -> Tensor:
         """
@@ -744,11 +742,18 @@ class CholeskyHead(nn.Module):
             4. Return L @ L^T                                     [B, D, D]
         """
         B = embedding.shape[0]
+        dev = embedding.device
         raw = self.mlp(embedding)                                    # [B, n_tril]
+
+        # lazily create tril indices on the correct device
+        if self._tril_rows is None or self._tril_rows.device != dev:
+            tril = torch.tril_indices(self.mat_dim, self.mat_dim, device=dev)
+            self._tril_rows = tril[0]
+            self._tril_cols = tril[1]
 
         # scatter into lower-triangular matrix
         L_raw = torch.zeros(B, self.mat_dim, self.mat_dim,
-                            device=embedding.device, dtype=embedding.dtype)
+                            device=dev, dtype=embedding.dtype)
         L_raw[:, self._tril_rows, self._tril_cols] = raw
 
         # PSD safety lock: Softplus + 1e-5 on diagonal, then L @ L^T
