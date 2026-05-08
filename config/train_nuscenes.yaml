@@ -5,10 +5,10 @@
 # ---- Data ----
 DATA:
   NUSC_VERSION: v1.0-trainval
-  NUSC_DATAROOT: data/nuscenes/datasets/
+  NUSC_DATAROOT: root/autodl-tmp/data/nuscenes/datasets/
   TRAIN_SPLIT: train
   VAL_SPLIT: val
-  TRACKLET_CACHE_DIR: data/training_cache/nuscenes/
+  TRACKLET_CACHE_DIR: root/autodl-tmp/data/training_cache/nuscenes/
   CATEGORY_FILTER: null   # null = all categories; or ["car", "pedestrian"]
 
 # ---- Model (TemporalMamba) ----
