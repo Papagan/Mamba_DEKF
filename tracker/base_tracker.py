@@ -82,6 +82,11 @@ class Base3DTracker:
                 ckpt = torch.load(ckpt_path, map_location=self.device)
                 # checkpoints saved by training/train.py contain "model_state_dict"
                 state_dict = ckpt.get("model_state_dict", ckpt)
+                # strip stale _tril_rows/_tril_cols keys from old checkpoints
+                # (now lazily created in CholeskyHead.forward())
+                stale_keys = [k for k in state_dict if "_tril_rows" in k or "_tril_cols" in k]
+                for k in stale_keys:
+                    del state_dict[k]
                 missing, unexpected = self.mamba_ekf.mamba.load_state_dict(
                     state_dict, strict=False,
                 )

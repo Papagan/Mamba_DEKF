@@ -40,11 +40,6 @@ from kalmanfilter.mamba_adaptive_kf import (
     DecoupledAdaptiveKF,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
 logger = logging.getLogger("train")
 
 
@@ -167,6 +162,22 @@ def main():
         device = torch.device(args.device)
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # ---- Logging: console + file ----
+    log_dir = cfg.get("TRAINING", {}).get("SAVE_DIR", "checkpoints/mamba_dekf/")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "train.log")
+    logger.setLevel(logging.INFO)
+    if not logger.handlers:
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.INFO)
+        ch.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
+        logger.addHandler(ch)
+        fh = logging.FileHandler(log_path)
+        fh.setLevel(logging.INFO)
+        fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
+        logger.addHandler(fh)
+    logger.info(f"Logging to {log_path}")
     logger.info(f"Device: {device}")
 
     # ---- Extract GT tracklets ----

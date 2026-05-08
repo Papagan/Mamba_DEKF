@@ -145,6 +145,10 @@ def main() -> None:
     if os.path.exists(args.ckpt):
         ckpt = torch.load(args.ckpt, map_location=device)
         sd = ckpt.get("model_state_dict", ckpt)
+        # strip stale _tril_rows/_tril_cols keys from old checkpoints
+        for k in list(sd.keys()):
+            if "_tril_rows" in k or "_tril_cols" in k:
+                del sd[k]
         missing, unexpected = mamba.load_state_dict(sd, strict=False)
         if missing:
             print(f"  [warn] missing keys: {missing}")
