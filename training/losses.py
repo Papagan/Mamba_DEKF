@@ -58,6 +58,9 @@ def kalman_nll_loss(
     m = H.shape[0]
     dev = z_gt.device
 
+    # defensive: ensure H is on the same device as the observations
+    H = H.to(device=dev)
+
     # ---- innovation y = z_gt - H @ x_pred  →  [B, m, 1] ----
     z = z_gt.unsqueeze(-1)                                    # [B, m, 1]
     H_batch = H.unsqueeze(0).expand(B, -1, -1)                # [B, m, n]

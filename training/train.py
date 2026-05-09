@@ -254,7 +254,7 @@ def main():
         w_ori=loss_cfg.get("W_ORI", 0.5),
         lambda_contrast=loss_cfg.get("LAMBDA_CONTRAST", 0.1),
         temperature=loss_cfg.get("INFONCE_TEMPERATURE", 0.07),
-    )
+    ).to(device)
 
     # ---- Optimizer (separated LR groups) ----
     # Mamba SSM backbone: low LR (5e-5) to prevent early covariance divergence.
