@@ -80,7 +80,7 @@ def training_step(
     mamba_out = mamba(history)
     # mamba_out keys: Q_pos[B,8,8], Q_siz[B,3,3], Q_ori[B,2,2],
     #                R_pos[B,3,3], R_siz[B,3,3], R_ori[B,1,1],
-    #                embedding[B,D]
+    #                embedding[B,D]  (all PSD via cholesky_to_psd with clamp)
 
     # ---- Step 2: Init KF from GT state at frame T ----
     pos_x0 = gt_pos.unsqueeze(-1)                                    # [B, 8, 1]
@@ -96,21 +96,22 @@ def training_step(
     # ---- Step 3: KF predict with Mamba-predicted Q ----
     # Use mean delta_t for the batch (nuScenes is fixed 2Hz = 0.5s)
     dt = delta_t.mean().item()
-    pos_x_pred, pos_P_pred, siz_x_pred, siz_P_pred, ori_x_pred, _ = kf.predict(
+    pos_x_pred, pos_P_pred, siz_x_pred, siz_P_pred, ori_x_pred, ori_P_pred = kf.predict(
         dt,
         Q_pos=mamba_out["Q_pos"],
         Q_siz=mamba_out["Q_siz"],
         Q_ori=mamba_out["Q_ori"],
     )
 
-    # ---- Step 4: Compute joint loss (NLL for pos/siz, angle loss for ori) ----
+    # ---- Step 4: Compute joint loss (NLL for all three filters) ----
     loss, detail = loss_fn(
-        pos_x_pred, pos_P_pred, siz_x_pred, siz_P_pred, ori_x_pred,
+        pos_x_pred, pos_P_pred, siz_x_pred, siz_P_pred, ori_x_pred, ori_P_pred,
         gt_next_pos, gt_next_siz, gt_next_ori,
         mamba_out["embedding"],
         instance_tokens,
         R_pos=mamba_out["R_pos"],
         R_siz=mamba_out["R_siz"],
+        R_ori=mamba_out["R_ori"],
     )
 
     return loss, detail
@@ -251,7 +252,7 @@ def main():
     loss_fn = JointLoss(
         w_pos=loss_cfg.get("W_POS", 1.0),
         w_siz=loss_cfg.get("W_SIZ", 0.5),
-        w_ori=loss_cfg.get("W_ORI", 0.5),
+        w_ori=loss_cfg.get("W_ORI", 50.0),
         lambda_contrast=loss_cfg.get("LAMBDA_CONTRAST", 0.1),
         temperature=loss_cfg.get("INFONCE_TEMPERATURE", 0.07),
     ).to(device)

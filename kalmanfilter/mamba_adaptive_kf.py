@@ -56,7 +56,9 @@ def cholesky_to_psd(L_raw: Tensor, eps: float = 1e-5) -> Tensor:
     diag_idx = torch.arange(L.shape[-1], device=L.device)
     # Softplus + eps on diagonal — prevents zero/negative eigenvalues
     L = L.clone()
-    L[:, diag_idx, diag_idx] = F.softplus(L_raw[:, diag_idx, diag_idx]) + eps
+    L[:, diag_idx, diag_idx] = torch.clamp(
+        F.softplus(L_raw[:, diag_idx, diag_idx]) + eps, min=1e-5, max=10.0
+    )
     # Q = L @ L^T  →  [B, D, D]
     return torch.bmm(L, L.transpose(-1, -2))
 

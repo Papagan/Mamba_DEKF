@@ -5,7 +5,9 @@
 #   Position & Size  → Kalman NLL (Gaussian negative log-likelihood)
 #                       jointly optimises x_pred and P_pred through the
 #                       innovation covariance S = H@P@H^T + R.
-#   Orientation      → 1 - cos(pred - gt)   (smooth, wrap-safe)
+#   Orientation      → Kalman NLL (angle-wrapped) + trace(S) penalty
+#                       (prevents Mamba from predicting infinite R to
+#                       zero out the Mahalanobis term)
 #   Embedding        → InfoNCE (supervised contrastive)
 #
 # Why NOT MSE:
@@ -14,6 +16,7 @@
 #   - Angle MSE explodes near ±π due to wrap discontinuity.
 # ------------------------------------------------------------------------
 
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -87,7 +90,86 @@ def kalman_nll_loss(
 
 
 # ======================================================================
-# Smooth Angle Loss
+# Kalman NLL for Yaw (Orientation)
+# ======================================================================
+
+def wrap_to_pi(angles: torch.Tensor) -> torch.Tensor:
+    """Wrap angles to [-pi, pi]."""
+    return angles - 2.0 * math.pi * torch.round(angles / (2.0 * math.pi))
+
+
+def kalman_nll_loss_yaw(
+    z_gt: torch.Tensor,        # [B, 1]      — ground-truth yaw
+    x_pred: torch.Tensor,      # [B, 2, 1]   — predicted state [theta, omega]
+    P_pred: torch.Tensor,      # [B, 2, 2]   — predicted state covariance
+    H: torch.Tensor,           # [1, 2]       — observation matrix (selects theta)
+    R_pred: torch.Tensor,      # [B, 1, 1]   — measurement noise covariance (PSD)
+    trace_penalty: float = 0.01,
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    """
+    Gaussian NLL specialised for orientation (yaw) angle.
+
+    Key differences from generic kalman_nll_loss:
+
+    1. Residual y is wrapped to [-pi, pi] so that angular differences
+       are geometrically correct (e.g., π - (-π) = 0, not 2π).
+       # y = wrap_to_pi(z_gt - H @ x_pred)
+
+    2. A trace penalty on S is added to prevent the Mamba network from
+       "cheating" by predicting infinite R to drive the Mahalanobis
+       term to zero.
+       # L = 0.5 * (logdet(S) + y^T @ inv(S) @ y) + λ * trace(S)
+
+    Args:
+        z_gt:          Ground-truth yaw, shape [B, 1].
+        x_pred:        Predicted state [theta, omega], shape [B, 2, 1].
+        P_pred:        Predicted state covariance, shape [B, 2, 2].
+        H:             Observation matrix [[1, 0]], shape [1, 2].
+        R_pred:        Measurement noise from Mamba, shape [B, 1, 1].
+        trace_penalty: Weight λ for the covariance trace L2 penalty.
+        eps:           Small diagonal regularisation.
+
+    Returns:
+        Scalar loss (mean over batch).
+    """
+    B = z_gt.shape[0]
+    m = H.shape[0]          # = 1 for yaw
+    dev = z_gt.device
+
+    H = H.to(device=dev)
+
+    # ---- innovation  y = wrap_to_pi(z_gt - H @ x_pred)  → [B, 1, 1] ----
+    z = z_gt.unsqueeze(-1)                                    # [B, 1, 1]
+    H_batch = H.unsqueeze(0).expand(B, -1, -1)                # [B, 1, 2]
+    predicted_obs = torch.bmm(H_batch, x_pred)                # [B, 1, 1]
+    y_raw = z - predicted_obs                                  # [B, 1, 1]
+    y = wrap_to_pi(y_raw)                                      # [B, 1, 1]
+
+    # ---- innovation covariance  S = H @ P @ H^T + R  → [B, 1, 1] ----
+    S = torch.bmm(torch.bmm(H_batch, P_pred), H_batch.transpose(-1, -2)) + R_pred
+
+    # ---- regularise: S_reg = S + eps * I ----
+    I = torch.eye(m, device=dev, dtype=S.dtype).unsqueeze(0).expand(B, -1, -1)
+    S_reg = S + eps * I
+
+    # ---- logdet(S_reg) → [B] ----
+    logdet = torch.linalg.slogdet(S_reg)[1]
+
+    # ---- y^T @ inv(S_reg) @ y  (solve avoids explicit inverse) ----
+    sol = torch.linalg.solve(S_reg, y)                        # [B, 1, 1]
+    quad_form = torch.bmm(y.transpose(-1, -2), sol).squeeze(-1).squeeze(-1)  # [B]
+
+    # ---- trace penalty: prevents Mamba from predicting infinite R ----
+    trace_S = S_reg.diagonal(dim1=-2, dim2=-1).sum(-1)        # [B]
+
+    # per-sample NLL + trace penalty, mean over batch
+    nll_per_sample = 0.5 * (logdet + quad_form) + trace_penalty * trace_S
+    return nll_per_sample.mean()
+
+
+# ======================================================================
+# Smooth Angle Loss (retained for reference; NOT used in training)
 # ======================================================================
 
 def angle_loss(pred_yaw: torch.Tensor, gt_yaw: torch.Tensor) -> torch.Tensor:
@@ -119,18 +201,18 @@ class StatePredictionLoss(nn.Module):
     """
     Prediction loss for the three decoupled Kalman filters.
 
-    Position & Size  →  kalman_nll_loss (X, P, H, R)
-    Orientation      →  angle_loss (1 - cos(Δθ))
+    Position & Size  →  kalman_nll_loss (Gaussian NLL + mahalanobis)
+    Orientation      →  kalman_nll_loss_yaw (angle-wrapped NLL + trace penalty)
 
-    The NLL jointly optimises state mean and covariance, giving Mamba's
-    Q/R prediction heads a direct gradient through the filter uncertainty.
+    All three losses receive gradient through predicted covariance P_pred
+    and measurement noise R_pred, giving Mamba's Q/R heads direct signal.
     """
 
     def __init__(
         self,
         w_pos: float = 1.0,
         w_siz: float = 0.5,
-        w_ori: float = 0.5,
+        w_ori: float = 50.0,
     ) -> None:
         super().__init__()
         self.w_pos = w_pos
@@ -146,6 +228,9 @@ class StatePredictionLoss(nn.Module):
         # H_siz: [3, 3] — identity (observation = state for size filter)
         self.register_buffer("H_siz", torch.eye(3))
 
+        # H_ori: [1, 2] — selects theta from [theta, omega]
+        self.register_buffer("H_ori", torch.tensor([[1.0, 0.0]]))
+
     def forward(
         self,
         pos_x_pred: torch.Tensor,    # [B, 8, 1]
@@ -153,11 +238,13 @@ class StatePredictionLoss(nn.Module):
         siz_x_pred: torch.Tensor,    # [B, 3, 1]
         siz_P_pred: torch.Tensor,    # [B, 3, 3]
         ori_x_pred: torch.Tensor,    # [B, 2, 1]
+        ori_P_pred: torch.Tensor,    # [B, 2, 2]
         gt_next_pos: torch.Tensor,   # [B, 3]
         gt_next_siz: torch.Tensor,   # [B, 3]
         gt_next_ori: torch.Tensor,   # [B, 1]
         R_pos: torch.Tensor,         # [B, 3, 3]
         R_siz: torch.Tensor,         # [B, 3, 3]
+        R_ori: torch.Tensor,         # [B, 1, 1]
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
         Returns:
@@ -182,10 +269,14 @@ class StatePredictionLoss(nn.Module):
             R_pred=R_siz,
         )
 
-        # Orientation: smooth angle loss (1 - cos(Δθ))
-        pred_yaw = ori_x_pred[:, 0, 0]        # [B]
-        gt_yaw = gt_next_ori[:, 0]             # [B]
-        loss_ori = angle_loss(pred_yaw, gt_yaw)
+        # Orientation: angle-wrapped Kalman NLL + trace penalty (anti-cheat)
+        loss_ori = kalman_nll_loss_yaw(
+            z_gt=gt_next_ori,
+            x_pred=ori_x_pred,
+            P_pred=ori_P_pred,
+            H=self.H_ori,
+            R_pred=R_ori,
+        )
 
         loss = self.w_pos * loss_pos + self.w_siz * loss_siz + self.w_ori * loss_ori
 
@@ -280,7 +371,7 @@ class JointLoss(nn.Module):
         L_total = L_state + λ * L_contrastive
 
     where:
-        L_state       = w_pos * NLL_pos + w_siz * NLL_siz + w_ori * AngleLoss
+        L_state       = w_pos * NLL_pos + w_siz * NLL_siz + w_ori * NLL_yaw
         L_contrastive = InfoNCE on Mamba embeddings
     """
 
@@ -304,6 +395,7 @@ class JointLoss(nn.Module):
         siz_x_pred: torch.Tensor,    # [B, 3, 1]
         siz_P_pred: torch.Tensor,    # [B, 3, 3]
         ori_x_pred: torch.Tensor,    # [B, 2, 1]
+        ori_P_pred: torch.Tensor,    # [B, 2, 2]
         gt_next_pos: torch.Tensor,   # [B, 3]
         gt_next_siz: torch.Tensor,   # [B, 3]
         gt_next_ori: torch.Tensor,   # [B, 1]
@@ -311,6 +403,7 @@ class JointLoss(nn.Module):
         instance_tokens: list,        # list of B strings
         R_pos: torch.Tensor,          # [B, 3, 3]
         R_siz: torch.Tensor,          # [B, 3, 3]
+        R_ori: torch.Tensor,          # [B, 1, 1]
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
         Returns:
@@ -320,9 +413,9 @@ class JointLoss(nn.Module):
         loss_state, detail_state = self.state_loss(
             pos_x_pred, pos_P_pred,
             siz_x_pred, siz_P_pred,
-            ori_x_pred,
+            ori_x_pred, ori_P_pred,
             gt_next_pos, gt_next_siz, gt_next_ori,
-            R_pos, R_siz,
+            R_pos, R_siz, R_ori,
         )
 
         loss_contrast, detail_contrast = self.contrastive_loss(
