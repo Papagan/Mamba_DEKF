@@ -57,8 +57,8 @@ def training_step(
     """
     Forward pass for one batch:
         history → TemporalMamba → Q/R/embedding
-        GT state at T → init KF → predict(dt, Q) → x_pred at T+1
-        loss = MSE(x_pred, GT at T+1) + λ * InfoNCE(embedding)
+        GT state at T → init KF → predict(dt, Q) → x_pred, P_pred at T+1
+        loss = NLL(pos) + NLL(siz) + AngleLoss(ori) + λ * InfoNCE(embedding)
 
     Returns:
         loss   : scalar tensor
@@ -96,19 +96,21 @@ def training_step(
     # ---- Step 3: KF predict with Mamba-predicted Q ----
     # Use mean delta_t for the batch (nuScenes is fixed 2Hz = 0.5s)
     dt = delta_t.mean().item()
-    pos_x_pred, _, siz_x_pred, _, ori_x_pred, _ = kf.predict(
+    pos_x_pred, pos_P_pred, siz_x_pred, siz_P_pred, ori_x_pred, _ = kf.predict(
         dt,
         Q_pos=mamba_out["Q_pos"],
         Q_siz=mamba_out["Q_siz"],
         Q_ori=mamba_out["Q_ori"],
     )
 
-    # ---- Step 4: Compute joint loss ----
+    # ---- Step 4: Compute joint loss (NLL for pos/siz, angle loss for ori) ----
     loss, detail = loss_fn(
-        pos_x_pred, siz_x_pred, ori_x_pred,
+        pos_x_pred, pos_P_pred, siz_x_pred, siz_P_pred, ori_x_pred,
         gt_next_pos, gt_next_siz, gt_next_ori,
         mamba_out["embedding"],
         instance_tokens,
+        R_pos=mamba_out["R_pos"],
+        R_siz=mamba_out["R_siz"],
     )
 
     return loss, detail
@@ -254,11 +256,32 @@ def main():
         temperature=loss_cfg.get("INFONCE_TEMPERATURE", 0.07),
     )
 
-    # ---- Optimizer ----
-    optimizer = torch.optim.AdamW(
-        mamba.parameters(),
-        lr=train_cfg.get("LR", 1e-3),
-        weight_decay=train_cfg.get("WEIGHT_DECAY", 1e-4),
+    # ---- Optimizer (separated LR groups) ----
+    # Mamba SSM backbone: low LR (5e-5) to prevent early covariance divergence.
+    # All other params (projections, norms, heads): base LR (1e-3).
+    base_lr = train_cfg.get("LR", 1e-3)
+    mamba_lr = train_cfg.get("MAMBA_LR", 5e-5)
+    weight_decay = train_cfg.get("WEIGHT_DECAY", 1e-4)
+
+    mamba_backbone_params = []
+    other_params = []
+    for name, p in mamba.named_parameters():
+        if not p.requires_grad:
+            continue
+        if name.startswith("mamba_layers") or name.startswith("fallback_gru"):
+            mamba_backbone_params.append(p)
+        else:
+            other_params.append(p)
+
+    optimizer = torch.optim.AdamW([
+        {"params": other_params, "lr": base_lr},
+        {"params": mamba_backbone_params, "lr": mamba_lr},
+    ], weight_decay=weight_decay)
+
+    logger.info(
+        f"Optimizer: base_lr={base_lr}, mamba_lr={mamba_lr}, "
+        f"mamba_params={sum(p.numel() for p in mamba_backbone_params):,}, "
+        f"other_params={sum(p.numel() for p in other_params):,}"
     )
 
     # ---- Scheduler: linear warmup → cosine annealing ----
@@ -277,7 +300,7 @@ def main():
     )
 
     # ---- TensorBoard ----
-    tb_dir = os.path.join(save_dir, "tensorboard")
+    tb_dir = os.path.join(log_dir, "tensorboard")
     writer = SummaryWriter(tb_dir)
     logger.info(f"TensorBoard logs → {tb_dir}  (view: tensorboard --logdir {tb_dir})")
 
@@ -292,7 +315,13 @@ def main():
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device)
         mamba.load_state_dict(ckpt["model_state_dict"])
-        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        try:
+            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        except (ValueError, KeyError) as e:
+            logger.warning(
+                f"Could not load optimizer state (likely old checkpoint with "
+                f"different param groups): {e}. Optimizer will start fresh."
+            )
         start_epoch = ckpt.get("epoch", 0) + 1
         logger.info(f"Resumed from {args.resume}, epoch {start_epoch}")
 
@@ -312,22 +341,33 @@ def main():
 
             loss, detail = training_step(mamba, batch, loss_fn, device)
 
-            # Check for NaN loss
-            if torch.isnan(loss):
+            # Check for NaN / Inf loss before backward
+            if torch.isnan(loss) or torch.isinf(loss):
                 nan_count += 1
-                logger.warning(f"NaN loss at epoch {epoch}, batch {batch_idx}. Skipping.")
+                logger.warning(
+                    f"NaN/Inf loss at epoch {epoch}, batch {batch_idx}. Skipping."
+                )
                 optimizer.zero_grad()
                 continue
 
             loss.backward()
 
-            # NaN guard on gradients
+            # NaN / Inf guard on gradients — skip batch if any param has bad grad
+            grads_ok = True
             for p in mamba.parameters():
-                if p.grad is not None and torch.isnan(p.grad).any():
-                    p.grad.nan_to_num_(0.0)
-                    nan_count += 1
+                if p.grad is not None:
+                    if torch.isnan(p.grad).any() or torch.isinf(p.grad).any():
+                        grads_ok = False
+                        break
+            if not grads_ok:
+                nan_count += 1
+                logger.warning(
+                    f"NaN/Inf gradient at epoch {epoch}, batch {batch_idx}. Skipping."
+                )
+                optimizer.zero_grad()
+                continue
 
-            # Gradient clipping
+            # Gradient clipping (safety lock: prevents covariance divergence)
             nn.utils.clip_grad_norm_(mamba.parameters(), max_norm=grad_clip)
 
             optimizer.step()

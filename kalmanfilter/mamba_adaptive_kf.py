@@ -768,7 +768,7 @@ class TemporalMamba(nn.Module):
     to capture latent correlations between orientation, velocity, and position.
 
     Architecture:
-        Input projection → Mamba SSM backbone → Output projection
+        Input projection → LayerNorm → Mamba SSM backbone → Output projection
         → 6 CholeskyHeads (Q_pos, Q_siz, Q_ori, R_pos, R_siz, R_ori)
         → 1 Temporal Embedding head (for semantic data association)
 
@@ -806,6 +806,10 @@ class TemporalMamba(nn.Module):
 
         # input projection: 13 → d_model
         self.input_proj = nn.Linear(self.INPUT_DIM, d_model)
+
+        # LayerNorm right after input projection — forces zero-mean unit-variance
+        # before Mamba blocks to prevent gradient saturation from disparate input scales
+        self.input_norm = nn.LayerNorm(d_model)
 
         # stacked Mamba layers
         if Mamba is not None:
@@ -872,6 +876,10 @@ class TemporalMamba(nn.Module):
         """
         # input projection: [B, T, 13] → [B, T, d_model]
         h = self.input_proj(track_history)
+
+        # LayerNorm before Mamba blocks — stabilises training by normalising
+        # across the d_model dimension after the linear projection
+        h = self.input_norm(h)
 
         # pass through Mamba layers with residual + LayerNorm
         if self.mamba_layers is not None:

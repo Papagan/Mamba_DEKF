@@ -122,9 +122,11 @@ class Base3DTracker:
         padded/truncated to self.history_len frames.
 
         # Per-frame feature (dim=13):
-        #   [x, y, z, vx, vy, vz, ax, ay,  l, w, h,  theta, omega]
-        #    ├── position state (8) ───┤  ├ size(3)┤  ├ orient(2) ┤
+        #   [Δx, Δy, z, vx, vy, vz, ax, ay,  l, w, h,  theta, omega]
+        #    ├── position state (8) ─────────┤  ├ size(3)┤  ├ orient(2) ┤
         #
+        # Δx, Δy are relative to the latest frame's position to keep
+        # feature magnitudes small and avoid gradient saturation in Mamba.
         # For missing velocity/acceleration, use zeros or finite-difference.
 
         Args:
@@ -143,6 +145,11 @@ class Base3DTracker:
 
             # take the last T frames (most recent at index T-1)
             recent = bboxes[-n_frames:]
+
+            # reference x, y from the latest frame → relative coords
+            # avoids large absolute global coordinates causing gradient saturation
+            ref_xyz = recent[-1].global_xyz
+
             for t_idx, bbox in enumerate(recent):
                 offset = T - n_frames + t_idx  # right-aligned padding
 
@@ -164,8 +171,9 @@ class Base3DTracker:
                         omega = dy / (dt_frames / self.frame_rate)
 
                 # vz = 0 (flat-world assumption consistent with PositionFilter)
+                # x, y are relative to the latest frame in this tracklet
                 history[i, offset, :] = torch.tensor([
-                    xyz[0], xyz[1], xyz[2],
+                    xyz[0] - ref_xyz[0], xyz[1] - ref_xyz[1], xyz[2],
                     vel[0], vel[1], 0.0,
                     acc[0], acc[1],
                     lwh[0], lwh[1], lwh[2],
