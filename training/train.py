@@ -466,7 +466,6 @@ def main():
         if auto_unseal_epoch > 0 and (epoch + 1) == auto_unseal_epoch:
             inf_cfg_path = train_cfg.get("INFERENCE_CONFIG", "config/nuscenes.yaml")
             if os.path.exists(inf_cfg_path):
-                import yaml
                 with open(inf_cfg_path, "r") as f:
                     inf_cfg = yaml.safe_load(f)
                 old_mode = inf_cfg.get("THRESHOLD", {}).get("BEV", {}).get("COST_MODE", "unknown")
