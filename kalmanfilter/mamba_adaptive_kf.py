@@ -56,9 +56,12 @@ def cholesky_to_psd(L_raw: Tensor, eps: float = 1e-5) -> Tensor:
     diag_idx = torch.arange(L.shape[-1], device=L.device)
     # Softplus + eps on diagonal — prevents zero/negative eigenvalues
     L = L.clone()
-    L[:, diag_idx, diag_idx] = torch.clamp(
-        F.softplus(L_raw[:, diag_idx, diag_idx]) + eps, min=1e-5, max=10.0
-    )
+    # Smooth saturation via tanh — preserves non-zero gradient everywhere.
+    # Hard clamp kills gradients when saturated (the "dead zone"), causing
+    # CholeskyHeads to output constants after a few epochs.
+    # tanh(x/scale)*scale maps [0, ∞) → [0, scale), with derivative > 0 everywhere.
+    L_diag = F.softplus(L_raw[:, diag_idx, diag_idx]) + eps
+    L[:, diag_idx, diag_idx] = 10.0 * torch.tanh(L_diag / 10.0) + eps
     # Q = L @ L^T  →  [B, D, D]
     return torch.bmm(L, L.transpose(-1, -2))
 

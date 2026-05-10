@@ -114,6 +114,16 @@ def training_step(
         R_ori=mamba_out["R_ori"],
     )
 
+    # ---- Step 5: Q/R diagonal variance monitor (detect constant-output degeneration) ----
+    with torch.no_grad():
+        for name, mat in [
+            ("Q_pos", mamba_out["Q_pos"]), ("Q_siz", mamba_out["Q_siz"]),
+            ("Q_ori", mamba_out["Q_ori"]), ("R_pos", mamba_out["R_pos"]),
+            ("R_siz", mamba_out["R_siz"]), ("R_ori", mamba_out["R_ori"]),
+        ]:
+            diag = mat.diagonal(dim1=-2, dim2=-1)               # [B, D]
+            detail[f"std_{name}"] = diag.std(dim=0).mean().item()  # mean over D
+
     return loss, detail
 
 
@@ -406,6 +416,8 @@ def main():
             f"contrast={avg_train.get('loss_contrastive', 0):.4f} | "
             f"val_loss={avg_val.get('loss_total', 0):.4f} "
             f"val_pos={avg_val.get('loss_pos', 0):.4f} | "
+            f"stdRori={avg_train.get('std_R_ori', 0):.4f} "
+            f"stdQori={avg_train.get('std_Q_ori', 0):.4f} | "
             f"NaN={nan_count}"
         )
 
@@ -420,6 +432,9 @@ def main():
         writer.add_scalar("val/loss_pos", avg_val.get("loss_pos", 0), step)
         writer.add_scalar("train/epoch_time", dt_epoch, step)
         writer.add_scalar("train/nan_count", nan_count, step)
+        # Q/R diagonal std — should stay > 0; zero = constant output (degenerate)
+        for key in ["std_Q_pos", "std_Q_siz", "std_Q_ori", "std_R_pos", "std_R_siz", "std_R_ori"]:
+            writer.add_scalar(f"train/{key}", avg_train.get(key, 0), step)
 
         # ---- Checkpoint ----
         val_total = avg_val.get("loss_total", float("inf"))
