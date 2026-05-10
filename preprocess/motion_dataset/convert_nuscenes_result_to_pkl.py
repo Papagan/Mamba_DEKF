@@ -5,6 +5,7 @@
 # Copyright (c) 2020 Motional. All Rights Reserved.
 # ------------------------------------------------------------------------
 
+import argparse
 import copy
 import json
 import os
@@ -210,14 +211,29 @@ class TrackingEval:
 
 
 if __name__ == "__main__":
-    result_path = "/data/projects/MOT_baseline/base3dmot/results/nuscenes/20241006_180139/results_for_motion.json"
-    nusc_path = "s3://wangxiyang/open_datasets/nuscenes/raw_data/"
-    gt_pkl_path = "./data/nuscenes/eval_velocity/gt_results.pkl"
-    
-    det_pkl_path = "./data/nuscenes/eval_velocity/det_results.pkl"
-    kalman_cv_pkl_path = "./data/nuscenes/eval_velocity/kalman_cv_results.pkl"
-    diff_pkl_path = "./data/nuscenes/eval_velocity/diff_results.pkl"
-    curve_pkl_path = "./data/nuscenes/eval_velocity/curve_results.pkl"
+    parser = argparse.ArgumentParser(description="Convert nuScenes tracking result to pkl")
+    parser.add_argument(
+        "--result_path", type=str, required=True,
+        help="Path to the nuScenes JSON result file (e.g. results_for_motion.json)",
+    )
+    parser.add_argument(
+        "--nusc_path", type=str,
+        default="/data/projects/MOT_baseline/base3dmot/data/nuscenes/raw_data/",
+        help="Path to nuScenes dataset root",
+    )
+    parser.add_argument(
+        "--output_dir", type=str, default="./data/nuscenes/eval_velocity/",
+        help="Directory for output pkl files",
+    )
+    args = parser.parse_args()
+
+    result_path = args.result_path
+    nusc_path = args.nusc_path
+    gt_pkl_path = os.path.join(args.output_dir, "gt_results.pkl")
+    det_pkl_path = os.path.join(args.output_dir, "det_results.pkl")
+    kalman_cv_pkl_path = os.path.join(args.output_dir, "kalman_cv_results.pkl")
+    diff_pkl_path = os.path.join(args.output_dir, "diff_results.pkl")
+    curve_pkl_path = os.path.join(args.output_dir, "curve_results.pkl")
     
     cfg = track_configs("tracking_nips_2019")
     nusc_eval = TrackingEval(

@@ -254,6 +254,10 @@ class Base3DTracker:
         """
         Write KF-predicted state back into the trajectory's latest bbox.
 
+        A sanity check discards predictions that jump >10 m from the
+        previous frame — unstable Q matrices during early training can
+        cause the position filter to produce kilometre-scale displacements.
+
         Args:
             pos_x : [1, 8, 1] — [x, y, z, vx, vy, vz, ax, ay]
             siz_x : [1, 3, 1] — [l, w, h]
@@ -263,6 +267,20 @@ class Base3DTracker:
         px = pos_x.squeeze().cpu().numpy()   # [8]
         sx = siz_x.squeeze().cpu().numpy()   # [3]
         ox = ori_x.squeeze().cpu().numpy()   # [2]
+
+        # ---- Sanity check: reject anomalous position jumps (>10 m) ----
+        if len(traj.bboxes) > 1:
+            prev_bbox = traj.bboxes[-2]
+            if (hasattr(prev_bbox, "global_xyz_lwh_yaw_predict")
+                    and prev_bbox.global_xyz_lwh_yaw_predict is not None):
+                prev_pos = prev_bbox.global_xyz_lwh_yaw_predict[:2]
+            else:
+                prev_pos = prev_bbox.global_xyz[:2]
+            displacement = np.sqrt(
+                (px[0] - prev_pos[0]) ** 2 + (px[1] - prev_pos[1]) ** 2
+            )
+            if displacement > 10.0:
+                return  # discard prediction, keep previous-frame coordinates
 
         predict_xyz = [px[0], px[1], px[2]]
         predict_lwh = [sx[0], sx[1], sx[2]]

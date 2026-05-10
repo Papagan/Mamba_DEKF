@@ -11,10 +11,11 @@
 
 import numpy as np
 import copy
+import warnings
 
 from .bbox import BBox
 from typing import List
-from scipy.optimize import curve_fit
+from scipy.optimize import curve_fit, OptimizeWarning
 
 np.set_printoptions(formatter={"float": "{:0.4f}".format})
 
@@ -274,8 +275,10 @@ class Trajectory:
             y_vals_x = [bb.global_xyz[0] for bb in self.bboxes[-3:]]
             y_vals_y = [bb.global_xyz[1] for bb in self.bboxes[-3:]]
             try:
-                popt_x, _ = curve_fit(linear_func, x_vals, y_vals_x)
-                popt_y, _ = curve_fit(linear_func, x_vals, y_vals_y)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", OptimizeWarning)
+                    popt_x, _ = curve_fit(linear_func, x_vals, y_vals_x)
+                    popt_y, _ = curve_fit(linear_func, x_vals, y_vals_y)
                 return [popt_x[0], popt_y[0]]
             except RuntimeError:
                 return [0.0, 0.0]

@@ -89,10 +89,11 @@ def cal_rotation_gdiou_inbev(box_trk, box_det, cfg, cal_flag=None):
     w1 = cfg["THRESHOLD"]["BEV"]["WEIGHT_RO_GDIOU"][category_num]["w1"]
     w2 = cfg["THRESHOLD"]["BEV"]["WEIGHT_RO_GDIOU"][category_num]["w2"]
 
+    eps = 1e-8
     ro_gdiou = (
         iou
-        - w1 * extra_area / universe_area
-        - w2 * box_center_distance / union_distance
+        - w1 * extra_area / max(universe_area, eps)
+        - w2 * box_center_distance / max(union_distance, eps)
     )
 
     return ro_gdiou
@@ -368,7 +369,13 @@ def cal_uncertainty_aware_cost(
     w_unc = cfg.get("THRESHOLD", {}).get("BEV", {}).get("W_UNCERTAINTY", [0.1])[category_num] \
         if "W_UNCERTAINTY" in cfg.get("THRESHOLD", {}).get("BEV", {}) else 0.1
 
-    # combined cost
-    cost = (1.0 - w_sem) * geometric_cost + w_sem * semantic_cost + w_unc * uncertainty
+    # ---- Fallback: pure geometric cost (early training) ----
+    # Mamba embeddings and uncertainty are unreliable during early training,
+    # causing massive ID switches and false positives. Use pure 3D IoU until
+    # the Mamba backbone converges.
+    cost = geometric_cost  # = 1.0 - ro_gdiou
+
+    # ---- Full cost (re-enable after Mamba converges) ----
+    # cost = (1.0 - w_sem) * geometric_cost + w_sem * semantic_cost + w_unc * uncertainty
 
     return cost
