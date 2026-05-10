@@ -60,6 +60,7 @@ THRESHOLD:
   NMS_THRE: {0: 0.08} 
   BEV:
     COST_THRE: {0: 1.4}
+    COST_MODE: "geometric"   # "geometric" (early training) | "full" (converged)
     # Notes: You need to ensure that w1 + w2 = 2 , otherwise you will need to readjust the threshold of RO_GDIOU.
     WEIGHT_RO_GDIOU: {0: {"w1": 1.0, "w2": 1.0}}
     # Module C weights
@@ -67,6 +68,7 @@ THRESHOLD:
     W_UNCERTAINTY: {0: 0.10}
   RV:
     COST_THRE: {0: -0.3} 
+    COST_MODE: "geometric"   # "geometric" (early training) | "full" (converged)
 
   TRAJECTORY_THRE:
     CACHE_BBOX_LENGTH: {0: 1000} 

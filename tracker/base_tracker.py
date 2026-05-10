@@ -13,17 +13,16 @@
 # ------------------------------------------------------------------------
 
 import os
+import copy
 import numpy as np
 import torch
 from typing import Dict, List, Tuple, Optional
 
 from tracker.matching import (
-    match_trajs_and_dets,
     match_trajs_and_dets_uncertainty_aware,
 )
 from tracker.trajectory import Trajectory
 from tracker.bbox import BBox
-from utils.utils import norm_realative_radian
 from kalmanfilter.mamba_adaptive_kf import MambaDecoupledEKF
 
 
@@ -506,116 +505,140 @@ class Base3DTracker:
                 for t in trajs
             ]
 
+        # ---- detection split: ByteTrack two-stage matching paradigm ----
+        # High-score dets (≥0.4) → strict matching + can birth new tracks
+        # Low-score dets  (0.1–0.4) → relaxed matching only (no birth)
+        # Score < 0.1 → discarded
+        high_det_indices: List[int] = []   # original indices in frame_info.bboxes
+        low_det_indices: List[int] = []
+        high_dets: List[BBox] = []
+        low_dets: List[BBox] = []
+        for i, det in enumerate(frame_info.bboxes):
+            score = det.det_score
+            if score >= 0.4:
+                high_det_indices.append(i)
+                high_dets.append(det)
+            elif score >= 0.1:
+                low_det_indices.append(i)
+                low_dets.append(det)
+
         # ---- detection embeddings (zeros for new detections with no history) ----
-        det_embeddings = np.zeros((dets_cnt, self.embed_dim), dtype=np.float32) \
+        det_embeddings_all = np.zeros((dets_cnt, self.embed_dim), dtype=np.float32) \
             if dets_cnt > 0 else None
 
-        # ---- Module C: uncertainty-aware association ----
-        match_res, cost_matrix = match_trajs_and_dets_uncertainty_aware(
-            trajs, frame_info.bboxes, self.cfg,
-            trk_embeddings=trk_embeddings,
-            det_embeddings=det_embeddings,
-            trk_pos_P=trk_pos_P,
-            trk_ori_P=trk_ori_P,
-        )
-        matched_det_indices = set(match_res[:, 1]) if len(match_res) > 0 else set()
+        # ---- bookkeeping ----
+        matched_track_ids: List[int] = []
+        matched_bboxes: List[BBox] = []
+        matched_traj_full_set: set = set()  # indices into full trajs list
 
-        unmatched_det_indices = np.array(
-            [i for i in range(dets_cnt) if i not in matched_det_indices]
-        )
+        # ================================================================
+        # Stage 1: all active trajs  vs  high-score dets  (strict)
+        # ================================================================
+        if trajs_cnt > 0 and len(high_dets) > 0:
+            det_emb_high = det_embeddings_all[high_det_indices] \
+                if det_embeddings_all is not None else None
+            match_res_1, _ = match_trajs_and_dets_uncertainty_aware(
+                trajs, high_dets, self.cfg,
+                trk_embeddings=trk_embeddings,
+                det_embeddings=det_emb_high,
+                trk_pos_P=trk_pos_P,
+                trk_ori_P=trk_ori_P,
+            )
+        else:
+            match_res_1 = np.empty((0, 2), dtype=int)
 
-        # ---- process matched pairs: trajectory.update + KF update ----
-        matched_track_ids = []
-        matched_bboxes = []
-        unmatched_trajs = {}
+        matched_high_sub_set: set = set()
+        for row in (match_res_1 if len(match_res_1) > 0 else []):
+            traj_idx = int(row[0])
+            high_sub_idx = int(row[1])
+            det_global_idx = high_det_indices[high_sub_idx]
+            track_id = trajs[traj_idx].track_id
+            det_bbox = frame_info.bboxes[det_global_idx]
+            self.all_trajs[track_id].update(det_bbox, 0.0)
+            matched_track_ids.append(track_id)
+            matched_bboxes.append(det_bbox)
+            matched_traj_full_set.add(traj_idx)
+            matched_high_sub_set.add(high_sub_idx)
 
+        # ================================================================
+        # Stage 2: unmatched trajs  vs  low-score dets  (relaxed threshold)
+        # ================================================================
+        unmatched_traj_full_indices = [
+            i for i in range(trajs_cnt) if i not in matched_traj_full_set
+        ]
+
+        if len(unmatched_traj_full_indices) > 0 and len(low_dets) > 0:
+            unmatched_trajs = [trajs[i] for i in unmatched_traj_full_indices]
+
+            # slice per-trajectory data to unmatched subset
+            um_trk_emb = trk_embeddings[unmatched_traj_full_indices] \
+                if trk_embeddings is not None else None
+            um_trk_pos_P = [trk_pos_P[i] for i in unmatched_traj_full_indices] \
+                if trk_pos_P is not None else None
+            um_trk_ori_P = [trk_ori_P[i] for i in unmatched_traj_full_indices] \
+                if trk_ori_P is not None else None
+            det_emb_low = det_embeddings_all[low_det_indices] \
+                if det_embeddings_all is not None else None
+
+            # relaxed cost threshold: 2× wider gate for low-quality detections
+            cfg_relaxed = copy.deepcopy(self.cfg)
+            orig_thre = cfg_relaxed["THRESHOLD"]["BEV"]["COST_THRE"]
+            cfg_relaxed["THRESHOLD"]["BEV"]["COST_THRE"] = [
+                t * 2.0 for t in orig_thre
+            ]
+
+            match_res_2, _ = match_trajs_and_dets_uncertainty_aware(
+                unmatched_trajs, low_dets, cfg_relaxed,
+                trk_embeddings=um_trk_emb,
+                det_embeddings=det_emb_low,
+                trk_pos_P=um_trk_pos_P,
+                trk_ori_P=um_trk_ori_P,
+            )
+        else:
+            match_res_2 = np.empty((0, 2), dtype=int)
+
+        for row in (match_res_2 if len(match_res_2) > 0 else []):
+            um_sub_idx = int(row[0])    # index into unmatched_traj_full_indices
+            low_sub_idx = int(row[1])   # index into low_dets
+            traj_full_idx = unmatched_traj_full_indices[um_sub_idx]
+            det_global_idx = low_det_indices[low_sub_idx]
+            track_id = trajs[traj_full_idx].track_id
+            det_bbox = frame_info.bboxes[det_global_idx]
+            # ---- low-score isolation: prevent noisy det_score from
+            #      degrading trajectory quality & confirmation status ----
+            det_bbox.det_score = max(det_bbox.det_score, 0.5)
+            self.all_trajs[track_id].update(det_bbox, 0.0)
+            matched_track_ids.append(track_id)
+            matched_bboxes.append(det_bbox)
+            matched_traj_full_set.add(traj_full_idx)
+
+        # ---- coast: trajectories that missed both stages ----
         for i in range(trajs_cnt):
-            track_id = trajs[i].track_id
-            if len(match_res) > 0 and i in match_res[:, 0]:
-                indexes = np.where(match_res[:, 0] == i)[0]
-                det_idx = match_res[indexes, 1][0]
-                det_bbox = frame_info.bboxes[det_idx]
-                cost_val = cost_matrix[indexes][0] if hasattr(cost_matrix, '__getitem__') else 0.0
+            if i not in matched_traj_full_set:
+                track_id = trajs[i].track_id
+                self.all_trajs[track_id].unmatch_update(frame_info.frame_id)
 
-                self.all_trajs[track_id].update(det_bbox, cost_val)
-                matched_track_ids.append(track_id)
-                matched_bboxes.append(det_bbox)
-            else:
-                unmatched_trajs[track_id] = self.all_trajs[track_id]
-                if not self.cfg["IS_RV_MATCHING"]:
-                    self.all_trajs[track_id].unmatch_update(frame_info.frame_id)
-
-        # ---- batch KF update for all matched tracks ----
-        if mamba_out is not None:
+        # ---- batch KF update for all matched tracks (both stages) ----
+        if mamba_out is not None and len(matched_track_ids) > 0:
             self._update_matched_tracks(
                 matched_track_ids, matched_bboxes, mamba_out, traj_index_map,
             )
 
-        # ---- RV matching for unmatched (optional, preserves original logic) ----
-        init_bboxes = frame_info.bboxes
-        if self.cfg["IS_RV_MATCHING"]:
-            unmatched_trajs_inbev = self.get_trajectory_bbox(unmatched_trajs)
-            trajs_cnt_inbev = len(unmatched_trajs_inbev)
-            dets_cnt_inbev = len(unmatched_det_indices)
-            unmatched_dets_inbev = (
-                np.array(frame_info.bboxes)[unmatched_det_indices].tolist()
-                if dets_cnt_inbev > 0
-                else unmatched_det_indices
-            )
-
-            match_res_inbev, cost_matrix_inbev = match_trajs_and_dets(
-                unmatched_trajs_inbev,
-                unmatched_dets_inbev,
-                self.cfg,
-                frame_info.transform_matrix,
-                is_rv=True,
-            )
-
-            for i in range(trajs_cnt_inbev):
-                track_id = unmatched_trajs_inbev[i].track_id
-                if len(match_res_inbev) > 0 and i in match_res_inbev[:, 0]:
-                    indexes = np.where(match_res_inbev[:, 0] == i)[0]
-                    trk_bbox = self.all_trajs[track_id].bboxes[-1]
-                    det_bbox = unmatched_dets_inbev[
-                        match_res_inbev[match_res_inbev[:, 0] == i, 1][0]
-                    ]
-                    diff_rot = (
-                        abs(
-                            norm_realative_radian(
-                                trk_bbox.global_yaw - det_bbox.global_yaw
-                            )
-                        )
-                        * 180
-                        / np.pi
-                    )
-                    dist = np.linalg.norm(
-                        np.array(trk_bbox.global_xyz) - np.array(det_bbox.global_xyz)
-                    )
-                    if diff_rot > 90 or dist > 5:
-                        self.all_trajs[track_id].unmatch_update(frame_info.frame_id)
-                        continue
-                    self.all_trajs[track_id].update(
-                        det_bbox, float(cost_matrix_inbev[indexes])
-                    )
-                else:
-                    self.all_trajs[track_id].unmatch_update(frame_info.frame_id)
-
-            matched_det_indices = set(match_res_inbev[:, 1]) if len(match_res_inbev) > 0 else set()
-            unmatched_det_indices = np.array(
-                [i for i in range(dets_cnt_inbev) if i not in matched_det_indices]
-            )
-            init_bboxes = unmatched_dets_inbev
-
-        # ---- birth: create new trajectories for unmatched detections ----
-        for i in unmatched_det_indices:
-            new_traj = Trajectory(
-                track_id=self.track_id_counter,
-                init_bbox=init_bboxes[i],
-                cfg=self.cfg,
-            )
-            self.all_trajs[self.track_id_counter] = new_traj
-            self._init_kf_state(self.track_id_counter, init_bboxes[i])
-            self.track_id_counter += 1
+        # ---- Strict Birth: ONLY from unmatched HIGH-score dets ----
+        # LOW-SCORE DETS (0.1–0.4) ARE NEVER ALLOWED TO CREATE NEW TRAJECTORIES.
+        # They only serve as rescue candidates for existing tracks in Stage 2.
+        # This is the single most effective FP suppression mechanism.
+        for sub_idx in range(len(high_dets)):
+            if sub_idx not in matched_high_sub_set:
+                det_bbox = high_dets[sub_idx]
+                new_traj = Trajectory(
+                    track_id=self.track_id_counter,
+                    init_bbox=det_bbox,
+                    cfg=self.cfg,
+                )
+                self.all_trajs[self.track_id_counter] = new_traj
+                self._init_kf_state(self.track_id_counter, det_bbox)
+                self.track_id_counter += 1
 
         # ---- death: remove dead tracks ----
         for track_id in list(self.all_trajs.keys()):

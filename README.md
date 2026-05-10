@@ -46,11 +46,11 @@ Detection (per frame)
         | predicted state + covariance P
         v
 +-------------------------------------------------------------+
-|  Module C: Uncertainty-Aware Association                     |
-|    cost = (1-w_s)·(1-Ro_GDIoU)                                |
-|         + w_s    ·(1-cos(emb_trk, emb_det))                   |
-|         + w_u    ·[trace(P_pos[:3,:3]) + trace(P_ori)]        |
-|    → Hungarian / Greedy                                       |
+|  Module C: Association  (two-stage ByteTrack paradigm)        |
+|    Stage 1: high-score dets → strict Ro-GDIoU matching         |
+|    Stage 2: low-score dets → relaxed matching (rescue only)   |
+|    Pure geometric cost during early training;                   |
+|    semantic + uncertainty terms re-enabled after convergence.  |
 +-------------------------------------------------------------+
 ```
 
@@ -77,7 +77,7 @@ Mamba-DEKF/
 ├── training/
 │   ├── train.py                                      # Training entry point
 │   ├── gt_tracklet_dataset.py                        # GT tracklet extraction + Dataset
-│   └── losses.py                                     # MSE + InfoNCE joint loss
+│   └── losses.py                                     # Kalman NLL + InfoNCE joint loss
 ├── dataset/
 │   └── baseversion_dataset.py                        # BaseVersion JSON → Frame/BBox loader
 ├── preprocess/
@@ -215,33 +215,113 @@ Output goes to `data/base_version/<dataset>/<detector>/<split>.json` and is what
 
 ---
 
-## 5. Training (already done — for reference)
+## 5. Training
 
-The `TemporalMamba` is the only learnable module. It is trained on **GT tracklets** of nuScenes; the three decoupled KFs are not trained — they consume the predicted `Q/R` directly.
+`TemporalMamba` is the only learnable module. It is trained on **GT tracklets** of nuScenes; the three decoupled KFs consume the predicted `Q/R` directly and are not trained.
+
+### 5.1 Run training
 
 ```bash
 # Step 1 (run once): extract GT tracklets to a pickle cache
 python training/train.py --config config/train_nuscenes.yaml --extract-only
 
-# Step 2: train (writes checkpoints under TRAINING.SAVE_DIR)
+# Step 2: train
 python training/train.py --config config/train_nuscenes.yaml
 
-# Resume:
+# Resume from a checkpoint:
 python training/train.py --config config/train_nuscenes.yaml \
     --resume checkpoints/mamba_dekf/checkpoint_epoch10.pt
 ```
 
-Loss = `w_pos · MSE_xyz + w_siz · MSE_lwh + w_ori · MSE_yaw + λ · InfoNCE(embedding)` (see `training/losses.py`).
+Training writes periodic checkpoints (`checkpoint_epoch{N}.pt`) and the best validation checkpoint (`best.pt`) under `TRAINING.SAVE_DIR`.
 
-Training writes:
-- `checkpoints/mamba_dekf/checkpoint_epoch{N}.pt` — periodic checkpoints
-- `checkpoints/mamba_dekf/best.pt` — best validation checkpoint
+### 5.2 Loss design
 
-Checkpoint contents: `{"model_state_dict": <TemporalMamba>, "epoch", "train_loss", "val_loss", ...}`.
+| Component | Loss | Purpose |
+|---|---|---|
+| Position | Kalman NLL: `0.5·(logdet(S_pos) + yᵀS⁻¹y)` | Jointly optimises `x_pred` and `P_pred` through the innovation covariance S |
+| Size | Kalman NLL (same form) | Same for the size filter |
+| Orientation | Angle-wrapped NLL: `0.5·(logdet(S_ori) + ỹᵀS⁻¹ỹ) + 0.01·trace(S_ori)` where `ỹ = wrap_to_pi(z - Hx)` | prevents ±π discontinuity; trace penalty stops Mamba from predicting infinite R |
+| Embedding | InfoNCE (supervised contrastive) | Pulls same-instance embeddings together |
+
+**Loss formula** (`losses.py:JointLoss`):
+
+```
+L_total = PHYSICS_SCALE · (w_pos·NLL_pos + w_siz·NLL_siz + w_ori·NLL_yaw) + λ · InfoNCE
+```
+
+Default weights (in `config/train_nuscenes.yaml`):
+
+| Key | Value | Note |
+|---|---|---|
+| `W_POS` | 1.0 | |
+| `W_SIZ` | 0.5 | |
+| `W_ORI` | 50.0 | Large multiplier — yaw NLL is small in magnitude |
+| `LAMBDA_CONTRAST` | 0.1 | |
+| `PHYSICS_SCALE` | 50.0 | Global multiplier on all physics losses vs contrastive |
+
+### 5.3 Training stability safeguards
+
+- **Pure Softplus (no clamp)**: Cholesky diagonals use `F.softplus(x) + 1e-5` — smooth, non-zero gradient everywhere. No hard `clamp` that would kill gradients at saturation boundaries.
+- **Zero-init CholeskyHeads**: The last linear layer in every `CholeskyHead` is initialised with `Uniform(-1e-4, 1e-4)` and bias `0`. Output ≈ 0 → `Softplus(0) ≈ 0.69` — a healthy initial variance before epoch 1.
+- **NaN guard**: Batches with NaN/Inf loss or gradients are skipped (not `nan_to_num`-ed).
+- **Gradient clipping**: `clip_grad_norm_(max_norm=1.0)` on Mamba parameters.
+- **Separated LR groups**: Mamba backbone `5e-5`, all other params `1e-3`.
+- **Q/R diagonal std monitor**: Every epoch logs `std_R_ori`, `std_Q_ori` (mean over batch of per-dimension diagonal std). If these flat-line at 0, the Cholesky heads have degenerated to constant output.
+
+### 5.4 How to verify training is healthy
+
+After epoch 4–5, watch the log lines:
+
+```
+Epoch 5/100 (12.3s) | train_loss=X pos=X siz=X ori=X contrast=X | stdRori=0.12 stdQori=0.08 | NaN=0
+```
+
+- `stdRori` and `stdQori` should be **non-zero** and fluctuating across epochs — this proves the Mamba Q/R heads are producing diverse, data-dependent outputs.
+- If either std stays at `0.0000` for multiple epochs, the Cholesky heads have collapsed to constant output (gradient death). Stop training, check the `cholesky_to_psd` implementation, and restart.
 
 ---
 
-## 6. Loading the Trained Weights at Inference
+## 6. Unsealing the Full Cost Function (after initial convergence)
+
+During early training, the association cost is **pure geometric** (`cost = 1.0 - Ro_GDIoU`). Mamba's semantic embeddings and uncertainty estimates are unreliable before the backbone converges and would cause massive ID switches and false positives.
+
+The cost mode is controlled by `COST_MODE` in the inference config (`config/{kitti,nuscenes,waymo}.yaml`):
+
+```yaml
+THRESHOLD:
+  BEV:
+    COST_MODE: "geometric"   # "geometric" (safe) | "full" (converged)
+```
+
+### Option A: Auto-unseal (recommended)
+
+Set `AUTO_UNSEAL_EPOCH` in `config/train_nuscenes.yaml`:
+
+```yaml
+TRAINING:
+  AUTO_UNSEAL_EPOCH: 40           # toggle COST_MODE → "full" at this epoch
+  INFERENCE_CONFIG: config/nuscenes.yaml   # which YAML to update
+```
+
+At epoch 40, the training script automatically edits the inference config to set `COST_MODE: "full"`. No manual intervention needed.
+
+### Option B: Manual toggle
+
+When `loss_pos` and `loss_siz` have stabilised and the Q/R std monitor shows healthy variance:
+
+```bash
+# Edit the inference config by hand:
+sed -i 's/COST_MODE: "geometric"/COST_MODE: "full"/' config/nuscenes.yaml
+```
+
+Then re-run evaluation with `python main.py --dataset nuscenes -e -p 8`.
+
+The full cost enables the Mamba-driven semantic affinity and Kalman uncertainty penalty in the matching gate, which tightens associations for well-tracked objects while widening the gate during ambiguous occlusion phases.
+
+---
+
+## 7. Loading the Trained Weights at Inference
 
 The inference configs (`config/{kitti,nuscenes,waymo}.yaml`) now include a `MAMBA:` block:
 
@@ -286,7 +366,7 @@ The architecture in `MAMBA:` must match what was trained — keep `D_MODEL/D_STA
 
 ---
 
-## 7. Tracking + Evaluation
+## 8. Tracking + Evaluation
 
 ```bash
 # Online tracking + evaluation
@@ -309,7 +389,7 @@ Flags:
 
 Outputs: `results/<dataset>/<YYYYMMDD_HHMMSS>/...`.
 
-### 7.1 Per-dataset evaluators
+### 8.1 Per-dataset evaluators
 
 | Dataset | Metric | Implementation |
 |---|---|---|
@@ -319,7 +399,7 @@ Outputs: `results/<dataset>/<YYYYMMDD_HHMMSS>/...`.
 
 The evaluators are wired into `main.py` and called automatically when `--eval` is set. KITTI labels live under `evaluation/static_evaluation/kitti/gt/`. For Waymo, set the WOD repo path inside `evaluation/static_evaluation/waymo/eval.py` before running.
 
-### 7.2 Motion-quality evaluation (nuScenes)
+### 8.2 Motion-quality evaluation (nuScenes)
 
 A custom evaluator measures per-track velocity / acceleration accuracy:
 
@@ -335,7 +415,7 @@ Settings live in `config/nuscenes_motion_eval.yaml`.
 
 ---
 
-## 8. Submission to Public Benchmarks
+## 9. Submission to Public Benchmarks
 
 <details><summary><b>KITTI</b></summary>
 
@@ -368,7 +448,7 @@ Submit to the [Waymo tracking challenge](https://waymo.com/open/challenges/2020/
 
 ---
 
-## 9. End-to-End Recipe (assuming training is already done)
+## 10. End-to-End Recipe (assuming training is already done)
 
 ```bash
 # 0. (one-time) place data/ and trained checkpoint
@@ -378,15 +458,22 @@ ls checkpoints/mamba_dekf/best.pt                     # trained TemporalMamba
 # 1. sanity check the pipeline + checkpoint
 python tools/verify_pipeline.py --ckpt checkpoints/mamba_dekf/best.pt
 
-# 2. tracking on nuScenes val with evaluation
+# 2. IF training is fresh (<50 epochs): ensure cost fallback is active
+#    Open tracker/cost_function.py → cal_uncertainty_aware_cost →
+#    verify: cost = geometric_cost  (pure geometry, no Mamba terms)
+
+# 3. IF training converged (50+ epochs): unseal the full cost
+#    See Section 6 — re-enable semantic + uncertainty terms
+
+# 4. tracking on nuScenes val with evaluation
 python main.py --dataset nuscenes -e -p 8
 
-# 3. (optional) motion-quality evaluation
+# 5. (optional) motion-quality evaluation
 python preprocess/motion_dataset/convert_nuscenes_result_to_pkl.py
 python evaluation/eval_motion.py
 ```
 
-Console output during step 2 will show:
+Console output during step 4 will show:
 
 ```
 [Base3DTracker] Loaded Mamba weights from checkpoints/mamba_dekf/best.pt
@@ -399,29 +486,30 @@ Final results are written under `results/nuscenes/<timestamp>/result.json`.
 
 ---
 
-## 10. Configuration Cheatsheet
+## 11. Configuration Cheatsheet
 
 | Key | Purpose |
 |---|---|
 | `MAMBA.CHECKPOINT_PATH` | Trained TemporalMamba weights. Empty / missing → random init (warning printed). |
 | `MAMBA.HISTORY_LEN` | Length T of the joint-state history window fed to Mamba. **Must equal training value.** |
 | `MAMBA.D_MODEL / D_STATE / D_CONV / EXPAND / N_MAMBA_LAYERS / EMBED_DIM` | Backbone architecture. Must match training. |
-| `THRESHOLD.BEV.W_SEMANTIC` | Per-category weight on `1 - cos_sim(emb_trk, emb_det)`. |
-| `THRESHOLD.BEV.W_UNCERTAINTY` | Per-category weight on `trace(P_pos[:3,:3]) + trace(P_ori)`. |
-| `THRESHOLD.BEV.COST_THRE` | Per-category cost gate; raise if uncertainty penalty pushes legitimate matches above it. |
-| `IS_RV_MATCHING` | Enable secondary image-space matching pass (KITTI / Waymo by default). |
+| `THRESHOLD.BEV.W_SEMANTIC` | Per-category weight on `1 - cos_sim(emb_trk, emb_det)`. **Disabled during early training (fallback mode).** |
+| `THRESHOLD.BEV.W_UNCERTAINTY` | Per-category weight on `trace(P_pos[:3,:3]) + trace(P_ori)`. **Disabled during early training.** |
+| `THRESHOLD.BEV.COST_THRE` | Per-category cost gate. Stage-2 matching uses 2× this threshold for low-score dets. |
 | `TRACKING_MODE` | `ONLINE` (per-frame output) or `GLOBAL` (offline interpolation in `Trajectory.filtering`). |
-| `FRAME_RATE` | Used as the fallback `delta_t = 1/FRAME_RATE` when timestamps are missing. |
+| `FRAME_RATE` | Fallback `delta_t = 1/FRAME_RATE` when timestamps are missing. |
+| `LOSS.PHYSICS_SCALE` | Global multiplier on state losses vs contrastive (default 50.0). Tune if contrast dominates. |
+| `LOSS.W_ORI` | Orientation NLL weight — large (50.0) because yaw NLL is inherently small. |
 
 ---
 
-## 11. Acknowledgement
+## 12. Acknowledgement
 
 - Detection: [CTRL](https://github.com/tusen-ai/SST), [VirConv](https://github.com/hailanyi/VirConv), [CenterPoint](https://github.com/tianweiy/CenterPoint), [LargeKernel3D](https://github.com/dvlab-research/LargeKernel3D)
 - Tracking: [MCTrack](https://github.com/megvii-research/MCTrack), [PC3T](https://github.com/hailanyi/3D-Multi-Object-Tracker), [Poly-MOT](https://github.com/lixiaoyu2000/Poly-MOT), [ImmortalTracker](https://github.com/esdolo/ImmortalTracker)
 - State Space Models: [Mamba](https://github.com/state-spaces/mamba)
 
-## 12. Citation
+## 13. Citation
 
 ```bibtex
 @article{wang2024mctrack,

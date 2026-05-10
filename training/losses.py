@@ -379,14 +379,16 @@ class JointLoss(nn.Module):
         self,
         w_pos: float = 1.0,
         w_siz: float = 0.5,
-        w_ori: float = 0.5,
+        w_ori: float = 50.0,
         lambda_contrast: float = 0.1,
         temperature: float = 0.07,
+        physics_scale: float = 50.0,
     ) -> None:
         super().__init__()
         self.state_loss = StatePredictionLoss(w_pos, w_siz, w_ori)
         self.contrastive_loss = InfoNCELoss(temperature)
         self.lambda_contrast = lambda_contrast
+        self.physics_scale = physics_scale
 
     def forward(
         self,
@@ -422,7 +424,10 @@ class JointLoss(nn.Module):
             embeddings, instance_tokens,
         )
 
-        loss_total = loss_state + self.lambda_contrast * loss_contrast
+        # Physics losses get a large global scale to compete with contrastive
+        # gradient magnitude. Without this, the fragile covariance-prediction
+        # gradients are drowned out and CholeskyHeads stop learning.
+        loss_total = self.physics_scale * loss_state + self.lambda_contrast * loss_contrast
 
         detail = {
             **detail_state,

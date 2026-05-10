@@ -5,7 +5,6 @@
 import math
 import cv2
 import numpy as np
-import torch
 
 from utils.utils import orientation_similarity
 
@@ -369,13 +368,14 @@ def cal_uncertainty_aware_cost(
     w_unc = cfg.get("THRESHOLD", {}).get("BEV", {}).get("W_UNCERTAINTY", [0.1])[category_num] \
         if "W_UNCERTAINTY" in cfg.get("THRESHOLD", {}).get("BEV", {}) else 0.1
 
-    # ---- Fallback: pure geometric cost (early training) ----
-    # Mamba embeddings and uncertainty are unreliable during early training,
-    # causing massive ID switches and false positives. Use pure 3D IoU until
-    # the Mamba backbone converges.
-    cost = geometric_cost  # = 1.0 - ro_gdiou
+    # ---- Cost mode: geometric (early training) or full (converged) ----
+    # Read from config so the training script can auto-toggle at a target epoch
+    # without manual file edits. Default "geometric" is the safe choice.
+    cost_mode = cfg.get("THRESHOLD", {}).get("BEV", {}).get("COST_MODE", "geometric")
 
-    # ---- Full cost (re-enable after Mamba converges) ----
-    # cost = (1.0 - w_sem) * geometric_cost + w_sem * semantic_cost + w_unc * uncertainty
+    if cost_mode == "full":
+        cost = (1.0 - w_sem) * geometric_cost + w_sem * semantic_cost + w_unc * uncertainty
+    else:
+        cost = geometric_cost  # pure Ro-GDIoU
 
     return cost

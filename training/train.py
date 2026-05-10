@@ -265,6 +265,7 @@ def main():
         w_ori=loss_cfg.get("W_ORI", 50.0),
         lambda_contrast=loss_cfg.get("LAMBDA_CONTRAST", 0.1),
         temperature=loss_cfg.get("INFONCE_TEMPERATURE", 0.07),
+        physics_scale=loss_cfg.get("PHYSICS_SCALE", 50.0),
     ).to(device)
 
     # ---- Optimizer (separated LR groups) ----
@@ -459,6 +460,26 @@ def main():
                 "val_loss": avg_val,
             }, best_path)
             logger.info(f"  New best model → {best_path} (val_loss={val_total:.4f})")
+
+        # ---- Auto-unseal: toggle inference cost from "geometric" → "full" ----
+        auto_unseal_epoch = train_cfg.get("AUTO_UNSEAL_EPOCH", 0)
+        if auto_unseal_epoch > 0 and (epoch + 1) == auto_unseal_epoch:
+            inf_cfg_path = train_cfg.get("INFERENCE_CONFIG", "config/nuscenes.yaml")
+            if os.path.exists(inf_cfg_path):
+                import yaml
+                with open(inf_cfg_path, "r") as f:
+                    inf_cfg = yaml.safe_load(f)
+                old_mode = inf_cfg.get("THRESHOLD", {}).get("BEV", {}).get("COST_MODE", "unknown")
+                inf_cfg.setdefault("THRESHOLD", {}).setdefault("BEV", {})["COST_MODE"] = "full"
+                with open(inf_cfg_path, "w") as f:
+                    yaml.safe_dump(inf_cfg, f, default_flow_style=False, sort_keys=False)
+                logger.info(
+                    f"  *** AUTO-UNSEAL: {inf_cfg_path} COST_MODE: {old_mode} → full ***"
+                )
+            else:
+                logger.warning(
+                    f"  AUTO-UNSEAL skipped: {inf_cfg_path} not found"
+                )
 
     writer.close()
     logger.info(f"Training complete. Best val_loss={best_val_loss:.4f}")

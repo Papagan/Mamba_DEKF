@@ -33,11 +33,14 @@ TRAINING:
   LOG_EVERY: 50
   SAVE_EVERY: 10
   SAVE_DIR: checkpoints/mamba_dekf/
+  AUTO_UNSEAL_EPOCH: 40          # epoch at which to auto-toggle cost to "full"
+  INFERENCE_CONFIG: config/nuscenes.yaml   # which inference config to update
 
 # ---- Loss ----
 LOSS:
   W_POS: 1.0
   W_SIZ: 0.5
-  W_ORI: 0.5
+  W_ORI: 50.0
   LAMBDA_CONTRAST: 0.1
   INFONCE_TEMPERATURE: 0.07
+  PHYSICS_SCALE: 50.0   # global multiplier for state losses vs contrastive
