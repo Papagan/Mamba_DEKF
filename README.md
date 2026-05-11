@@ -262,7 +262,7 @@ Default weights (in `config/train_nuscenes.yaml`):
 
 ### 5.3 Training stability safeguards
 
-- **Minimum diagonal constraint**: Cholesky diagonals use `F.softplus(x) + min_diag + 1e-5`. R heads get `min_diag=0.1` (min eigenvalue ≈ 0.01), Q heads get `min_diag=0.03` (min eigenvalue ≈ 0.001). This prevents the model from collapsing to near-zero eigenvalues that produce artificially negative NLL.
+- **Minimum diagonal constraint**: Cholesky diagonals use `F.softplus(x) + min_diag + 1e-5`. Both Q and R heads default to `min_diag=0.1` (min eigenvalue ≈ 0.01). Configured via `MODEL.MIN_DIAG_Q` / `MODEL.MIN_DIAG_R` in training and `MAMBA.MIN_DIAG_Q` / `MAMBA.MIN_DIAG_R` at inference. Prevents collapse to near-zero eigenvalues.
 - **Logdet guard (anti-cheat)**: Orientation loss uses `0.1·ReLU(logdet(S_ori) − 2.0)` instead of a trace penalty. Unlike `λ·trace(S)` whose gradient `λ·I` pushes all R entries toward zero, the logdet guard only activates when the innovation covariance is pathologically large — it never encourages R→0.
 - **Zero-init CholeskyHeads**: The last linear layer in every `CholeskyHead` is initialised with `Uniform(-1e-4, 1e-4)` and bias `0`. Output ≈ 0 → `Softplus(0) ≈ 0.69` — a healthy initial variance before epoch 1.
 - **NaN guard**: Batches with NaN/Inf loss or gradients are skipped (not `nan_to_num`-ed).
@@ -337,6 +337,8 @@ MAMBA:
   EMBED_DIM: 32
   HISTORY_LEN: 10
   MAX_BATCH_SIZE: 256
+  MIN_DIAG_Q: 0.1           # Q head Cholesky floor (process noise)
+  MIN_DIAG_R: 0.1           # R head Cholesky floor (measurement noise)
 ```
 
 **Required action: drop the trained checkpoint here**
@@ -494,6 +496,8 @@ Final results are written under `results/nuscenes/<timestamp>/result.json`.
 | `MAMBA.CHECKPOINT_PATH` | Trained TemporalMamba weights. Empty / missing → random init (warning printed). |
 | `MAMBA.HISTORY_LEN` | Length T of the joint-state history window fed to Mamba. **Must equal training value.** |
 | `MAMBA.D_MODEL / D_STATE / D_CONV / EXPAND / N_MAMBA_LAYERS / EMBED_DIM` | Backbone architecture. Must match training. |
+| `MAMBA.MIN_DIAG_Q` | Floor on Cholesky diagonal for Q heads (process noise, default 0.1). Raise if tracking is jumpy. |
+| `MAMBA.MIN_DIAG_R` | Floor on Cholesky diagonal for R heads (measurement noise, default 0.1). Lower if matches are too loose. |
 | `THRESHOLD.BEV.W_SEMANTIC` | Per-category weight on `1 - cos_sim(emb_trk, emb_det)`. **Disabled during early training (fallback mode).** |
 | `THRESHOLD.BEV.W_UNCERTAINTY` | Per-category weight on `trace(P_pos[:3,:3]) + trace(P_ori)`. **Disabled during early training.** |
 | `THRESHOLD.BEV.COST_THRE` | Per-category cost gate. Stage-2 matching uses 2× this threshold for low-score dets. |

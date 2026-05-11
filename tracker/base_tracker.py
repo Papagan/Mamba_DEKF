@@ -36,6 +36,8 @@ _DEFAULT_MAMBA_CFG = {
     "EMBED_DIM": 32,
     "HISTORY_LEN": 10,      # T: temporal window for Mamba input
     "MAX_BATCH_SIZE": 256,   # pre-allocated batch size
+    "MIN_DIAG_Q": 0.1,       # Q head Cholesky floor
+    "MIN_DIAG_R": 0.1,       # R head Cholesky floor
 }
 
 
@@ -71,6 +73,8 @@ class Base3DTracker:
             expand=mamba_cfg["EXPAND"],
             n_mamba_layers=mamba_cfg["N_MAMBA_LAYERS"],
             embed_dim=mamba_cfg["EMBED_DIM"],
+            min_diag_q=mamba_cfg.get("MIN_DIAG_Q", 0.1),
+            min_diag_r=mamba_cfg.get("MIN_DIAG_R", 0.1),
             device=self.device,
         ).to(self.device)
 

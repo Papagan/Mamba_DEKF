@@ -252,6 +252,8 @@ def main():
         expand=model_cfg.get("EXPAND", 2),
         n_mamba_layers=model_cfg.get("N_MAMBA_LAYERS", 3),
         embed_dim=model_cfg.get("EMBED_DIM", 32),
+        min_diag_q=model_cfg.get("MIN_DIAG_Q", 0.1),
+        min_diag_r=model_cfg.get("MIN_DIAG_R", 0.1),
     ).to(device)
 
     n_params = sum(p.numel() for p in mamba.parameters() if p.requires_grad)

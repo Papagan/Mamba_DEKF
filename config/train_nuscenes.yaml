@@ -20,6 +20,8 @@ MODEL:
   N_MAMBA_LAYERS: 3
   EMBED_DIM: 32
   HISTORY_LEN: 10
+  MIN_DIAG_Q: 0.1           # floor on Cholesky diagonal for Q heads (process noise)
+  MIN_DIAG_R: 0.1           # floor on Cholesky diagonal for R heads (measurement noise)
 
 # ---- Training ----
 TRAINING:

@@ -50,7 +50,7 @@ def cholesky_to_psd(L_raw: Tensor, eps: float = 1e-5, min_diag: float = 0.0) -> 
 
     Typical values:
       R heads (measurement noise): min_diag = 0.1  → min eigenvalue ≈ 0.01
-      Q heads (process noise):     min_diag = 0.03 → min eigenvalue ≈ 0.001
+      Q heads (process noise):     min_diag = 0.1  → min eigenvalue ≈ 0.01
 
     Args:
         L_raw:    Raw lower-triangular factor. Shape: [B, D, D]
@@ -807,6 +807,8 @@ class TemporalMamba(nn.Module):
         expand: int = 2,
         n_mamba_layers: int = 3,
         embed_dim: int = 32,
+        min_diag_q: float = 0.1,
+        min_diag_r: float = 0.1,
     ) -> None:
         """
         Args:
@@ -816,6 +818,8 @@ class TemporalMamba(nn.Module):
             expand         : Expansion factor for inner dimension.
             n_mamba_layers : Number of stacked Mamba layers.
             embed_dim      : Output temporal embedding dimension for association.
+            min_diag_q     : Floor on Cholesky diagonal for Q heads (process noise).
+            min_diag_r     : Floor on Cholesky diagonal for R heads (measurement noise).
         """
         super().__init__()
         self.d_model = d_model
@@ -852,15 +856,15 @@ class TemporalMamba(nn.Module):
         ])
 
         # ---- Multi-Head Noise Prediction (6 heads) ----
-        # Process noise Q: lower floor — legitimate for well-behaved motion
-        self.head_Q_pos = CholeskyHead(d_model, mat_dim=8, min_diag=0.03)   # Q for Position  [B,8,8]
-        self.head_Q_siz = CholeskyHead(d_model, mat_dim=3, min_diag=0.03)   # Q for Size      [B,3,3]
-        self.head_Q_ori = CholeskyHead(d_model, mat_dim=2, min_diag=0.03)   # Q for Orient.   [B,2,2]
+        # Process noise Q
+        self.head_Q_pos = CholeskyHead(d_model, mat_dim=8, min_diag=min_diag_q)   # Q for Position  [B,8,8]
+        self.head_Q_siz = CholeskyHead(d_model, mat_dim=3, min_diag=min_diag_q)   # Q for Size      [B,3,3]
+        self.head_Q_ori = CholeskyHead(d_model, mat_dim=2, min_diag=min_diag_q)   # Q for Orient.   [B,2,2]
 
-        # Measurement noise R: higher floor — prevents logdet(S) → -∞ collapse
-        self.head_R_pos = CholeskyHead(d_model, mat_dim=3, min_diag=0.1)   # R for Position  [B,3,3]
-        self.head_R_siz = CholeskyHead(d_model, mat_dim=3, min_diag=0.1)   # R for Size      [B,3,3]
-        self.head_R_ori = CholeskyHead(d_model, mat_dim=1, min_diag=0.1)   # R for Orient.   [B,1,1]
+        # Measurement noise R
+        self.head_R_pos = CholeskyHead(d_model, mat_dim=3, min_diag=min_diag_r)   # R for Position  [B,3,3]
+        self.head_R_siz = CholeskyHead(d_model, mat_dim=3, min_diag=min_diag_r)   # R for Size      [B,3,3]
+        self.head_R_ori = CholeskyHead(d_model, mat_dim=1, min_diag=min_diag_r)   # R for Orient.   [B,1,1]
 
         # ---- Temporal Embedding head (for semantic association in Module C) ----
         self.embed_head = nn.Sequential(
@@ -958,6 +962,8 @@ class MambaDecoupledEKF(nn.Module):
         expand: int = 2,
         n_mamba_layers: int = 3,
         embed_dim: int = 32,
+        min_diag_q: float = 0.1,
+        min_diag_r: float = 0.1,
         device: torch.device = torch.device("cpu"),
     ) -> None:
         super().__init__()
@@ -968,6 +974,8 @@ class MambaDecoupledEKF(nn.Module):
             expand=expand,
             n_mamba_layers=n_mamba_layers,
             embed_dim=embed_dim,
+            min_diag_q=min_diag_q,
+            min_diag_r=min_diag_r,
         )
         self.kf = DecoupledAdaptiveKF(batch_size, device)
         self.device = device
