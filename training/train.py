@@ -261,6 +261,7 @@ def main():
     # ---- Datasets ----
     model_cfg = cfg["MODEL"]
     history_len = model_cfg.get("HISTORY_LEN", 10)
+    train_cfg = cfg["TRAINING"]
     rollout_steps = train_cfg.get("ROLLOUT_STEPS", 1)
 
     train_dataset = TrackletDataset(train_pkl, history_len=history_len,
@@ -268,7 +269,6 @@ def main():
     val_dataset = TrackletDataset(val_pkl, history_len=history_len,
                                   rollout_steps=rollout_steps)
 
-    train_cfg = cfg["TRAINING"]
     train_loader = DataLoader(
         train_dataset,
         batch_size=train_cfg["BATCH_SIZE"],
