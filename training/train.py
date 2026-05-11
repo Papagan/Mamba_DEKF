@@ -141,12 +141,11 @@ def training_step(
             else:
                 detail_accum[key] = detail_accum.get(key, 0.0) + val
 
-        # Teacher forcing: KF update with GT at this step
-        z_pos_k = gt_future_pos[:, k, :].unsqueeze(-1)     # [B, 3, 1]
-        z_siz_k = gt_future_siz[:, k, :].unsqueeze(-1)     # [B, 3, 1]
-        z_ori_k = gt_future_ori[:, k, :].unsqueeze(-1)     # [B, 1, 1]
-        kf.update(z_pos_k, z_siz_k, z_ori_k,
-                  R_pos=R_pos, R_siz=R_siz, R_ori=R_ori)
+        # No teacher forcing — KF runs pure prediction for K steps.
+        # Without GT measurements to reset the filter, prediction errors
+        # from step k propagate to step k+1, amplifying the loss at later
+        # steps. This forces Mamba to learn Q that accounts for real
+        # motion uncertainty rather than collapsing to the minimum.
 
     # Average state losses across rollout steps; contrastive stays raw
     detail = {k: v / K for k, v in detail_accum.items()}
