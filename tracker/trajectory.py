@@ -164,7 +164,7 @@ class Trajectory:
         self.unmatch_length += 1
 
         fake_bbox = copy.deepcopy(self.bboxes[-1])
-        fake_bbox.det_score = 0
+        fake_bbox.det_score = self.bboxes[-1].det_score  # inherit last real score
         fake_bbox.is_fake = True
         fake_bbox.frame_id = frame_id
 

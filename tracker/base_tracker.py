@@ -662,6 +662,17 @@ class Base3DTracker:
                 bbox = self.all_trajs[track_id].bboxes[-1]
                 if bbox.det_score == self.all_trajs[track_id]._is_filter_predict_box:
                     continue
+                # Use the best historical detection score for evaluation,
+                # not the latest (which may be a coasted fake_bbox with score=0).
+                # unmatch_update now inherits the previous score, but this
+                # provides a belt-and-suspenders guarantee.
+                traj = self.all_trajs[track_id]
+                real_scores = [
+                    b.det_score for b in traj.bboxes
+                    if not getattr(b, "is_fake", False)
+                ]
+                if real_scores:
+                    bbox.det_score = max(real_scores)
                 output_trajs[track_id] = bbox
                 self.all_trajs[track_id].is_output = True
         return output_trajs
