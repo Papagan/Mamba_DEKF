@@ -32,7 +32,7 @@ _DEFAULT_MAMBA_CFG = {
     "D_STATE": 16,
     "D_CONV": 4,
     "EXPAND": 2,
-    "N_MAMBA_LAYERS": 2,
+    "N_MAMBA_LAYERS": 3,
     "EMBED_DIM": 32,
     "HISTORY_LEN": 10,      # T: temporal window for Mamba input
     "MAX_BATCH_SIZE": 256,   # pre-allocated batch size

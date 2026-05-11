@@ -805,7 +805,7 @@ class TemporalMamba(nn.Module):
         d_state: int = 16,
         d_conv: int = 4,
         expand: int = 2,
-        n_mamba_layers: int = 2,
+        n_mamba_layers: int = 3,
         embed_dim: int = 32,
     ) -> None:
         """
@@ -956,7 +956,7 @@ class MambaDecoupledEKF(nn.Module):
         d_state: int = 16,
         d_conv: int = 4,
         expand: int = 2,
-        n_mamba_layers: int = 2,
+        n_mamba_layers: int = 3,
         embed_dim: int = 32,
         device: torch.device = torch.device("cpu"),
     ) -> None:

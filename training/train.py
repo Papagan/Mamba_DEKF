@@ -250,7 +250,7 @@ def main():
         d_state=model_cfg.get("D_STATE", 16),
         d_conv=model_cfg.get("D_CONV", 4),
         expand=model_cfg.get("EXPAND", 2),
-        n_mamba_layers=model_cfg.get("N_MAMBA_LAYERS", 2),
+        n_mamba_layers=model_cfg.get("N_MAMBA_LAYERS", 3),
         embed_dim=model_cfg.get("EMBED_DIM", 32),
     ).to(device)
 

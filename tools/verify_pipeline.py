@@ -98,7 +98,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     step("Module B: TemporalMamba produces PSD Q/R and embedding")
     # ------------------------------------------------------------------
-    mamba = TemporalMamba(d_model=64, n_mamba_layers=2, embed_dim=32).to(device)
+    mamba = TemporalMamba(d_model=64, n_mamba_layers=3, embed_dim=32).to(device)
     history = torch.randn(B, T, 14, device=device)
     out = mamba(history)
     for k in ("Q_pos", "Q_siz", "Q_ori", "R_pos", "R_siz", "R_ori"):
