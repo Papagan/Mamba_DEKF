@@ -205,12 +205,12 @@ def extract_gt_tracklets_nuscenes(
 
 class TrackletDataset(Dataset):
     """
-    PyTorch Dataset for training TemporalMamba.
+    PyTorch Dataset for training TemporalMamba with multi-step KF rollout.
 
     Produces sliding-window samples from GT tracklets:
       - Input:  track_history [T, 14]
-      - Target: GT state at frame T+1
-      - Meta:   delta_t, instance_token
+      - Target: K future GT states (pos/siz/ori) + delta_ts for each step
+      - Meta:   instance_token
 
     The 14-dim feature format matches base_tracker._extract_track_history():
         [x, y, z, vx, vy, vz, ax, ay, l, w, h, theta, omega, det_score]
@@ -221,46 +221,49 @@ class TrackletDataset(Dataset):
         tracklet_pkl_path: str,
         history_len: int = 10,
         min_track_len: int = 3,
+        rollout_steps: int = 1,
     ) -> None:
         with open(tracklet_pkl_path, "rb") as f:
             tracklets = pickle.load(f)
 
         self.history_len = history_len
+        self.rollout_steps = rollout_steps
         self.samples: List[Dict] = []
+
+        min_len = max(min_track_len, rollout_steps + history_len)
 
         for trk in tracklets:
             frames = trk["frames"]
             n = len(frames)
-            if n < min_track_len:
+            if n < min_len:
                 continue
 
             inst_token = trk["instance_token"]
             category = trk["category"]
 
-            # Sliding window: for each valid index i, use frames[max(0,i-T+1):i+1]
-            # as history, frames[i+1] as target
-            for i in range(min_track_len - 1, n - 1):
+            # Sliding window with K future frames for rollout
+            for i in range(history_len - 1, n - rollout_steps):
                 start = max(0, i - history_len + 1)
                 history_frames = frames[start:i + 1]
-                target_frame = frames[i + 1]
                 current_frame = frames[i]
+                future_frames = frames[i + 1 : i + 1 + rollout_steps]
 
-                # delta_t
-                dt = target_frame["timestamp"] - current_frame["timestamp"]
+                # delta_t from current to first future frame
+                dt = future_frames[0]["timestamp"] - current_frame["timestamp"]
                 if dt <= 0:
                     continue
 
                 self.samples.append({
                     "history_frames": history_frames,
-                    "target_frame": target_frame,
                     "current_frame": current_frame,
+                    "future_frames": future_frames,
                     "delta_t": dt,
                     "instance_token": inst_token,
                     "category": category,
                 })
 
         print(f"[TrackletDataset] {len(self.samples)} samples from "
-              f"{len(tracklets)} tracklets (T={history_len})")
+              f"{len(tracklets)} tracklets (T={history_len}, K={rollout_steps})")
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -268,6 +271,7 @@ class TrackletDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict:
         s = self.samples[idx]
         T = self.history_len
+        K = self.rollout_steps
 
         # ---- Build history [T, 14] (right-aligned, zero-padded) ----
         history = np.zeros((T, 14), dtype=np.float32)
@@ -291,11 +295,20 @@ class TrackletDataset(Dataset):
             cur["yaw"], cur["feature_14"][12],  # theta, omega
         ], dtype=np.float32)
 
-        # ---- Target state at frame T+1 ----
-        tgt = s["target_frame"]
-        gt_next_pos = np.array(tgt["global_xyz"], dtype=np.float32)
-        gt_next_siz = np.array(tgt["lwh"], dtype=np.float32)
-        gt_next_ori = np.array([tgt["yaw"]], dtype=np.float32)
+        # ---- K future GT targets (rollout) ----
+        gt_future_pos = np.zeros((K, 3), dtype=np.float32)
+        gt_future_siz = np.zeros((K, 3), dtype=np.float32)
+        gt_future_ori = np.zeros((K, 1), dtype=np.float32)
+        delta_ts_future = np.zeros(K, dtype=np.float32)
+
+        prev_ts = cur["timestamp"]
+        for k, frm in enumerate(s["future_frames"]):
+            gt_future_pos[k] = frm["global_xyz"]
+            gt_future_siz[k] = frm["lwh"]
+            gt_future_ori[k, 0] = frm["yaw"]
+            dt_k = frm["timestamp"] - prev_ts
+            delta_ts_future[k] = max(dt_k, 1e-6)
+            prev_ts = frm["timestamp"]
 
         return {
             "track_history": torch.from_numpy(history),           # [T, 14]
@@ -303,9 +316,10 @@ class TrackletDataset(Dataset):
             "gt_current_state_pos": torch.from_numpy(gt_current_pos),  # [8]
             "gt_current_state_siz": torch.from_numpy(gt_current_siz),  # [3]
             "gt_current_state_ori": torch.from_numpy(gt_current_ori),  # [2]
-            "gt_next_pos": torch.from_numpy(gt_next_pos),         # [3]
-            "gt_next_size": torch.from_numpy(gt_next_siz),        # [3]
-            "gt_next_ori": torch.from_numpy(gt_next_ori),         # [1]
+            "gt_future_pos": torch.from_numpy(gt_future_pos),        # [K, 3]
+            "gt_future_siz": torch.from_numpy(gt_future_siz),        # [K, 3]
+            "gt_future_ori": torch.from_numpy(gt_future_ori),        # [K, 1]
+            "delta_ts_future": torch.from_numpy(delta_ts_future),    # [K]
             "delta_t": torch.tensor(s["delta_t"], dtype=torch.float32),
             "instance_token": s["instance_token"],
             "category": s["category"],

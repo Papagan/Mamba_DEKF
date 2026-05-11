@@ -438,13 +438,17 @@ class JointLoss(nn.Module):
             R_pos, R_siz, R_ori,
         )
 
-        loss_contrast, detail_contrast = self.contrastive_loss(
-            embeddings, instance_tokens,
-        )
+        # Contrastive loss only on step 0 (embeddings not None).
+        # Rollout steps k>0 share the same Mamba embedding — computing
+        # contrastive again would double-count without adding signal.
+        if embeddings is not None and instance_tokens is not None:
+            loss_contrast, detail_contrast = self.contrastive_loss(
+                embeddings, instance_tokens,
+            )
+        else:
+            loss_contrast = torch.tensor(0.0, device=pos_x_pred.device, requires_grad=True)
+            detail_contrast = {"loss_contrastive": 0.0, "n_valid_anchors": 0}
 
-        # Physics losses get a large global scale to compete with contrastive
-        # gradient magnitude. Without this, the fragile covariance-prediction
-        # gradients are drowned out and CholeskyHeads stop learning.
         loss_total = self.physics_scale * loss_state + self.lambda_contrast * loss_contrast
 
         detail = {

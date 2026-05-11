@@ -37,6 +37,7 @@ TRAINING:
   SAVE_DIR: checkpoints/mamba_dekf/
   AUTO_UNSEAL_EPOCH: 40          # epoch at which to auto-toggle cost to "full"
   INFERENCE_CONFIG: config/nuscenes.yaml   # which inference config to update
+  ROLLOUT_STEPS: 5               # KF auto-regressive rollout depth (1 = single-step)
 
 # ---- Loss ----
 LOSS:

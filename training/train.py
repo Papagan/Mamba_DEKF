@@ -20,8 +20,13 @@ import time
 import yaml
 import logging
 import argparse
+import warnings
 
 import torch
+
+# SequentialLR internally passes epoch to sub-schedulers, triggering a
+# deprecation warning in PyTorch 2.1+. Harmless, suppressed here.
+warnings.filterwarnings("ignore", message=".*epoch parameter.*")
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -55,32 +60,34 @@ def training_step(
     device: torch.device,
 ) -> tuple:
     """
-    Forward pass for one batch:
-        history → TemporalMamba → Q/R/embedding
-        GT state at T → init KF → predict(dt, Q) → x_pred, P_pred at T+1
-        loss = NLL(pos) + NLL(siz) + AngleLoss(ori) + λ * InfoNCE(embedding)
+    Multi-step KF rollout training step.
+
+    Mamba runs ONCE to predict Q/R from the history window.
+    The KF is initialised from GT state at frame T, then auto-regressively
+    predict-updated for K rollout steps. Each predict step is compared to
+    the corresponding GT via NLL. This forces Mamba to learn Q/R that keep
+    the filter stable over multiple steps — a single-step prediction is
+    too easy and leads to degenerate R→0 collapse.
 
     Returns:
         loss   : scalar tensor
         detail : dict of sub-loss values
     """
     B = batch["track_history"].shape[0]
+    K = batch["gt_future_pos"].shape[1]  # rollout steps from dataset
 
     history = batch["track_history"].to(device)            # [B, T, 14]
     gt_pos = batch["gt_current_state_pos"].to(device)      # [B, 8]
     gt_siz = batch["gt_current_state_siz"].to(device)      # [B, 3]
     gt_ori = batch["gt_current_state_ori"].to(device)      # [B, 2]
-    gt_next_pos = batch["gt_next_pos"].to(device)          # [B, 3]
-    gt_next_siz = batch["gt_next_size"].to(device)         # [B, 3]
-    gt_next_ori = batch["gt_next_ori"].to(device)          # [B, 1]
-    delta_t = batch["delta_t"].to(device)                  # [B]
+    gt_future_pos = batch["gt_future_pos"].to(device)      # [B, K, 3]
+    gt_future_siz = batch["gt_future_siz"].to(device)      # [B, K, 3]
+    gt_future_ori = batch["gt_future_ori"].to(device)      # [B, K, 1]
+    delta_ts_future = batch["delta_ts_future"].to(device)  # [B, K]
     instance_tokens = batch["instance_token"]              # list of B strings
 
-    # ---- Step 1: TemporalMamba forward → Q/R/embedding ----
+    # ---- Step 1: TemporalMamba forward (ONCE) → Q/R/embedding ----
     mamba_out = mamba(history)
-    # mamba_out keys: Q_pos[B,8,8], Q_siz[B,3,3], Q_ori[B,2,2],
-    #                R_pos[B,3,3], R_siz[B,3,3], R_ori[B,1,1],
-    #                embedding[B,D]  (all PSD via cholesky_to_psd with clamp)
 
     # ---- Step 2: Init KF from GT state at frame T ----
     pos_x0 = gt_pos.unsqueeze(-1)                                    # [B, 8, 1]
@@ -93,38 +100,74 @@ def training_step(
     kf = DecoupledAdaptiveKF(batch_size=B, device=device)
     kf.init_states(pos_x0, pos_P0, siz_x0, siz_P0, ori_x0, ori_P0)
 
-    # ---- Step 3: KF predict with Mamba-predicted Q ----
-    # Use mean delta_t for the batch (nuScenes is fixed 2Hz = 0.5s)
-    dt = delta_t.mean().item()
-    pos_x_pred, pos_P_pred, siz_x_pred, siz_P_pred, ori_x_pred, ori_P_pred = kf.predict(
-        dt,
-        Q_pos=mamba_out["Q_pos"],
-        Q_siz=mamba_out["Q_siz"],
-        Q_ori=mamba_out["Q_ori"],
+    # ---- Step 3: K-step KF rollout with teacher forcing ----
+    Q_pos = mamba_out["Q_pos"]
+    Q_siz = mamba_out["Q_siz"]
+    Q_ori = mamba_out["Q_ori"]
+    R_pos = mamba_out["R_pos"]
+    R_siz = mamba_out["R_siz"]
+    R_ori = mamba_out["R_ori"]
+
+    total_loss = 0.0
+    detail_accum = {}
+    detail_contrastive = {"loss_contrastive": 0.0, "n_valid_anchors": 0}
+
+    for k in range(K):
+        dt_k = delta_ts_future[:, k].mean().item()
+
+        # KF predict with same Q for all steps
+        pos_x_pred, pos_P_pred, siz_x_pred, siz_P_pred, ori_x_pred, ori_P_pred = \
+            kf.predict(dt_k, Q_pos=Q_pos, Q_siz=Q_siz, Q_ori=Q_ori)
+
+        # NLL vs GT at this rollout step
+        loss_k, detail_k = loss_fn(
+            pos_x_pred, pos_P_pred, siz_x_pred, siz_P_pred, ori_x_pred, ori_P_pred,
+            gt_future_pos[:, k, :], gt_future_siz[:, k, :], gt_future_ori[:, k, :],
+            mamba_out["embedding"] if k == 0 else None,  # contrastive only on step 0
+            instance_tokens if k == 0 else None,
+            R_pos=R_pos, R_siz=R_siz, R_ori=R_ori,
+        )
+
+        total_loss += loss_k
+        for key, val in detail_k.items():
+            if key == "loss_contrastive":
+                detail_contrastive["loss_contrastive"] = max(
+                    detail_contrastive["loss_contrastive"], val)  # k=0 value
+            elif key == "n_valid_anchors":
+                detail_contrastive["n_valid_anchors"] = max(
+                    detail_contrastive["n_valid_anchors"], int(val))
+            elif key == "loss_total":
+                pass  # recomputed below
+            else:
+                detail_accum[key] = detail_accum.get(key, 0.0) + val
+
+        # Teacher forcing: KF update with GT at this step
+        z_pos_k = gt_future_pos[:, k, :].unsqueeze(-1)     # [B, 3, 1]
+        z_siz_k = gt_future_siz[:, k, :].unsqueeze(-1)     # [B, 3, 1]
+        z_ori_k = gt_future_ori[:, k, :].unsqueeze(-1)     # [B, 1, 1]
+        kf.update(z_pos_k, z_siz_k, z_ori_k,
+                  R_pos=R_pos, R_siz=R_siz, R_ori=R_ori)
+
+    # Average state losses across rollout steps; contrastive stays raw
+    detail = {k: v / K for k, v in detail_accum.items()}
+    detail["loss_contrastive"] = detail_contrastive["loss_contrastive"]
+    detail["n_valid_anchors"] = detail_contrastive["n_valid_anchors"]
+    detail["loss_total"] = (
+        loss_fn.physics_scale * detail["loss_state"] +
+        loss_fn.lambda_contrast * detail["loss_contrastive"]
     )
 
-    # ---- Step 4: Compute joint loss (NLL for all three filters) ----
-    loss, detail = loss_fn(
-        pos_x_pred, pos_P_pred, siz_x_pred, siz_P_pred, ori_x_pred, ori_P_pred,
-        gt_next_pos, gt_next_siz, gt_next_ori,
-        mamba_out["embedding"],
-        instance_tokens,
-        R_pos=mamba_out["R_pos"],
-        R_siz=mamba_out["R_siz"],
-        R_ori=mamba_out["R_ori"],
-    )
-
-    # ---- Step 5: Q/R diagonal variance monitor (detect constant-output degeneration) ----
+    # ---- Step 4: Q/R diagonal variance monitor ----
     with torch.no_grad():
         for name, mat in [
             ("Q_pos", mamba_out["Q_pos"]), ("Q_siz", mamba_out["Q_siz"]),
             ("Q_ori", mamba_out["Q_ori"]), ("R_pos", mamba_out["R_pos"]),
             ("R_siz", mamba_out["R_siz"]), ("R_ori", mamba_out["R_ori"]),
         ]:
-            diag = mat.diagonal(dim1=-2, dim2=-1)               # [B, D]
-            detail[f"std_{name}"] = diag.std(dim=0).mean().item()  # mean over D
+            diag = mat.diagonal(dim1=-2, dim2=-1)
+            detail[f"std_{name}"] = diag.std(dim=0).mean().item()
 
-    return loss, detail
+    return total_loss / K, detail
 
 
 # ======================================================================
@@ -218,9 +261,12 @@ def main():
     # ---- Datasets ----
     model_cfg = cfg["MODEL"]
     history_len = model_cfg.get("HISTORY_LEN", 10)
+    rollout_steps = train_cfg.get("ROLLOUT_STEPS", 1)
 
-    train_dataset = TrackletDataset(train_pkl, history_len=history_len)
-    val_dataset = TrackletDataset(val_pkl, history_len=history_len)
+    train_dataset = TrackletDataset(train_pkl, history_len=history_len,
+                                    rollout_steps=rollout_steps)
+    val_dataset = TrackletDataset(val_pkl, history_len=history_len,
+                                  rollout_steps=rollout_steps)
 
     train_cfg = cfg["TRAINING"]
     train_loader = DataLoader(
@@ -241,8 +287,8 @@ def main():
         pin_memory=True,
     )
 
-    logger.info(f"Train: {len(train_dataset)} samples, {len(train_loader)} batches")
-    logger.info(f"Val:   {len(val_dataset)} samples, {len(val_loader)} batches")
+    logger.info(f"Train: {len(train_dataset)} samples, {len(train_loader)} batches (K={rollout_steps})")
+    logger.info(f"Val:   {len(val_dataset)} samples, {len(val_loader)} batches (K={rollout_steps})")
 
     # ---- Model: only TemporalMamba is trained ----
     mamba = TemporalMamba(
