@@ -3,7 +3,7 @@
 # Base3DTracker: Main tracking loop with MambaDecoupledEKF integration
 #
 # Data flow per frame:
-#   1. Extract track_history [B, T, 13] from active trajectories
+#   1. Extract track_history [B, T, 14] from active trajectories
 #   2. Compute real delta_t from timestamps
 #   3. MambaDecoupledEKF.predict_with_mamba → Q/R/embedding + predicted state
 #   4. Write predicted state back into Trajectory bboxes
@@ -110,7 +110,7 @@ class Base3DTracker:
         self.kf_states: Dict[int, Dict[str, torch.Tensor]] = {}
 
     # ==================================================================
-    # History extraction: Trajectory bboxes → [B, T, 13] tensor
+    # History extraction: Trajectory bboxes → [B, T, 14] tensor
     # ==================================================================
 
     def _extract_track_history(
@@ -120,23 +120,25 @@ class Base3DTracker:
         Extract joint historical state from each trajectory's bbox history,
         padded/truncated to self.history_len frames.
 
-        # Per-frame feature (dim=13):
-        #   [Δx, Δy, z, vx, vy, vz, ax, ay,  l, w, h,  theta, omega]
-        #    ├── position state (8) ─────────┤  ├ size(3)┤  ├ orient(2) ┤
+        # Per-frame feature (dim=14):
+        #   [Δx, Δy, z, vx, vy, vz, ax, ay,  l, w, h,  theta, omega,  det_score]
+        #    ├── position state (8) ─────────┤  ├ size(3)┤  ├ orient(2) ┤  ├ quality ┤
         #
         # Δx, Δy are relative to the latest frame's position to keep
         # feature magnitudes small and avoid gradient saturation in Mamba.
         # For missing velocity/acceleration, use zeros or finite-difference.
+        # det_score = 0.0 for coasted (is_fake) frames to signal low-quality
+        # observations to the Mamba soft-coupler.
 
         Args:
             trajs : list of N active Trajectory objects
 
         Returns:
-            history : [N, T, 13] tensor on self.device
+            history : [N, T, 14] tensor on self.device
         """
         B = len(trajs)
         T = self.history_len
-        history = torch.zeros(B, T, 13, device=self.device)
+        history = torch.zeros(B, T, 14, device=self.device)
 
         for i, traj in enumerate(trajs):
             bboxes = traj.bboxes
@@ -171,12 +173,14 @@ class Base3DTracker:
 
                 # vz = 0 (flat-world assumption consistent with PositionFilter)
                 # x, y are relative to the latest frame in this tracklet
+                # det_score: 0.0 for coasted/fake bboxes → Mamba sees low quality
+                det_score = 0.0 if getattr(bbox, "is_fake", False) else bbox.det_score
                 history[i, offset, :] = torch.tensor([
                     xyz[0] - ref_xyz[0], xyz[1] - ref_xyz[1], xyz[2],
                     vel[0], vel[1], 0.0,
                     acc[0], acc[1],
                     lwh[0], lwh[1], lwh[2],
-                    yaw, omega,
+                    yaw, omega, det_score,
                 ], device=self.device)
 
         return history
@@ -353,7 +357,7 @@ class Base3DTracker:
         track_ids = [t.track_id for t in trajs]
         B = len(trajs)
 
-        # ---- 1. Extract history [B, T, 13] ----
+        # ---- 1. Extract history [B, T, 14] ----
         history = self._extract_track_history(trajs)
 
         # ---- 2. Load per-track KF states into batch ----
@@ -662,16 +666,21 @@ class Base3DTracker:
                 bbox = self.all_trajs[track_id].bboxes[-1]
                 if bbox.det_score == self.all_trajs[track_id]._is_filter_predict_box:
                     continue
-                # Use the best historical detection score for evaluation,
-                # not the latest (which may be a coasted fake_bbox with score=0).
-                # unmatch_update now inherits the previous score, but this
-                # provides a belt-and-suspenders guarantee.
+                # Quality-gated scoring: mirrors filtering() in trajectory.py.
+                # Only high-confidence real detections (score >= 0.4) determine
+                # the output score. Stage 2 ByteTrack rescue dets (0.1-0.4) are
+                # excluded — they exist to maintain track continuity, not to
+                # represent object existence probability.
+                # This runs in both ONLINE and GLOBAL tracking modes.
                 traj = self.all_trajs[track_id]
                 real_scores = [
                     b.det_score for b in traj.bboxes
                     if not getattr(b, "is_fake", False)
                 ]
-                if real_scores:
+                quality_scores = [s for s in real_scores if s >= 0.4]
+                if quality_scores:
+                    bbox.det_score = sum(quality_scores) / len(quality_scores)
+                elif real_scores:
                     bbox.det_score = max(real_scores)
                 output_trajs[track_id] = bbox
                 self.all_trajs[track_id].is_output = True

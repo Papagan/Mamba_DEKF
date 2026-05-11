@@ -5,7 +5,7 @@
 # training samples for TemporalMamba.
 #
 # Each sample:
-#   Input  : track_history [T, 13]  — past T frames of a GT tracklet
+#   Input  : track_history [T, 14]  — past T frames of a GT tracklet
 #   Target : gt_next_pos [3], gt_next_size [3], gt_next_ori [1]
 #   Meta   : delta_t, instance_token (for contrastive pairing)
 # ------------------------------------------------------------------------
@@ -43,8 +43,8 @@ def extract_gt_tracklets_nuscenes(
     Extract GT tracklets from nuScenes using nuscenes-devkit.
 
     Each tracklet is a sequence of frames for one instance_token,
-    with 13-dim features matching _extract_track_history() format:
-        [x, y, z, vx, vy, vz, ax, ay, l, w, h, theta, omega]
+    with 14-dim features matching _extract_track_history() format:
+        [x, y, z, vx, vy, vz, ax, ay, l, w, h, theta, omega, det_score]
 
     Args:
         nusc_version  : e.g. "v1.0-trainval" or "v1.0-mini"
@@ -166,16 +166,17 @@ def extract_gt_tracklets_nuscenes(
                     dyaw = _wrap_to_pi(yaw - prev_yaw)
                     omega = dyaw / dt
 
-            feature_13 = [
+            feature_14 = [
                 xyz[0], xyz[1], xyz[2],
                 vx, vy, 0.0,
                 ax, ay,
                 lwh[0], lwh[1], lwh[2],
                 yaw, omega,
+                1.0,  # det_score: GT annotations are perfect-quality observations
             ]
 
             frames.append({
-                "feature_13": feature_13,
+                "feature_14": feature_14,
                 "timestamp": ts,
                 "global_xyz": xyz,
                 "lwh": lwh,
@@ -207,12 +208,12 @@ class TrackletDataset(Dataset):
     PyTorch Dataset for training TemporalMamba.
 
     Produces sliding-window samples from GT tracklets:
-      - Input:  track_history [T, 13]
+      - Input:  track_history [T, 14]
       - Target: GT state at frame T+1
       - Meta:   delta_t, instance_token
 
-    The 13-dim feature format matches base_tracker._extract_track_history():
-        [x, y, z, vx, vy, vz, ax, ay, l, w, h, theta, omega]
+    The 14-dim feature format matches base_tracker._extract_track_history():
+        [x, y, z, vx, vy, vz, ax, ay, l, w, h, theta, omega, det_score]
     """
 
     def __init__(
@@ -268,13 +269,13 @@ class TrackletDataset(Dataset):
         s = self.samples[idx]
         T = self.history_len
 
-        # ---- Build history [T, 13] (right-aligned, zero-padded) ----
-        history = np.zeros((T, 13), dtype=np.float32)
+        # ---- Build history [T, 14] (right-aligned, zero-padded) ----
+        history = np.zeros((T, 14), dtype=np.float32)
         mask = np.zeros(T, dtype=np.bool_)
         n_frames = len(s["history_frames"])
         for t_idx, frame in enumerate(s["history_frames"]):
             offset = T - n_frames + t_idx
-            history[offset] = frame["feature_13"]
+            history[offset] = frame["feature_14"]
             mask[offset] = True
 
         # ---- Current state (for KF init at frame T) ----
@@ -283,11 +284,11 @@ class TrackletDataset(Dataset):
         gt_current_pos = np.array([
             cur["global_xyz"][0], cur["global_xyz"][1], cur["global_xyz"][2],
             cur["velocity"][0], cur["velocity"][1], 0.0,
-            cur["feature_13"][6], cur["feature_13"][7],  # ax, ay
+            cur["feature_14"][6], cur["feature_14"][7],  # ax, ay
         ], dtype=np.float32)
         gt_current_siz = np.array(cur["lwh"], dtype=np.float32)
         gt_current_ori = np.array([
-            cur["yaw"], cur["feature_13"][12],  # theta, omega
+            cur["yaw"], cur["feature_14"][12],  # theta, omega
         ], dtype=np.float32)
 
         # ---- Target state at frame T+1 ----
@@ -297,7 +298,7 @@ class TrackletDataset(Dataset):
         gt_next_ori = np.array([tgt["yaw"]], dtype=np.float32)
 
         return {
-            "track_history": torch.from_numpy(history),           # [T, 13]
+            "track_history": torch.from_numpy(history),           # [T, 14]
             "history_mask": torch.from_numpy(mask),               # [T]
             "gt_current_state_pos": torch.from_numpy(gt_current_pos),  # [8]
             "gt_current_state_siz": torch.from_numpy(gt_current_siz),  # [3]

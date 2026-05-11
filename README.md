@@ -18,7 +18,7 @@
 | Module | File | Responsibility |
 |---|---|---|
 | A — Decoupled KFs | `kalmanfilter/mamba_adaptive_kf.py` | `PositionFilter` (CA, dim 8), `SizeFilter` (Const, dim 3), `OrientationFilter` (CV, dim 2). All batched via `torch.bmm`. |
-| B — Mamba Soft-Coupler | `kalmanfilter/mamba_adaptive_kf.py` | `TemporalMamba` over `[B, T, 13]` history → six `CholeskyHead`s emit PSD-locked Q/R + a `[B, embed_dim]` embedding. |
+| B — Mamba Soft-Coupler | `kalmanfilter/mamba_adaptive_kf.py` | `TemporalMamba` over `[B, T, 14]` history → six `CholeskyHead`s emit PSD-locked Q/R + a `[B, embed_dim]` embedding. Features: 13-dim kinematics + `det_score` for input conditioning. |
 | C — Uncertainty-aware association | `tracker/cost_function.py`, `tracker/matching.py` | Combines Ro-GDIoU (geometry), cosine sim of Mamba embeddings (semantic), and `trace(P_pos[:3,:3]) + trace(P_ori)` (uncertainty). |
 | D — Tracker lifecycle | `tracker/base_tracker.py`, `tracker/trajectory.py` | Birth / Active / Coasted / Death management. `Trajectory` is a stateless data container; all KF state lives in `Base3DTracker.kf_states`. |
 
@@ -26,7 +26,7 @@
 Detection (per frame)
         |
         v
-+---------------------+      track_history [B, T, 13]
++---------------------+      track_history [B, T, 14]
 |  Module D           | ─────────────────────────────→ +-------------------+
 |  Tracker Manager    |                                |  Module B         |
 +---------------------+                                |  TemporalMamba    |
@@ -40,7 +40,7 @@ Detection (per frame)
 |    PositionFilter    [x,y,z,vx,vy,vz,ax,ay]   (CA, 8)        |
 |    SizeFilter        [l,w,h]                  (Const, 3)     |
 |    OrientationFilter [theta,omega]            (CV, 2)        |
-|    PSD safety lock: Softplus + 1e-5 on Cholesky diagonals    |
+|    PSD safety lock: Softplus + min_diag + 1e-5 on Cholesky diagonals |
 +-------------------------------------------------------------+
         |
         | predicted state + covariance P
@@ -241,7 +241,7 @@ Training writes periodic checkpoints (`checkpoint_epoch{N}.pt`) and the best val
 |---|---|---|
 | Position | Kalman NLL: `0.5·(logdet(S_pos) + yᵀS⁻¹y)` | Jointly optimises `x_pred` and `P_pred` through the innovation covariance S |
 | Size | Kalman NLL (same form) | Same for the size filter |
-| Orientation | Angle-wrapped NLL: `0.5·(logdet(S_ori) + ỹᵀS⁻¹ỹ) + 0.01·trace(S_ori)` where `ỹ = wrap_to_pi(z - Hx)` | prevents ±π discontinuity; trace penalty stops Mamba from predicting infinite R |
+| Orientation | Angle-wrapped NLL + logdet guard: `0.5·(logdet(S_ori) + ỹᵀS⁻¹ỹ) + 0.1·ReLU(logdet(S_ori) − 2.0)` where `ỹ = wrap_to_pi(z - Hx)` | prevents ±π discontinuity; logdet guard penalises only pathologically LARGE S (never pushes R→0) |
 | Embedding | InfoNCE (supervised contrastive) | Pulls same-instance embeddings together |
 
 **Loss formula** (`losses.py:JointLoss`):
@@ -262,7 +262,8 @@ Default weights (in `config/train_nuscenes.yaml`):
 
 ### 5.3 Training stability safeguards
 
-- **Pure Softplus (no clamp)**: Cholesky diagonals use `F.softplus(x) + 1e-5` — smooth, non-zero gradient everywhere. No hard `clamp` that would kill gradients at saturation boundaries.
+- **Minimum diagonal constraint**: Cholesky diagonals use `F.softplus(x) + min_diag + 1e-5`. R heads get `min_diag=0.1` (min eigenvalue ≈ 0.01), Q heads get `min_diag=0.03` (min eigenvalue ≈ 0.001). This prevents the model from collapsing to near-zero eigenvalues that produce artificially negative NLL.
+- **Logdet guard (anti-cheat)**: Orientation loss uses `0.1·ReLU(logdet(S_ori) − 2.0)` instead of a trace penalty. Unlike `λ·trace(S)` whose gradient `λ·I` pushes all R entries toward zero, the logdet guard only activates when the innovation covariance is pathologically large — it never encourages R→0.
 - **Zero-init CholeskyHeads**: The last linear layer in every `CholeskyHead` is initialised with `Uniform(-1e-4, 1e-4)` and bias `0`. Output ≈ 0 → `Softplus(0) ≈ 0.69` — a healthy initial variance before epoch 1.
 - **NaN guard**: Batches with NaN/Inf loss or gradients are skipped (not `nan_to_num`-ed).
 - **Gradient clipping**: `clip_grad_norm_(max_norm=1.0)` on Mamba parameters.

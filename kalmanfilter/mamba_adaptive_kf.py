@@ -34,19 +34,28 @@ except ImportError:
 # Utility: PSD Safety Lock via Cholesky
 # ============================================================
 
-def cholesky_to_psd(L_raw: Tensor, eps: float = 1e-5) -> Tensor:
+def cholesky_to_psd(L_raw: Tensor, eps: float = 1e-5, min_diag: float = 0.0) -> Tensor:
     """
     Reconstruct a strictly positive-definite matrix from a raw lower-triangular
-    Cholesky factor by applying Softplus + eps on the diagonal.
+    Cholesky factor by applying Softplus + min_diag + eps on the diagonal.
 
     # PSD reconstruction formula:
-    #   L_diag = Softplus(L_raw_diag) + eps   (guarantees L_diag > eps > 0)
+    #   L_diag = Softplus(L_raw_diag) + min_diag + eps
     #   L      = tril(L_raw) with corrected diagonal
     #   M      = L @ L^T                       (strictly PD by construction)
 
+    min_diag sets a floor on the Cholesky diagonal, preventing the model
+    from collapsing to near-zero eigenvalues (a degenerate solution where
+    logdet(S) → -∞ drives the NLL artificially negative).
+
+    Typical values:
+      R heads (measurement noise): min_diag = 0.1  → min eigenvalue ≈ 0.01
+      Q heads (process noise):     min_diag = 0.03 → min eigenvalue ≈ 0.001
+
     Args:
-        L_raw: Raw lower-triangular factor. Shape: [B, D, D]
-        eps:   Minimum diagonal value.
+        L_raw:    Raw lower-triangular factor. Shape: [B, D, D]
+        eps:      Small numerical epsilon (kept for numerical safety).
+        min_diag: Minimum value added to Softplus on diagonal.
 
     Returns:
         PSD matrix. Shape: [B, D, D]
@@ -54,13 +63,9 @@ def cholesky_to_psd(L_raw: Tensor, eps: float = 1e-5) -> Tensor:
     # [B, D, D] — extract lower triangular part
     L = torch.tril(L_raw)
     diag_idx = torch.arange(L.shape[-1], device=L.device)
-    # Softplus + eps on diagonal — prevents zero/negative eigenvalues
     L = L.clone()
-    # Pure Softplus on diagonal — strictly positive, smooth, non-zero gradient
-    # everywhere. No upper bound: the trace penalty in kalman_nll_loss prevents
-    # runaway eigenvalues without killing gradients at any saturation point.
-    L[:, diag_idx, diag_idx] = F.softplus(L_raw[:, diag_idx, diag_idx]) + eps
-    # Q = L @ L^T  →  [B, D, D]
+    # Softplus + min_diag + eps — smooth, strictly positive, gradient-safe
+    L[:, diag_idx, diag_idx] = F.softplus(L_raw[:, diag_idx, diag_idx]) + min_diag + eps
     return torch.bmm(L, L.transpose(-1, -2))
 
 
@@ -696,18 +701,20 @@ class CholeskyHead(nn.Module):
     """
     Shallow MLP head that predicts the lower-triangular Cholesky factor L
     for one covariance matrix, then reconstructs PSD via L @ L^T with
-    the Softplus + eps safety lock on the diagonal.
+    the Softplus + min_diag + eps safety lock on the diagonal.
 
     Input  : Mamba temporal embedding   [B, d_model]
     Output : PSD covariance matrix      [B, D, D]
     """
 
-    def __init__(self, d_model: int, mat_dim: int, hidden_dim: int = 64) -> None:
+    def __init__(self, d_model: int, mat_dim: int, hidden_dim: int = 64,
+                 min_diag: float = 0.0) -> None:
         """
         Args:
             d_model   : Mamba output feature dimension.
             mat_dim   : Dimension of the target covariance matrix (D).
             hidden_dim: Hidden layer width.
+            min_diag  : Floor on Cholesky diagonal. 0.1 for R, 0.03 for Q.
 
         The MLP predicts D*(D+1)/2 free parameters — the lower-triangular entries.
         tril indices are created lazily in forward() so they always live on the
@@ -716,6 +723,7 @@ class CholeskyHead(nn.Module):
         """
         super().__init__()
         self.mat_dim = mat_dim
+        self.min_diag = min_diag
         # number of free parameters in a lower-triangular DxD matrix
         n_tril = mat_dim * (mat_dim + 1) // 2
 
@@ -743,12 +751,12 @@ class CholeskyHead(nn.Module):
             embedding : [B, d_model] — Mamba temporal embedding
 
         Returns:
-            PSD matrix : [B, D, D] — strictly positive-definite, via Cholesky + Softplus + eps
+            PSD matrix : [B, D, D] — strictly positive-definite
 
         Internal steps:
             1. MLP predicts D*(D+1)/2 raw values                  [B, n_tril]
             2. Fill lower-triangular matrix L_raw                  [B, D, D]
-            3. cholesky_to_psd(L_raw) applies Softplus+eps on diag
+            3. cholesky_to_psd(L_raw, min_diag=self.min_diag) applies floor
             4. Return L @ L^T                                     [B, D, D]
         """
         B = embedding.shape[0]
@@ -766,8 +774,7 @@ class CholeskyHead(nn.Module):
                             device=dev, dtype=embedding.dtype)
         L_raw[:, self._tril_rows, self._tril_cols] = raw
 
-        # PSD safety lock: Softplus + 1e-5 on diagonal, then L @ L^T
-        return cholesky_to_psd(L_raw, eps=1e-5)
+        return cholesky_to_psd(L_raw, eps=1e-5, min_diag=self.min_diag)
 
 
 class TemporalMamba(nn.Module):
@@ -784,13 +791,13 @@ class TemporalMamba(nn.Module):
 
     Complexity: O(1) per tracklet (no cross-attention between tracklets).
 
-    Input feature per frame (dim = 8 + 3 + 2 = 13):
-        [x, y, z, vx, vy, vz, ax, ay,  l, w, h,  theta, omega]
-         ├── position state (8) ──┤  ├ size(3) ┤  ├ orient(2) ┤
+    Input feature per frame (dim = 8 + 3 + 2 + 1 = 14):
+        [x, y, z, vx, vy, vz, ax, ay,  l, w, h,  theta, omega,  det_score]
+         ├── position state (8) ──┤  ├ size(3) ┤  ├ orient(2) ┤  ├ quality ┤
     """
 
-    # Joint input = pos(8) + size(3) + orientation(2) = 13
-    INPUT_DIM: int = 13
+    # Joint input = pos(8) + size(3) + orientation(2) + det_score(1) = 14
+    INPUT_DIM: int = 14
 
     def __init__(
         self,
@@ -845,15 +852,15 @@ class TemporalMamba(nn.Module):
         ])
 
         # ---- Multi-Head Noise Prediction (6 heads) ----
-        # Process noise Q: one per filter
-        self.head_Q_pos = CholeskyHead(d_model, mat_dim=8)   # Q for Position  [B,8,8]
-        self.head_Q_siz = CholeskyHead(d_model, mat_dim=3)   # Q for Size      [B,3,3]
-        self.head_Q_ori = CholeskyHead(d_model, mat_dim=2)   # Q for Orient.   [B,2,2]
+        # Process noise Q: lower floor — legitimate for well-behaved motion
+        self.head_Q_pos = CholeskyHead(d_model, mat_dim=8, min_diag=0.03)   # Q for Position  [B,8,8]
+        self.head_Q_siz = CholeskyHead(d_model, mat_dim=3, min_diag=0.03)   # Q for Size      [B,3,3]
+        self.head_Q_ori = CholeskyHead(d_model, mat_dim=2, min_diag=0.03)   # Q for Orient.   [B,2,2]
 
-        # Measurement noise R: one per filter
-        self.head_R_pos = CholeskyHead(d_model, mat_dim=3)   # R for Position  [B,3,3]
-        self.head_R_siz = CholeskyHead(d_model, mat_dim=3)   # R for Size      [B,3,3]
-        self.head_R_ori = CholeskyHead(d_model, mat_dim=1)   # R for Orient.   [B,1,1]
+        # Measurement noise R: higher floor — prevents logdet(S) → -∞ collapse
+        self.head_R_pos = CholeskyHead(d_model, mat_dim=3, min_diag=0.1)   # R for Position  [B,3,3]
+        self.head_R_siz = CholeskyHead(d_model, mat_dim=3, min_diag=0.1)   # R for Size      [B,3,3]
+        self.head_R_ori = CholeskyHead(d_model, mat_dim=1, min_diag=0.1)   # R for Orient.   [B,1,1]
 
         # ---- Temporal Embedding head (for semantic association in Module C) ----
         self.embed_head = nn.Sequential(
@@ -869,7 +876,7 @@ class TemporalMamba(nn.Module):
         Process joint historical states and produce noise matrices + embedding.
 
         Args:
-            track_history : [B, T, 13] — past T frames of joint state per tracklet
+            track_history : [B, T, 14] — past T frames of joint state per tracklet
                             B = number of active tracklets
                             T = temporal window length
                             13 = [x,y,z,vx,vy,vz,ax,ay, l,w,h, theta,omega]
@@ -884,7 +891,7 @@ class TemporalMamba(nn.Module):
                 "R_ori"     : [B, 1, 1]  — orientation measurement noise (PSD)
                 "embedding" : [B, embed_dim] — temporal embedding for association
         """
-        # input projection: [B, T, 13] → [B, T, d_model]
+        # input projection: [B, T, 14] → [B, T, d_model]
         h = self.input_proj(track_history)
 
         # LayerNorm before Mamba blocks — stabilises training by normalising
@@ -974,7 +981,7 @@ class MambaDecoupledEKF(nn.Module):
         Run Mamba to get adaptive Q/R, then run KF predict.
 
         Args:
-            track_history : [B, T, 13] — joint historical states
+            track_history : [B, T, 14] — joint historical states
             delta_t       : elapsed seconds
 
         Returns:

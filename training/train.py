@@ -66,7 +66,7 @@ def training_step(
     """
     B = batch["track_history"].shape[0]
 
-    history = batch["track_history"].to(device)            # [B, T, 13]
+    history = batch["track_history"].to(device)            # [B, T, 14]
     gt_pos = batch["gt_current_state_pos"].to(device)      # [B, 8]
     gt_siz = batch["gt_current_state_siz"].to(device)      # [B, 3]
     gt_ori = batch["gt_current_state_ori"].to(device)      # [B, 2]

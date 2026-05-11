@@ -84,8 +84,16 @@ def kalman_nll_loss(
     sol = torch.linalg.solve(S_reg, y)                        # [B, m, 1]
     quad_form = torch.bmm(y.transpose(-1, -2), sol).squeeze(-1).squeeze(-1)  # [B]
 
-    # ---- per-sample NLL, then mean over batch ----
-    nll_per_sample = 0.5 * (logdet + quad_form)
+    # ---- logdet safety guard (belt-and-suspenders) ----
+    # min_diag in CholeskyHead already prevents R → 0. This penalty only
+    # fires when logdet(S) per observation-dimension falls below -5, which
+    # corresponds to mean eigenvalue < e^{-5} ≈ 0.007. In healthy operation
+    # with min_diag = 0.1, eigenvalues are ≥ 0.01, so this is a no-op.
+    logdet_per_dim = logdet / m
+    logdet_guard = 0.01 * F.relu(-logdet_per_dim - 5.0)  # [B]
+
+    # ---- per-sample NLL + guard, then mean over batch ----
+    nll_per_sample = 0.5 * (logdet + quad_form) + logdet_guard
     return nll_per_sample.mean()
 
 
@@ -104,7 +112,7 @@ def kalman_nll_loss_yaw(
     P_pred: torch.Tensor,      # [B, 2, 2]   — predicted state covariance
     H: torch.Tensor,           # [1, 2]       — observation matrix (selects theta)
     R_pred: torch.Tensor,      # [B, 1, 1]   — measurement noise covariance (PSD)
-    trace_penalty: float = 0.01,
+    logdet_guard_weight: float = 0.1,
     eps: float = 1e-5,
 ) -> torch.Tensor:
     """
@@ -116,19 +124,24 @@ def kalman_nll_loss_yaw(
        are geometrically correct (e.g., π - (-π) = 0, not 2π).
        # y = wrap_to_pi(z_gt - H @ x_pred)
 
-    2. A trace penalty on S is added to prevent the Mamba network from
-       "cheating" by predicting infinite R to drive the Mahalanobis
-       term to zero.
-       # L = 0.5 * (logdet(S) + y^T @ inv(S) @ y) + λ * trace(S)
+    2. A logdet guard prevents the "cheating" solution where Mamba
+       predicts infinite R to drive the Mahalanobis term to zero.
+       # penalty = λ * max(0, -logdet(S) - 2.0)
+
+       Unlike the old trace penalty (λ * trace(S)), this does NOT
+       push R toward zero — it only activates when the innovation
+       covariance S is pathologically large, which is the anti-cheat
+       case. The min_diag constraint in CholeskyHead already prevents
+       R → 0, so a separate lower-bound penalty is unnecessary.
 
     Args:
-        z_gt:          Ground-truth yaw, shape [B, 1].
-        x_pred:        Predicted state [theta, omega], shape [B, 2, 1].
-        P_pred:        Predicted state covariance, shape [B, 2, 2].
-        H:             Observation matrix [[1, 0]], shape [1, 2].
-        R_pred:        Measurement noise from Mamba, shape [B, 1, 1].
-        trace_penalty: Weight λ for the covariance trace L2 penalty.
-        eps:           Small diagonal regularisation.
+        z_gt:               Ground-truth yaw, shape [B, 1].
+        x_pred:             Predicted state [theta, omega], shape [B, 2, 1].
+        P_pred:             Predicted state covariance, shape [B, 2, 2].
+        H:                  Observation matrix [[1, 0]], shape [1, 2].
+        R_pred:             Measurement noise from Mamba, shape [B, 1, 1].
+        logdet_guard_weight: Weight λ for the anti-cheat logdet guard.
+        eps:                Small diagonal regularisation.
 
     Returns:
         Scalar loss (mean over batch).
@@ -160,11 +173,13 @@ def kalman_nll_loss_yaw(
     sol = torch.linalg.solve(S_reg, y)                        # [B, 1, 1]
     quad_form = torch.bmm(y.transpose(-1, -2), sol).squeeze(-1).squeeze(-1)  # [B]
 
-    # ---- trace penalty: prevents Mamba from predicting infinite R ----
-    trace_S = S_reg.diagonal(dim1=-2, dim2=-1).sum(-1)        # [B]
+    # ---- logdet guard: prevents Mamba from predicting infinite R ----
+    # Only penalises pathologically LARGE S (logdet → +∞), never pushes R toward zero.
+    # Gradient is zero when logdet(S) < 2.0 (the vast majority of healthy cases).
+    logdet_penalty = logdet_guard_weight * F.relu(logdet - 2.0)   # [B]
 
-    # per-sample NLL + trace penalty, mean over batch
-    nll_per_sample = 0.5 * (logdet + quad_form) + trace_penalty * trace_S
+    # per-sample NLL + anti-cheat guard, mean over batch
+    nll_per_sample = 0.5 * (logdet + quad_form) + logdet_penalty
     return nll_per_sample.mean()
 
 
@@ -201,11 +216,14 @@ class StatePredictionLoss(nn.Module):
     """
     Prediction loss for the three decoupled Kalman filters.
 
-    Position & Size  →  kalman_nll_loss (Gaussian NLL + mahalanobis)
-    Orientation      →  kalman_nll_loss_yaw (angle-wrapped NLL + trace penalty)
+    Position & Size  →  kalman_nll_loss (Gaussian NLL)
+    Orientation      →  kalman_nll_loss_yaw (angle-wrapped NLL + logdet guard)
 
     All three losses receive gradient through predicted covariance P_pred
     and measurement noise R_pred, giving Mamba's Q/R heads direct signal.
+
+    Degeneracy prevention is handled at the architecture level (min_diag in
+    CholeskyHead) with mild logdet guards in the loss as belt-and-suspenders.
     """
 
     def __init__(
@@ -269,7 +287,7 @@ class StatePredictionLoss(nn.Module):
             R_pred=R_siz,
         )
 
-        # Orientation: angle-wrapped Kalman NLL + trace penalty (anti-cheat)
+        # Orientation: angle-wrapped Kalman NLL + logdet guard (anti-cheat)
         loss_ori = kalman_nll_loss_yaw(
             z_gt=gt_next_ori,
             x_pred=ori_x_pred,
