@@ -164,7 +164,16 @@ class Trajectory:
         self.unmatch_length += 1
 
         fake_bbox = copy.deepcopy(self.bboxes[-1])
-        fake_bbox.det_score = self.bboxes[-1].det_score  # inherit last real score
+        # Exponential score decay for coasted predictions.
+        # Pure KF predictions should not inherit the last observation's full score —
+        # the longer a track goes without a real detection, the lower its confidence.
+        last_real_score = 0.0
+        for b in reversed(self.bboxes):
+            if not getattr(b, "is_fake", False):
+                last_real_score = b.det_score
+                break
+        decay = 0.8 ** self.unmatch_length
+        fake_bbox.det_score = last_real_score * decay
         fake_bbox.is_fake = True
         fake_bbox.frame_id = frame_id
 
@@ -206,11 +215,18 @@ class Trajectory:
 
     def filtering(self) -> None:
         """
-        Offline interpolation of missing detections within the trajectory.
-        Linearly fills gaps in global_xyz_lwh_yaw_fusion for fake bboxes.
+        Offline interpolation of missing detections + quality-aware score assignment.
+
+        Interpolation: linearly fills gaps in global_xyz_lwh_yaw_fusion for fake bboxes.
+
+        Score assignment: only high-confidence real detections (original score >= 0.4)
+        determine the final trajectory score. Stage 2 ByteTrack rescue dets (0.1-0.4)
+        and fake coasted bboxes are excluded — they exist to maintain track continuity
+        through occlusion, not to represent object existence probability.
         """
-        detected_num = 0.00001
-        score_sum = 0
+        # snapshot original scores before logit transform
+        original_scores = [bbox.det_score for bbox in self.bboxes]
+
         if_has_unmatched = 0
         unmatch_bbox_sum = 0
         start_xyz_lwh_yaw = None
@@ -220,9 +236,6 @@ class Trajectory:
         for bbox in self.bboxes:
             frame_id = bbox.frame_id
             bbox.det_score = self.logit(bbox.det_score)
-            if bbox.det_score > -10000:
-                detected_num += 1
-                score_sum += bbox.det_score
             if (self.first_updated_frame <= frame_id <= self.last_updated_frame
                     and bbox.is_fake and self.is_output):
                 bbox.is_interpolation = True
@@ -248,9 +261,20 @@ class Trajectory:
                 if_has_unmatched = 0
             last_xyz_lwh_yaw_fusion = bbox.global_xyz_lwh_yaw_fusion
 
-        score = score_sum / detected_num
+        # ---- quality-aware score: only high-confidence real dets ----
+        quality_logit_scores = []
+        for bbox, orig_score in zip(self.bboxes, original_scores):
+            if not bbox.is_fake and orig_score >= 0.4:
+                quality_logit_scores.append(bbox.det_score)
+
+        if quality_logit_scores:
+            final_score = sum(quality_logit_scores) / len(quality_logit_scores)
+        else:
+            best_orig = max(original_scores) if original_scores else 0.5
+            final_score = self.logit(best_orig)
+
         for bbox in self.bboxes:
-            bbox.det_score = score
+            bbox.det_score = final_score
 
     # ------------------------------------------------------------------
     # Derived velocity (pure geometry, no KF)
