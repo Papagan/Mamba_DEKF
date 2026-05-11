@@ -4,7 +4,7 @@
 # Module B: Mamba Soft-Coupler & Multi-Head Noise Prediction
 #
 # Three independent filters prevent "dimension confusion" and error propagation:
-#   1. PositionFilter   : CA model, state [x, y, z, vx, vy, vz, ax, ay]  dim=8
+#   1. PositionFilter   : CV model, state [x, y, z, vx, vy, vz]  dim=6
 #   2. SizeFilter       : Constant model, state [l, w, h]                 dim=3
 #   3. OrientationFilter: CV model, state [theta, omega]                   dim=2
 #
@@ -85,22 +85,22 @@ def wrap_to_pi(angles: Tensor) -> Tensor:
 
 
 # ============================================================
-# Filter 1: Position Filter  (Constant Acceleration model)
-# State: [x, y, z, vx, vy, vz, ax, ay]  dim=8
-# Obs  : [x, y, z]                       dim=3
+# Filter 1: Position Filter  (Constant Velocity model)
+# State: [x, y, z, vx, vy, vz]  dim=6
+# Obs  : [x, y, z]              dim=3
 # ============================================================
 
 class PositionFilter(nn.Module):
     """
-    Batched EKF for 3-D position under a Constant Acceleration (CA) model.
+    Batched EKF for 3-D position under a Constant Velocity (CV) model.
 
-    State vector (dim=8): [x, y, z, vx, vy, vz, ax, ay]
-      - ax, ay are horizontal accelerations; az is assumed zero (flat-world prior).
+    State vector (dim=6): [x, y, z, vx, vy, vz]
+      - Acceleration is NOT modelled (avoids CA inference shock/catapult).
 
     Observation vector (dim=3): [x, y, z]
     """
 
-    STATE_DIM: int = 8
+    STATE_DIM: int = 6
     OBS_DIM: int = 3
 
     def __init__(self, batch_size: int, device: torch.device = torch.device("cpu")) -> None:
@@ -111,9 +111,9 @@ class PositionFilter(nn.Module):
 
         Initialised buffers
         -------------------
-        x : [B, 8, 1]   — state mean
-        P : [B, 8, 8]   — state covariance
-        H : [3, 8]       — observation matrix (constant)
+        x : [B, 6, 1]   — state mean
+        P : [B, 6, 6]   — state covariance
+        H : [3, 6]       — observation matrix (constant)
         """
         super().__init__()
         self.B = batch_size
@@ -122,10 +122,10 @@ class PositionFilter(nn.Module):
         self.x: Tensor = torch.zeros(batch_size, self.STATE_DIM, 1, device=device)
         self.P: Tensor = torch.eye(self.STATE_DIM, device=device).unsqueeze(0).repeat(batch_size, 1, 1)
 
-        # H selects [x, y, z] from the 8-dim state — constant across batch
-        # H = [[1,0,0,0,0,0,0,0],
-        #      [0,1,0,0,0,0,0,0],
-        #      [0,0,1,0,0,0,0,0]]   shape: [3, 8]
+        # H selects [x, y, z] from the 6-dim state — constant across batch
+        # H = [[1,0,0,0,0,0],
+        #      [0,1,0,0,0,0],
+        #      [0,0,1,0,0,0]]   shape: [3, 6]
         self.register_buffer("H", torch.zeros(self.OBS_DIM, self.STATE_DIM, device=device))
         self.H[0, 0] = 1.0
         self.H[1, 1] = 1.0
@@ -138,8 +138,8 @@ class PositionFilter(nn.Module):
     def init_state(self, x0: Tensor, P0: Tensor) -> None:
         """
         Args:
-            x0 : [B, 8, 1]
-            P0 : [B, 8, 8]
+            x0 : [B, 6, 1]
+            P0 : [B, 6, 6]
         """
         self.x = x0.to(self.device)
         self.P = P0.to(self.device)
@@ -147,46 +147,35 @@ class PositionFilter(nn.Module):
 
     def build_F(self, delta_t: float) -> Tensor:
         """
-        Construct the CA state-transition matrix F for a given delta_t.
+        Construct the CV state-transition matrix F for a given delta_t.
 
-        # CA kinematics (dt = delta_t, dt2 = 0.5*dt^2):
-        #   x_{k+1}  = x_k  + vx_k*dt + 0.5*ax_k*dt^2
-        #   y_{k+1}  = y_k  + vy_k*dt + 0.5*ay_k*dt^2
+        # CV kinematics (dt = delta_t):
+        #   x_{k+1}  = x_k  + vx_k*dt
+        #   y_{k+1}  = y_k  + vy_k*dt
         #   z_{k+1}  = z_k  + vz_k*dt
-        #   vx_{k+1} = vx_k + ax_k*dt
-        #   vy_{k+1} = vy_k + ay_k*dt
+        #   vx_{k+1} = vx_k
+        #   vy_{k+1} = vy_k
         #   vz_{k+1} = vz_k
-        #   ax_{k+1} = ax_k
-        #   ay_{k+1} = ay_k
         #
-        # F = [[1, 0, 0, dt,  0,  0, dt2,   0],
-        #      [0, 1, 0,  0, dt,  0,   0, dt2],
-        #      [0, 0, 1,  0,  0, dt,   0,   0],
-        #      [0, 0, 0,  1,  0,  0,  dt,   0],
-        #      [0, 0, 0,  0,  1,  0,   0,  dt],
-        #      [0, 0, 0,  0,  0,  1,   0,   0],
-        #      [0, 0, 0,  0,  0,  0,   1,   0],
-        #      [0, 0, 0,  0,  0,  0,   0,   1]]
+        # F = [[1, 0, 0, dt,  0,  0],
+        #      [0, 1, 0,  0, dt,  0],
+        #      [0, 0, 1,  0,  0, dt],
+        #      [0, 0, 0,  1,  0,  0],
+        #      [0, 0, 0,  0,  1,  0],
+        #      [0, 0, 0,  0,  0,  1]]
 
         Args:
             delta_t : Elapsed time in seconds.
 
         Returns:
-            F : [8, 8]
+            F : [6, 6]
         """
         dt = delta_t
-        dt2 = 0.5 * dt * dt
         F = torch.eye(self.STATE_DIM, device=self.device)
         # position <- velocity
         F[0, 3] = dt   # x  <- vx*dt
         F[1, 4] = dt   # y  <- vy*dt
         F[2, 5] = dt   # z  <- vz*dt
-        # position <- acceleration
-        F[0, 6] = dt2  # x  <- 0.5*ax*dt^2
-        F[1, 7] = dt2  # y  <- 0.5*ay*dt^2
-        # velocity <- acceleration
-        F[3, 6] = dt   # vx <- ax*dt
-        F[4, 7] = dt   # vy <- ay*dt
         return F
 
     def predict(
@@ -197,27 +186,27 @@ class PositionFilter(nn.Module):
         """
         Kalman predict step (batched, no for-loop).
 
-        # x_pred = F @ x                      [B,8,8] @ [B,8,1] -> [B,8,1]
-        # P_pred = F @ P @ F^T + Q             [B,8,8]
+        # x_pred = F @ x                      [B,6,6] @ [B,6,1] -> [B,6,1]
+        # P_pred = F @ P @ F^T + Q             [B,6,6]
 
         Args:
             delta_t : Elapsed time in seconds since last update.
-            Q       : [B, 8, 8] — process noise from Module B. If None, uses default.
+            Q       : [B, 6, 6] — process noise from Module B. If None, uses default.
 
         Returns:
-            x_pred : [B, 8, 1]
-            P_pred : [B, 8, 8]
+            x_pred : [B, 6, 1]
+            P_pred : [B, 6, 6]
         """
-        F = self.build_F(delta_t)                           # [8, 8]
-        F_batch = F.unsqueeze(0).expand(self.B, -1, -1)     # [B, 8, 8]
+        F = self.build_F(delta_t)                           # [6, 6]
+        F_batch = F.unsqueeze(0).expand(self.B, -1, -1)     # [B, 6, 6]
 
         if Q is None:
-            Q = self._default_Q.unsqueeze(0).expand(self.B, -1, -1)  # [B, 8, 8]
+            Q = self._default_Q.unsqueeze(0).expand(self.B, -1, -1)  # [B, 6, 6]
 
-        # x_pred = F @ x   →  [B, 8, 1]
+        # x_pred = F @ x   →  [B, 6, 1]
         self.x = torch.bmm(F_batch, self.x)
 
-        # P_pred = F @ P @ F^T + Q   →  [B, 8, 8]
+        # P_pred = F @ P @ F^T + Q   →  [B, 6, 6]
         self.P = torch.bmm(torch.bmm(F_batch, self.P), F_batch.transpose(-1, -2)) + Q
 
         return self.x, self.P
@@ -230,40 +219,40 @@ class PositionFilter(nn.Module):
         """
         Kalman update step (batched, no for-loop).
 
-        # H       : [3, 8] (constant)
+        # H       : [3, 6] (constant)
         # S       = H @ P @ H^T + R            [B,3,3]
-        # K       = P @ H^T @ S^{-1}           [B,8,3]
+        # K       = P @ H^T @ S^{-1}           [B,6,3]
         # innov   = z - H @ x                  [B,3,1]
-        # x_upd   = x + K @ innov              [B,8,1]
-        # P_upd   = (I - K @ H) @ P            [B,8,8]
+        # x_upd   = x + K @ innov              [B,6,1]
+        # P_upd   = (I - K @ H) @ P            [B,6,6]
 
         Args:
             z : [B, 3, 1] — observation [x, y, z]
             R : [B, 3, 3] — measurement noise from Module B. If None, uses default.
 
         Returns:
-            x_upd : [B, 8, 1]
-            P_upd : [B, 8, 8]
+            x_upd : [B, 6, 1]
+            P_upd : [B, 6, 6]
         """
         if R is None:
             R = self._default_R.unsqueeze(0).expand(self.B, -1, -1)  # [B, 3, 3]
 
-        H = self.H.unsqueeze(0).expand(self.B, -1, -1)      # [B, 3, 8]
-        Ht = H.transpose(-1, -2)                             # [B, 8, 3]
+        H = self.H.unsqueeze(0).expand(self.B, -1, -1)      # [B, 3, 6]
+        Ht = H.transpose(-1, -2)                             # [B, 6, 3]
 
         # S = H @ P @ H^T + R   →  [B, 3, 3]
         S = torch.bmm(torch.bmm(H, self.P), Ht) + R
 
-        # K = P @ H^T @ S^{-1}  →  [B, 8, 3]
+        # K = P @ H^T @ S^{-1}  →  [B, 6, 3]
         K = torch.bmm(torch.bmm(self.P, Ht), torch.linalg.inv(S))
 
         # innovation = z - H @ x   →  [B, 3, 1]
         innov = z - torch.bmm(H, self.x)
 
-        # x_upd = x + K @ innovation   →  [B, 8, 1]
+        # x_upd = x + K @ innovation   →  [B, 6, 1]
         self.x = self.x + torch.bmm(K, innov)
 
-        # P_upd = (I - K @ H) @ P   →  [B, 8, 8]
+        # P_upd = (I - K @ H) @ P   →  [B, 6, 6]
         I = torch.eye(self.STATE_DIM, device=self.device).unsqueeze(0).expand(self.B, -1, -1)
         self.P = torch.bmm(I - torch.bmm(K, H), self.P)
 
@@ -272,8 +261,8 @@ class PositionFilter(nn.Module):
     def get_state(self) -> Tuple[Tensor, Tensor]:
         """
         Returns:
-            x : [B, 8, 1]
-            P : [B, 8, 8]
+            x : [B, 6, 1]
+            P : [B, 6, 6]
         """
         return self.x, self.P
 
@@ -599,7 +588,7 @@ class DecoupledAdaptiveKF(nn.Module):
     so that Q = L @ L^T and R = L @ L^T are strictly positive definite.
 
     Tensor shape conventions (B = number of active tracklets):
-        pos_x  : [B, 8, 1]    pos_P  : [B, 8, 8]
+        pos_x  : [B, 6, 1]    pos_P  : [B, 6, 6]
         siz_x  : [B, 3, 1]    siz_P  : [B, 3, 3]
         ori_x  : [B, 2, 1]    ori_P  : [B, 2, 2]
     """
@@ -641,7 +630,7 @@ class DecoupledAdaptiveKF(nn.Module):
 
         Args:
             delta_t : Elapsed time in seconds.
-            Q_pos   : [B, 8, 8]  — from Module B (PSD-guaranteed)
+            Q_pos   : [B, 6, 6]  — from Module B (PSD-guaranteed)
             Q_siz   : [B, 3, 3]  — from Module B (PSD-guaranteed)
             Q_ori   : [B, 2, 2]  — from Module B (PSD-guaranteed)
 
@@ -786,18 +775,20 @@ class TemporalMamba(nn.Module):
 
     Architecture:
         Input projection → LayerNorm → Mamba SSM backbone → Output projection
-        → 6 CholeskyHeads (Q_pos, Q_siz, Q_ori, R_pos, R_siz, R_ori)
+        → 2 CholeskyHeads (Q_pos[6x6], R_pos[3x3]) — position only
+        → 1 kappa head (orientation concentration, Von Mises)
+        → Static params: Q_siz, R_siz (size), Q_ori (orientation)
         → 1 Temporal Embedding head (for semantic data association)
 
     Complexity: O(1) per tracklet (no cross-attention between tracklets).
 
-    Input feature per frame (dim = 8 + 3 + 2 + 1 = 14):
-        [x, y, z, vx, vy, vz, ax, ay,  l, w, h,  theta, omega,  det_score]
-         ├── position state (8) ──┤  ├ size(3) ┤  ├ orient(2) ┤  ├ quality ┤
+    Input feature per frame (dim = 6 + 3 + 2 + 1 = 12):
+        [x, y, z, vx, vy, vz,  l, w, h,  theta, omega,  det_score]
+         ├── pos state (6) ─┤  ├size(3)┤  ├ orient(2) ┤  ├qual┤
     """
 
-    # Joint input = pos(8) + size(3) + orientation(2) + det_score(1) = 14
-    INPUT_DIM: int = 14
+    # Joint input = pos(6) + size(3) + orientation(2) + det_score(1) = 12
+    INPUT_DIM: int = 12
 
     def __init__(
         self,
@@ -855,16 +846,21 @@ class TemporalMamba(nn.Module):
             nn.LayerNorm(d_model) for _ in range(n_mamba_layers)
         ])
 
-        # ---- Multi-Head Noise Prediction (6 heads) ----
-        # Process noise Q
-        self.head_Q_pos = CholeskyHead(d_model, mat_dim=8, min_diag=min_diag_q)   # Q for Position  [B,8,8]
-        self.head_Q_siz = CholeskyHead(d_model, mat_dim=3, min_diag=min_diag_q)   # Q for Size      [B,3,3]
-        self.head_Q_ori = CholeskyHead(d_model, mat_dim=2, min_diag=min_diag_q)   # Q for Orient.   [B,2,2]
+        # ---- Position Noise (Cholesky heads — only Mamba-adaptive module) ----
+        self.head_Q_pos = CholeskyHead(d_model, mat_dim=6, min_diag=min_diag_q)   # Q for Pos  [B,6,6]
+        self.head_R_pos = CholeskyHead(d_model, mat_dim=3, min_diag=min_diag_r)   # R for Pos  [B,3,3]
 
-        # Measurement noise R
-        self.head_R_pos = CholeskyHead(d_model, mat_dim=3, min_diag=min_diag_r)   # R for Position  [B,3,3]
-        self.head_R_siz = CholeskyHead(d_model, mat_dim=3, min_diag=min_diag_r)   # R for Size      [B,3,3]
-        self.head_R_ori = CholeskyHead(d_model, mat_dim=1, min_diag=min_diag_r)   # R for Orient.   [B,1,1]
+        # ---- Size Noise (static global params — rigid-body prior) ----
+        # Size is locked after EMA convergence; no neural prediction needed.
+        self.raw_q_siz_diag = nn.Parameter(torch.full((3,), -4.0))    # log-space diag
+        self.raw_r_siz_diag = nn.Parameter(torch.full((3,), -2.0))    # log-space diag
+
+        # ---- Orientation: Von Mises kappa head + static process noise ----
+        self.head_kappa_ori = nn.Linear(d_model, 1)
+        nn.init.uniform_(self.head_kappa_ori.weight, -1e-4, 1e-4)
+        nn.init.constant_(self.head_kappa_ori.bias, 0.0)
+
+        self.raw_q_ori = nn.Parameter(torch.full((1,), -4.0))
 
         # ---- Temporal Embedding head (for semantic association in Module C) ----
         self.embed_head = nn.Sequential(
@@ -880,22 +876,23 @@ class TemporalMamba(nn.Module):
         Process joint historical states and produce noise matrices + embedding.
 
         Args:
-            track_history : [B, T, 14] — past T frames of joint state per tracklet
+            track_history : [B, T, 12] — past T frames of joint state per tracklet
                             B = number of active tracklets
                             T = temporal window length
-                            13 = [x,y,z,vx,vy,vz,ax,ay, l,w,h, theta,omega]
+                            12 = [x,y,z,vx,vy,vz, l,w,h, theta,omega, det_score]
 
         Returns:
             dict with keys:
-                "Q_pos"     : [B, 8, 8]  — position process noise     (PSD)
-                "Q_siz"     : [B, 3, 3]  — size process noise          (PSD)
-                "Q_ori"     : [B, 2, 2]  — orientation process noise   (PSD)
+                "Q_pos"     : [B, 6, 6]  — position process noise     (PSD)
+                "Q_siz"     : [B, 3, 3]  — size process noise          (static)
+                "Q_ori"     : [B, 2, 2]  — orientation process noise   (static)
                 "R_pos"     : [B, 3, 3]  — position measurement noise  (PSD)
-                "R_siz"     : [B, 3, 3]  — size measurement noise      (PSD)
-                "R_ori"     : [B, 1, 1]  — orientation measurement noise (PSD)
+                "R_siz"     : [B, 3, 3]  — size measurement noise      (static)
+                "R_ori"     : [B, 1, 1]  — orientation measurement noise (1/kappa)
+                "kappa_ori" : [B, 1]     — Von Mises concentration for loss
                 "embedding" : [B, embed_dim] — temporal embedding for association
         """
-        # input projection: [B, T, 14] → [B, T, d_model]
+        # input projection: [B, T, 12] → [B, T, d_model]
         h = self.input_proj(track_history)
 
         # LayerNorm before Mamba blocks — stabilises training by normalising
@@ -920,14 +917,30 @@ class TemporalMamba(nn.Module):
         if torch.isnan(h_last).any():
             h_last = torch.nan_to_num(h_last, nan=0.0)
 
-        # ---- Multi-Head Noise Prediction ----
-        # Each head: [B, d_model] → [B, D, D] (PSD via Cholesky + Softplus + eps)
-        Q_pos = self.head_Q_pos(h_last)    # [B, 8, 8]
-        Q_siz = self.head_Q_siz(h_last)    # [B, 3, 3]
-        Q_ori = self.head_Q_ori(h_last)    # [B, 2, 2]
+        # ---- Position Noise (Cholesky heads) ----
+        Q_pos = self.head_Q_pos(h_last)    # [B, 6, 6]
         R_pos = self.head_R_pos(h_last)    # [B, 3, 3]
-        R_siz = self.head_R_siz(h_last)    # [B, 3, 3]
-        R_ori = self.head_R_ori(h_last)    # [B, 1, 1]
+
+        # ---- Size Noise (static params, expanded across batch) ----
+        q_siz_diag = F.softplus(self.raw_q_siz_diag) + 1e-4           # [3]
+        r_siz_diag = F.softplus(self.raw_r_siz_diag) + 1e-4           # [3]
+        Q_siz = torch.diag(q_siz_diag).unsqueeze(0).expand(B, -1, -1) # [B, 3, 3]
+        R_siz = torch.diag(r_siz_diag).unsqueeze(0).expand(B, -1, -1) # [B, 3, 3]
+
+        # ---- Orientation: Von Mises kappa + static Q, derived R ----
+        B = h_last.shape[0]
+        dev = h_last.device
+
+        # kappa: concentration parameter (higher = more confident)
+        kappa_ori = F.softplus(self.head_kappa_ori(h_last)) + 1e-3   # [B, 1]
+
+        # R_ori = 1 / kappa (measurement noise derived from concentration)
+        R_ori = (1.0 / kappa_ori).unsqueeze(-1)                       # [B, 1, 1]
+
+        # Q_ori: static learnable process noise shared across batch
+        q_val = F.softplus(self.raw_q_ori) + 1e-4                     # scalar
+        Q_ori = torch.eye(2, device=dev, dtype=h_last.dtype) * q_val  # [2, 2]
+        Q_ori = Q_ori.unsqueeze(0).expand(B, -1, -1)                  # [B, 2, 2]
 
         # ---- Temporal Embedding for semantic association ----
         embedding = self.embed_head(h_last)  # [B, embed_dim]
@@ -935,6 +948,7 @@ class TemporalMamba(nn.Module):
         return {
             "Q_pos": Q_pos, "Q_siz": Q_siz, "Q_ori": Q_ori,
             "R_pos": R_pos, "R_siz": R_siz, "R_ori": R_ori,
+            "kappa_ori": kappa_ori,
             "embedding": embedding,
         }
 
@@ -989,7 +1003,7 @@ class MambaDecoupledEKF(nn.Module):
         Run Mamba to get adaptive Q/R, then run KF predict.
 
         Args:
-            track_history : [B, T, 14] — joint historical states
+            track_history : [B, T, 12] — joint historical states
             delta_t       : elapsed seconds
 
         Returns:

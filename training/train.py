@@ -76,8 +76,8 @@ def training_step(
     B = batch["track_history"].shape[0]
     K = batch["gt_future_pos"].shape[1]  # rollout steps from dataset
 
-    history = batch["track_history"].to(device)            # [B, T, 14]
-    gt_pos = batch["gt_current_state_pos"].to(device)      # [B, 8]
+    history = batch["track_history"].to(device)            # [B, T, 12]
+    gt_pos = batch["gt_current_state_pos"].to(device)      # [B, 6]
     gt_siz = batch["gt_current_state_siz"].to(device)      # [B, 3]
     gt_ori = batch["gt_current_state_ori"].to(device)      # [B, 2]
     gt_future_pos = batch["gt_future_pos"].to(device)      # [B, K, 3]
@@ -90,10 +90,10 @@ def training_step(
     mamba_out = mamba(history)
 
     # ---- Step 2: Init KF from GT state at frame T ----
-    pos_x0 = gt_pos.unsqueeze(-1)                                    # [B, 8, 1]
+    pos_x0 = gt_pos.unsqueeze(-1)                                    # [B, 6, 1]
     siz_x0 = gt_siz.unsqueeze(-1)                                    # [B, 3, 1]
     ori_x0 = gt_ori.unsqueeze(-1)                                    # [B, 2, 1]
-    pos_P0 = torch.eye(8, device=device).unsqueeze(0).expand(B, -1, -1).clone()
+    pos_P0 = torch.eye(6, device=device).unsqueeze(0).expand(B, -1, -1).clone()
     siz_P0 = torch.eye(3, device=device).unsqueeze(0).expand(B, -1, -1).clone() * 0.1
     ori_P0 = torch.eye(2, device=device).unsqueeze(0).expand(B, -1, -1).clone() * 0.1
 
@@ -126,6 +126,7 @@ def training_step(
             mamba_out["embedding"] if k == 0 else None,  # contrastive only on step 0
             instance_tokens if k == 0 else None,
             R_pos=R_pos, R_siz=R_siz, R_ori=R_ori,
+            kappa_ori=mamba_out["kappa_ori"],
         )
 
         total_loss += loss_k
@@ -156,15 +157,17 @@ def training_step(
         loss_fn.lambda_contrast * detail["loss_contrastive"]
     )
 
-    # ---- Step 4: Q/R diagonal variance monitor ----
+    # ---- Step 4: Q/R/kappa variance monitor ----
     with torch.no_grad():
         for name, mat in [
             ("Q_pos", mamba_out["Q_pos"]), ("Q_siz", mamba_out["Q_siz"]),
-            ("Q_ori", mamba_out["Q_ori"]), ("R_pos", mamba_out["R_pos"]),
-            ("R_siz", mamba_out["R_siz"]), ("R_ori", mamba_out["R_ori"]),
+            ("R_pos", mamba_out["R_pos"]), ("R_siz", mamba_out["R_siz"]),
         ]:
             diag = mat.diagonal(dim1=-2, dim2=-1)
             detail[f"std_{name}"] = diag.std(dim=0).mean().item()
+        # Orientation: kappa std (R_ori = 1/kappa, Q_ori is static)
+        detail["std_kappa"] = mamba_out["kappa_ori"].std(dim=0).mean().item()
+        detail["mean_kappa"] = mamba_out["kappa_ori"].mean().item()
 
     return total_loss / K, detail
 
@@ -464,8 +467,8 @@ def main():
             f"contrast={avg_train.get('loss_contrastive', 0):.4f} | "
             f"val_loss={avg_val.get('loss_total', 0):.4f} "
             f"val_pos={avg_val.get('loss_pos', 0):.4f} | "
-            f"stdRori={avg_train.get('std_R_ori', 0):.4f} "
-            f"stdQori={avg_train.get('std_Q_ori', 0):.4f} | "
+            f"kappa_m={avg_train.get('mean_kappa', 0):.3f} "
+            f"kappa_s={avg_train.get('std_kappa', 0):.3f} | "
             f"NaN={nan_count}"
         )
 
@@ -481,7 +484,7 @@ def main():
         writer.add_scalar("train/epoch_time", dt_epoch, step)
         writer.add_scalar("train/nan_count", nan_count, step)
         # Q/R diagonal std — should stay > 0; zero = constant output (degenerate)
-        for key in ["std_Q_pos", "std_Q_siz", "std_Q_ori", "std_R_pos", "std_R_siz", "std_R_ori"]:
+        for key in ["std_Q_pos", "std_Q_siz", "std_R_pos", "std_R_siz", "std_kappa", "mean_kappa"]:
             writer.add_scalar(f"train/{key}", avg_train.get(key, 0), step)
 
         # ---- Checkpoint ----

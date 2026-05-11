@@ -32,6 +32,7 @@ class Trajectory:
       - Store track_id, category, historical bboxes, matched scores
       - Manage lifecycle flags (status_flag, unmatch_length, etc.)
       - Compute diff/curve velocity from bbox history (geometry only)
+      - Size estimation via EMA (early) and rigid-body locking (mature)
 
     NOT responsible for:
       - Kalman filtering (predict / update) — handled by MambaDecoupledEKF
@@ -58,6 +59,11 @@ class Trajectory:
         self.cfg = cfg
         self.bboxes: List[BBox] = [init_bbox]
         self.matched_scores: List[float] = []
+
+        # ---- Size locking (rigid-body prior) ----
+        # Physical objects don't change size. We fuse early observations via
+        # EMA (track_length <= 10) and lock the estimate permanently afterwards.
+        self.smoothed_lwh: List[float] = list(init_bbox.lwh)
 
         # ---- config thresholds ----
         self.frame_rate: float = cfg["FRAME_RATE"]
@@ -135,6 +141,20 @@ class Trajectory:
             self.bboxes.pop(0)
 
         self.matched_scores.append(matched_score)
+
+        # ---- Size EMA & Locking (rigid-body prior) ----
+        # Early life (<= 10 frames): EMA fuses noisy measurements.
+        # Mature (> 10 frames): lock — ignore detection size entirely.
+        current_lwh = list(bbox.lwh)
+        if self.track_length <= 10:
+            alpha = 0.2  # weight on new measurement
+            self.smoothed_lwh = [
+                alpha * current_lwh[i] + (1.0 - alpha) * self.smoothed_lwh[i]
+                for i in range(3)
+            ]
+        # Overwrite bbox.lwh with the smoothed/locked estimate.
+        # This propagates into all downstream consumers (fusion, output, eval).
+        bbox.lwh = list(self.smoothed_lwh)
 
         # derived velocity estimates from raw bbox history (no KF needed)
         self.bboxes[-1].global_velocity_diff = self.cal_diff_velocity()

@@ -24,6 +24,53 @@ from typing import Dict, Tuple
 
 
 # ======================================================================
+# Von Mises Negative Log-Likelihood (Orientation)
+# ======================================================================
+# Replaces the Gaussian NLL for angular predictions. The Von Mises
+# distribution is the natural exponential-family distribution on the
+# circle, eliminating the -pi/pi topological tear that causes gradient
+# collapse under Gaussian NLL.
+
+def von_mises_loss(
+    pred_yaw: torch.Tensor,   # [B] or [B, 1]
+    gt_yaw: torch.Tensor,     # [B] or [B, 1]
+    kappa: torch.Tensor,      # [B, 1] — concentration parameter
+) -> torch.Tensor:
+    """
+    Von Mises negative log-likelihood for angular predictions.
+
+    # VM log-pdf ∝ κ·cos(Δθ) − log(I₀(κ))
+    # Using torch.special.i0e (exponentially-scaled Bessel):
+    #   I₀(κ) = i0e(κ) · exp(κ)
+    #   log I₀(κ) = log(i0e(κ) + ε) + κ
+    # Therefore:
+    #   NLL = −κ·cos(pred − gt) + log(i0e(κ) + ε) + κ
+
+    torch.special.i0e avoids NaN overflow for large κ (i0e(κ) ≈ 1/√(2πκ)
+    for large κ, which is well-behaved in log-space).
+
+    Args:
+        pred_yaw : Predicted yaw angle, shape [B] or [B, 1].
+        gt_yaw   : Ground-truth yaw angle, shape [B] or [B, 1].
+        kappa    : Concentration parameter, shape [B, 1]. Must be > 0.
+
+    Returns:
+        Scalar loss (mean over batch).
+    """
+    pred = pred_yaw.squeeze(-1)       # [B]
+    gt = gt_yaw.squeeze(-1)           # [B]
+    k = kappa.squeeze(-1)             # [B]
+
+    diff = pred - gt
+    cos_term = -k * torch.cos(diff)                        # [B]
+    log_i0e = torch.log(torch.special.i0e(k) + 1e-7)      # [B]
+    k_term = k                                              # [B]
+
+    nll_per_sample = cos_term + log_i0e + k_term            # [B]
+    return nll_per_sample.mean()
+
+
+# ======================================================================
 # Kalman Negative Log-Likelihood (NLL)
 # ======================================================================
 
@@ -217,7 +264,7 @@ class StatePredictionLoss(nn.Module):
     Prediction loss for the three decoupled Kalman filters.
 
     Position & Size  →  kalman_nll_loss (Gaussian NLL)
-    Orientation      →  kalman_nll_loss_yaw (angle-wrapped NLL + logdet guard)
+    Orientation      →  von_mises_loss (Von Mises NLL, no topological tear)
 
     All three losses receive gradient through predicted covariance P_pred
     and measurement noise R_pred, giving Mamba's Q/R heads direct signal.
@@ -237,8 +284,8 @@ class StatePredictionLoss(nn.Module):
         self.w_siz = w_siz
         self.w_ori = w_ori
 
-        # H_pos: [3, 8] — selects [x, y, z] from 8-dim position state
-        self.register_buffer("H_pos", torch.zeros(3, 8))
+        # H_pos: [3, 6] — selects [x, y, z] from 6-dim position state
+        self.register_buffer("H_pos", torch.zeros(3, 6))
         self.H_pos[0, 0] = 1.0
         self.H_pos[1, 1] = 1.0
         self.H_pos[2, 2] = 1.0
@@ -246,23 +293,21 @@ class StatePredictionLoss(nn.Module):
         # H_siz: [3, 3] — identity (observation = state for size filter)
         self.register_buffer("H_siz", torch.eye(3))
 
-        # H_ori: [1, 2] — selects theta from [theta, omega]
-        self.register_buffer("H_ori", torch.tensor([[1.0, 0.0]]))
-
     def forward(
         self,
-        pos_x_pred: torch.Tensor,    # [B, 8, 1]
-        pos_P_pred: torch.Tensor,    # [B, 8, 8]
+        pos_x_pred: torch.Tensor,    # [B, 6, 1]
+        pos_P_pred: torch.Tensor,    # [B, 6, 6]
         siz_x_pred: torch.Tensor,    # [B, 3, 1]
         siz_P_pred: torch.Tensor,    # [B, 3, 3]
         ori_x_pred: torch.Tensor,    # [B, 2, 1]
-        ori_P_pred: torch.Tensor,    # [B, 2, 2]
+        ori_P_pred: torch.Tensor,    # [B, 2, 2]  (unused, kept for API compat)
         gt_next_pos: torch.Tensor,   # [B, 3]
         gt_next_siz: torch.Tensor,   # [B, 3]
         gt_next_ori: torch.Tensor,   # [B, 1]
         R_pos: torch.Tensor,         # [B, 3, 3]
         R_siz: torch.Tensor,         # [B, 3, 3]
-        R_ori: torch.Tensor,         # [B, 1, 1]
+        R_ori: torch.Tensor,         # [B, 1, 1]  (unused, kept for API compat)
+        kappa_ori: torch.Tensor = None,  # [B, 1] — Von Mises concentration
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
         Returns:
@@ -287,13 +332,12 @@ class StatePredictionLoss(nn.Module):
             R_pred=R_siz,
         )
 
-        # Orientation: angle-wrapped Kalman NLL + logdet guard (anti-cheat)
-        loss_ori = kalman_nll_loss_yaw(
-            z_gt=gt_next_ori,
-            x_pred=ori_x_pred,
-            P_pred=ori_P_pred,
-            H=self.H_ori,
-            R_pred=R_ori,
+        # Orientation: Von Mises NLL (no topological tear at -pi/pi)
+        # pred_yaw = ori_x_pred[:, 0, 0] extracts theta from [theta, omega]
+        loss_ori = von_mises_loss(
+            pred_yaw=ori_x_pred[:, 0, 0],
+            gt_yaw=gt_next_ori,
+            kappa=kappa_ori,
         )
 
         loss = self.w_pos * loss_pos + self.w_siz * loss_siz + self.w_ori * loss_ori
@@ -410,8 +454,8 @@ class JointLoss(nn.Module):
 
     def forward(
         self,
-        pos_x_pred: torch.Tensor,    # [B, 8, 1]
-        pos_P_pred: torch.Tensor,    # [B, 8, 8]
+        pos_x_pred: torch.Tensor,    # [B, 6, 1]
+        pos_P_pred: torch.Tensor,    # [B, 6, 6]
         siz_x_pred: torch.Tensor,    # [B, 3, 1]
         siz_P_pred: torch.Tensor,    # [B, 3, 3]
         ori_x_pred: torch.Tensor,    # [B, 2, 1]
@@ -424,6 +468,7 @@ class JointLoss(nn.Module):
         R_pos: torch.Tensor,          # [B, 3, 3]
         R_siz: torch.Tensor,          # [B, 3, 3]
         R_ori: torch.Tensor,          # [B, 1, 1]
+        kappa_ori: torch.Tensor = None,  # [B, 1]
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
         Returns:
@@ -436,6 +481,7 @@ class JointLoss(nn.Module):
             ori_x_pred, ori_P_pred,
             gt_next_pos, gt_next_siz, gt_next_ori,
             R_pos, R_siz, R_ori,
+            kappa_ori=kappa_ori,
         )
 
         # Contrastive loss only on step 0 (embeddings not None).

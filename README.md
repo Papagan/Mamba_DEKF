@@ -17,8 +17,8 @@
 
 | Module | File | Responsibility |
 |---|---|---|
-| A — Decoupled KFs | `kalmanfilter/mamba_adaptive_kf.py` | `PositionFilter` (CA, dim 8), `SizeFilter` (Const, dim 3), `OrientationFilter` (CV, dim 2). All batched via `torch.bmm`. |
-| B — Mamba Soft-Coupler | `kalmanfilter/mamba_adaptive_kf.py` | `TemporalMamba` over `[B, T, 14]` history → six `CholeskyHead`s emit PSD-locked Q/R + a `[B, embed_dim]` embedding. Features: 13-dim kinematics + `det_score` for input conditioning. |
+| A — Decoupled KFs | `kalmanfilter/mamba_adaptive_kf.py` | `PositionFilter` (CV, dim 6), `SizeFilter` (Const, dim 3, EMA + locked), `OrientationFilter` (CV, dim 2, Von Mises κ). All batched via `torch.bmm`. |
+| B — Mamba Soft-Coupler | `kalmanfilter/mamba_adaptive_kf.py` | `TemporalMamba` over `[B, T, 12]` history → 2 `CholeskyHead`s for position Q/R + kappa head (Von Mises) + static size/ori params + a `[B, embed_dim]` embedding. Features: 6D CV pos + 3D size + 2D ori + 1D det_score. |
 | C — Uncertainty-aware association | `tracker/cost_function.py`, `tracker/matching.py` | Combines Ro-GDIoU (geometry), cosine sim of Mamba embeddings (semantic), and `trace(P_pos[:3,:3]) + trace(P_ori)` (uncertainty). |
 | D — Tracker lifecycle | `tracker/base_tracker.py`, `tracker/trajectory.py` | Birth / Active / Coasted / Death management. `Trajectory` is a stateless data container; all KF state lives in `Base3DTracker.kf_states`. |
 
@@ -26,7 +26,7 @@
 Detection (per frame)
         |
         v
-+---------------------+      track_history [B, T, 14]
++---------------------+      track_history [B, T, 12]
 |  Module D           | ─────────────────────────────→ +-------------------+
 |  Tracker Manager    |                                |  Module B         |
 +---------------------+                                |  TemporalMamba    |
@@ -37,10 +37,12 @@ Detection (per frame)
         v                                                  v          |
 +-------------------------------------------------------------+       |
 |  Module A: Decoupled Adaptive KFs (batched, torch.bmm)       |←─────+
-|    PositionFilter    [x,y,z,vx,vy,vz,ax,ay]   (CA, 8)        |
+|    PositionFilter    [x,y,z,vx,vy,vz]          (CV, 6)        |
 |    SizeFilter        [l,w,h]                  (Const, 3)     |
 |    OrientationFilter [theta,omega]            (CV, 2)        |
-|    PSD safety lock: Softplus + min_diag + 1e-5 on Cholesky diagonals |
+|    Position Q/R: Cholesky + Softplus + min_diag (adaptive, PSD)   |
+|    Size noise: static nn.Parameter (rigid-body prior)           |
+|    Orientation: Von Mises kappa head + static Q_ori              |
 +-------------------------------------------------------------+
         |
         | predicted state + covariance P
@@ -241,7 +243,7 @@ Training writes periodic checkpoints (`checkpoint_epoch{N}.pt`) and the best val
 |---|---|---|
 | Position | Kalman NLL: `0.5·(logdet(S_pos) + yᵀS⁻¹y)` | Jointly optimises `x_pred` and `P_pred` through the innovation covariance S |
 | Size | Kalman NLL (same form) | Same for the size filter |
-| Orientation | Angle-wrapped NLL + logdet guard: `0.5·(logdet(S_ori) + ỹᵀS⁻¹ỹ) + 0.1·ReLU(logdet(S_ori) − 2.0)` where `ỹ = wrap_to_pi(z - Hx)` | prevents ±π discontinuity; logdet guard penalises only pathologically LARGE S (never pushes R→0) |
+| Orientation | Von Mises NLL: `−κ·cos(Δθ) + log(i0e(κ)+ε) + κ` | Naturally handles circular topology (−π/π), no wrap needed; κ predicted by Mamba |
 | Embedding | InfoNCE (supervised contrastive) | Pulls same-instance embeddings together |
 
 **Loss formula** (`losses.py:JointLoss`):

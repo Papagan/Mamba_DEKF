@@ -1,52 +1,41 @@
-# Mamba-Decoupled-EKF Track: Project Context & AI Guidelines
+# Mamba-Decoupled-EKF Track: Project Context & AI Guidelines (V2 SOTA)
 
 ## 1. Project Background & Goals
-**Objective:** Refactor the baseline `MCTrack` project to develop a Fast, Efficient, and Accurate 3D Multi-Object Tracking (3DMOT) framework named **Mamba-Decoupled-EKF Track**.
-**Target Publication:** IEEE TITS / IEEE TVT.
+**Objective:** Develop a Fast, Efficient, and Accurate 3D Multi-Object Tracking (3DMOT) framework named **Mamba-Decoupled-EKF Track**.
+**Target Publication:** IEEE T-ITS / IEEE TVT.
 
-**Core Innovations:**
-1. **Zero Transformer/GNN:** Strictly linear complexity `O(N)` to achieve extremely high FPS by avoiding spatial cross-attention.
-2. **MA-DKF (Mamba-driven Adaptive Decoupled KF):** Use State Space Models (Mamba) as a "Soft-Coupler". It processes joint historical trajectories to dynamically predict independent process noise (Q) and measurement noise (R) for three decoupled filters, handling non-linear maneuvers while maintaining dimensional isolation.
-3. **Physics-Infused Adaptive Filtering:** Combine the stability of independent physical constraints with Mamba's long-term semantic and uncertainty estimation.
+**Core SOTA Innovations:**
+1. **Zero Transformer/GNN:** Strictly linear complexity `O(N)` for extremely high FPS.
+2. **Partial Adaptive Mamba (MoE Logic):** Mamba inputs 12D features (including `det_score` for observational awareness) to dynamically predict process/measurement noise (Q/R) **only for Position**.
+3. **Physical Prior Locking:** Size estimation is stripped from neural prediction and purely handled by EMA and strict lifecycle locking (Rigid Body Assumption).
+4. **Directional Bayesian Modeling:** Orientation uncertainty uses the Von Mises distribution (predicting concentration $\kappa$) to eliminate topological wrapping tears ($-\pi$ to $\pi$).
+5. **Two-Stage Cascade Association:** ByteTrack paradigm with strict birth to handle heavy occlusions and low-confidence detections.
 
 ## 2. Core Architecture Specifications
-When refactoring, adhere to this decoupled modular structure:
 
-### Module A: Decoupled Adaptive KFs (Kinematics)
-* **State Isolation:** Maintain three independent filters to prevent "dimension confusion" and error propagation:
-    1. **Position Filter:** `[x, y, z, vx, vy, vz, ax, ay]` (Constant Acceleration model).
-    2. **Size Filter:** `[l, w, h]` (Constant model).
-    3. **Orientation Filter:** `[theta, omega]` (Constant Velocity model).
-* **Key Feature:** Each filter must support batched operations and accept independent, dynamic `Q` and `R` matrices from Module B.
-* **Time-Step Awareness:** Prediction equations must explicitly integrate `delta_t` for asynchronous sensor inputs and missing detections.
+### Module A: Decoupled Physical Base (EKF & Containers)
+* **Position Filter (Dynamic):** `[x, y, z, vx, vy, vz]` (6D Constant Velocity model). Avoid CA (Constant Acceleration) to prevent inference catapult/shock.
+* **Size Filter (Static Locked):** `[l, w, h]`. Handled in `trajectory.py` via early EMA (Life <= 10) and Mature Locking (Life > 10).
+* **Orientation Filter (Bayesian):** `[theta, omega]`. Covariance dynamically guided by Von Mises $\kappa$.
+* **Trajectory Container:** `trajectory.py` is a PURE data container. Trajectory scores are evaluated solely on high-quality real observations, aggressively penalizing coasting/blind predictions to prevent ghost tracks.
 
-### Module B: Mamba Soft-Coupler & Memory
-* **Input:** Joint historical states and features of each tracklet over the past `T` frames, capturing latent correlations between orientation and velocity.
-* **Backbone:** Use `mamba-ssm` (Triton-based implementation).
-* **Adaptive Outputs:** 1. `Temporal Embedding (E_m)`: For downstream semantic data association.
-    2. `Multi-Head Noise Prediction`: Shallow MLP heads predicting independent Cholesky factors (L_matrix) for the $Q$ and $R$ matrices of the Position, Size, and Orientation filters respectively.
+### Module B: Mamba Brain (Soft-Coupler)
+* **Input Features:** 12D `[Δx, Δy, z, vx, vy, vz, l, w, h, theta, omega, det_score]`. `det_score` MUST be injected (0.0 for coasted frames) to grant Mamba observational awareness.
+* **Output Heads:**
+  - `head_Q_pos` [B, 6, 6], `head_R_pos` [B, 3, 3] → Cholesky heads for position CV model (`Softplus + min_diag`).
+  - `head_kappa_ori` [B, 1] → Von Mises concentration for orientation.
+  - `raw_q_ori` (scalar) → Static learnable process noise for orientation.
+  - `raw_q_siz_diag`, `raw_r_siz_diag` [3] → Static learnable size noise (rigid-body prior).
 
-### Module C: Uncertainty-Aware Association
-* **Cost Matrix:** Combine Kinematic Affinity (Ro_GDIoU or Mahalanobis distance) and Semantic Affinity (Cosine similarity from Mamba Embeddings).
-* **Uncertainty Penalty:** Incorporate the trace or determinant of the predicted covariance `P` from the Position and Orientation filters as a dynamic penalty to increase search tolerance during high-uncertainty phases.
-
-### Module D: Tracker Management
-* **Lifecycle:** Standard 3DMOT logic (Birth, Death, Active/Coasted states).
+### Module C: Data Association
+* **Two-Stage Matching (ByteTrack):**
+  - Stage 1: High-score dets (`>= 0.4`) matched with all active trajectories.
+  - Stage 2: Low-score dets (`0.1 ~ 0.4`) matched with unmatched trajectories (Threshold relaxed).
+* **Strict Birth:** New trajectories can ONLY be spawned from unmatched high-score dets (`>= 0.4`).
 
 ## 3. Strict Development Rules (CRITICAL)
-1. **NO GNN or Transformer:** Strictly maintain `O(1)` per-tracklet inference.
-2. **Vectorization (PyTorch):** Use batched tensor operations (e.g., `torch.bmm`) for all three KFs.
-3. **Type Hinting:** Explicit hints for all functions.
-4. **Math Annotations:** Write raw formulas in comments above code blocks.
-5. **PSD Constraints (Safety Lock):** For ALL predicted $Q$ and $R$ matrices, apply `Softplus` activation plus a small `epsilon` (1e-5) on the Cholesky diagonals to prevent inversion crashes and guarantee positive definiteness.
-
-## 4. Refactoring Roadmap
-* **Step 1 (Clean-up):** Remove the original unified KF and spatial attention modules from MCTrack.
-* **Step 2 (Infra):** Build the three Decoupled EKF classes in PyTorch, ensuring they are time-aware and differentiable.
-* **Step 3 (Mamba):** Integrate `mamba-ssm` with multiple heads for independent Q/R estimation.
-* **Step 4 (Pipeline):** Rewrite matching logic to utilize Mamba embeddings and filter uncertainty.
-* **Step 5 (Training):** Construct joint loss (MSE for state prediction + Contrastive Loss for embeddings).
-
-## 5. Special AI Instructions for Claude
-* **Dimension Tracing:** Document tensor shapes, especially when bridging joint Mamba inputs with decoupled KF updates.
-* **Stability Check:** Monitor for NaN in any of the three filters during training.
+1. **Vectorization:** Use batched PyTorch tensor operations (`torch.bmm`) for all KFs. No python loops over tracklets for EKF states.
+2. **Gradient Survival (Softplus Safety):** For all predicted Cholesky diagonals, NEVER use `torch.clamp`. Always use `F.softplus(x) + min_diag`.
+3. **Zero-Initialization:** The final linear layer of ALL Mamba prediction heads (`CholeskyHead`, `KappaHead`) MUST be zero-initialized (`uniform_(-1e-4, 1e-4)`, `bias=0.0`) to prevent dead gradients at Epoch 1.
+4. **Von Mises Stability:** When computing `von_mises_loss`, absolutely require `torch.special.i0e` (exponentially scaled Bessel function) to prevent NaN overflow.
+5. **No Detach in Physics:** Never accidentally `.detach()` tensors flowing from Mamba into the NLL Loss.

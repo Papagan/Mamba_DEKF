@@ -3,7 +3,7 @@
 # Base3DTracker: Main tracking loop with MambaDecoupledEKF integration
 #
 # Data flow per frame:
-#   1. Extract track_history [B, T, 14] from active trajectories
+#   1. Extract track_history [B, T, 12] from active trajectories
 #   2. Compute real delta_t from timestamps
 #   3. MambaDecoupledEKF.predict_with_mamba → Q/R/embedding + predicted state
 #   4. Write predicted state back into Trajectory bboxes
@@ -114,7 +114,7 @@ class Base3DTracker:
         self.kf_states: Dict[int, Dict[str, torch.Tensor]] = {}
 
     # ==================================================================
-    # History extraction: Trajectory bboxes → [B, T, 14] tensor
+    # History extraction: Trajectory bboxes → [B, T, 12] tensor
     # ==================================================================
 
     def _extract_track_history(
@@ -124,9 +124,9 @@ class Base3DTracker:
         Extract joint historical state from each trajectory's bbox history,
         padded/truncated to self.history_len frames.
 
-        # Per-frame feature (dim=14):
-        #   [Δx, Δy, z, vx, vy, vz, ax, ay,  l, w, h,  theta, omega,  det_score]
-        #    ├── position state (8) ─────────┤  ├ size(3)┤  ├ orient(2) ┤  ├ quality ┤
+        # Per-frame feature (dim=12):
+        #   [Δx, Δy, z, vx, vy, vz,  l, w, h,  theta, omega,  det_score]
+        #    ├── pos state (6) ──┤  ├size(3)┤  ├ orient(2) ┤  ├qual┤
         #
         # Δx, Δy are relative to the latest frame's position to keep
         # feature magnitudes small and avoid gradient saturation in Mamba.
@@ -138,11 +138,11 @@ class Base3DTracker:
             trajs : list of N active Trajectory objects
 
         Returns:
-            history : [N, T, 14] tensor on self.device
+            history : [N, T, 12] tensor on self.device
         """
         B = len(trajs)
         T = self.history_len
-        history = torch.zeros(B, T, 14, device=self.device)
+        history = torch.zeros(B, T, 12, device=self.device)
 
         for i, traj in enumerate(trajs):
             bboxes = traj.bboxes
@@ -160,7 +160,6 @@ class Base3DTracker:
 
                 xyz = bbox.global_xyz           # [x, y, z]
                 vel = bbox.global_velocity      # [vx, vy] (2D)
-                acc = bbox.global_acceleration  # [ax, ay] (2D)
                 lwh = bbox.lwh                  # [l, w, h]
                 yaw = bbox.global_yaw           # scalar
 
@@ -182,7 +181,6 @@ class Base3DTracker:
                 history[i, offset, :] = torch.tensor([
                     xyz[0] - ref_xyz[0], xyz[1] - ref_xyz[1], xyz[2],
                     vel[0], vel[1], 0.0,
-                    acc[0], acc[1],
                     lwh[0], lwh[1], lwh[2],
                     yaw, omega, det_score,
                 ], device=self.device)
@@ -196,15 +194,13 @@ class Base3DTracker:
     def _init_kf_state(self, track_id: int, bbox: BBox) -> None:
         """Initialise decoupled KF state for a new track from its first detection."""
         dev = self.device
-        # Position: [x, y, z, vx, vy, vz, ax, ay]
+        # Position: [x, y, z, vx, vy, vz]  (6D CV model)
         vel = bbox.global_velocity  # [vx, vy]
-        acc = bbox.global_acceleration  # [ax, ay]
         pos_x = torch.tensor([
             bbox.global_xyz[0], bbox.global_xyz[1], bbox.global_xyz[2],
             vel[0], vel[1], 0.0,
-            acc[0], acc[1],
-        ], device=dev).reshape(1, 8, 1)
-        pos_P = torch.eye(8, device=dev).unsqueeze(0) * 1.0
+        ], device=dev).reshape(1, 6, 1)
+        pos_P = torch.eye(6, device=dev).unsqueeze(0) * 1.0
 
         # Size: [l, w, h]
         siz_x = torch.tensor(bbox.lwh, device=dev).reshape(1, 3, 1)
@@ -266,12 +262,12 @@ class Base3DTracker:
         cause the position filter to produce kilometre-scale displacements.
 
         Args:
-            pos_x : [1, 8, 1] — [x, y, z, vx, vy, vz, ax, ay]
+            pos_x : [1, 6, 1] — [x, y, z, vx, vy, vz]
             siz_x : [1, 3, 1] — [l, w, h]
             ori_x : [1, 2, 1] — [theta, omega]
         """
         bbox = traj.bboxes[-1]
-        px = pos_x.squeeze().cpu().numpy()   # [8]
+        px = pos_x.squeeze().cpu().numpy()   # [6]
         sx = siz_x.squeeze().cpu().numpy()   # [3]
         ox = ori_x.squeeze().cpu().numpy()   # [2]
 
@@ -309,7 +305,7 @@ class Base3DTracker:
             siz_x : [1, 3, 1]
             ori_x : [1, 2, 1]
         """
-        px = pos_x.squeeze().cpu().numpy()   # [8]
+        px = pos_x.squeeze().cpu().numpy()   # [6]
         sx = siz_x.squeeze().cpu().numpy()   # [3]
         ox = ori_x.squeeze().cpu().numpy()   # [2]
 
@@ -361,7 +357,7 @@ class Base3DTracker:
         track_ids = [t.track_id for t in trajs]
         B = len(trajs)
 
-        # ---- 1. Extract history [B, T, 14] ----
+        # ---- 1. Extract history [B, T, 12] ----
         history = self._extract_track_history(trajs)
 
         # ---- 2. Load per-track KF states into batch ----
