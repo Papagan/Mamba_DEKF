@@ -20,8 +20,8 @@ MODEL:
   N_MAMBA_LAYERS: 3
   EMBED_DIM: 32
   HISTORY_LEN: 10
-  MIN_DIAG_Q: 0.1           # floor on Cholesky diagonal for Q heads (process noise)
-  MIN_DIAG_R: 0.1           # floor on Cholesky diagonal for R heads (measurement noise)
+  MIN_DIAG_Q: 0.1           # floor on Cholesky diagonal for position Q head
+  MIN_DIAG_R: 0.1           # floor on Cholesky diagonal for position R head
 
 # ---- Training ----
 TRAINING:
@@ -43,7 +43,7 @@ TRAINING:
 LOSS:
   W_POS: 1.0
   W_SIZ: 0.5
-  W_ORI: 50.0
+  W_ORI: 5.0            # Von Mises loss weight (reduced from 50; VM loss is ~0.1-1.0 vs old NLL ~-1.0)
   LAMBDA_CONTRAST: 0.1
   INFONCE_TEMPERATURE: 0.07
   PHYSICS_SCALE: 50.0   # global multiplier for state losses vs contrastive
