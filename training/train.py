@@ -94,6 +94,8 @@ def training_step(
     siz_x0 = gt_siz.unsqueeze(-1)                                    # [B, 3, 1]
     ori_x0 = gt_ori.unsqueeze(-1)                                    # [B, 2, 1]
     pos_P0 = torch.eye(6, device=device).unsqueeze(0).expand(B, -1, -1).clone()
+    pos_P0[:, 3, 3] = 10.0   # vx variance: high — K can infer speed from position
+    pos_P0[:, 4, 4] = 10.0   # vy variance
     siz_P0 = torch.eye(3, device=device).unsqueeze(0).expand(B, -1, -1).clone() * 0.1
     ori_P0 = torch.eye(2, device=device).unsqueeze(0).expand(B, -1, -1).clone() * 0.1
 

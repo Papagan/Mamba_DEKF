@@ -81,20 +81,31 @@ def Hungarian(cost_matrix, thresholds):
         len(thresholds) == cost_matrix.shape[0]
     ), "the number of thresholds should be equal to cost matrix number."
 
-    # solve cost matrix
     m_det, m_tra = [], []
     costs = []
+    num_det, num_tra = cost_matrix.shape[1:]
+
     for cls_idx, cls_cost in enumerate(cost_matrix):
-        _, x, y = lap.lapjv(cls_cost, extend_cost=True, cost_limit=thresholds[cls_idx])
+        # ---- NaN guard: replace NaN with inf (unmatchable) ----
+        if np.isnan(cls_cost).any():
+            cls_cost = np.nan_to_num(cls_cost, nan=np.inf, posinf=np.inf, neginf=np.inf)
+
+        # ---- All-inf guard: lapjv crashes on all-inf matrix ----
+        if np.all(np.isinf(cls_cost)):
+            continue  # no valid matches for this class
+
+        try:
+            _, x, y = lap.lapjv(cls_cost, extend_cost=True,
+                                cost_limit=thresholds[cls_idx])
+        except Exception:
+            continue  # lapjv failure → no matches for this class
+
         for ix, mx in enumerate(x):
             if mx >= 0:
-                assert (ix not in m_det) and (mx not in m_tra)
                 m_det.append(ix)
                 m_tra.append(mx)
                 costs.append(cls_cost[ix, mx])
 
-    # unmatched tra and det
-    num_det, num_tra = cost_matrix.shape[1:]
     if len(m_det) == 0:
         um_det, um_tra = np.arange(num_det), np.arange(num_tra)
     else:

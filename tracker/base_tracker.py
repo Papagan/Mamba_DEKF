@@ -195,12 +195,17 @@ class Base3DTracker:
         """Initialise decoupled KF state for a new track from its first detection."""
         dev = self.device
         # Position: [x, y, z, vx, vy, vz]  (6D CV model)
+        # Velocity initialised from detection; zero-velocity detectors
+        # (e.g. CenterPoint) get a larger velocity variance so the KF
+        # can infer speed from consecutive position observations.
         vel = bbox.global_velocity  # [vx, vy]
         pos_x = torch.tensor([
             bbox.global_xyz[0], bbox.global_xyz[1], bbox.global_xyz[2],
             vel[0], vel[1], 0.0,
         ], device=dev).reshape(1, 6, 1)
-        pos_P = torch.eye(6, device=dev).unsqueeze(0) * 1.0
+        pos_P = torch.eye(6, device=dev).unsqueeze(0)
+        pos_P[:, 3, 3] = 10.0  # vx variance: high → K can learn vx from position
+        pos_P[:, 4, 4] = 10.0  # vy variance: high → K can learn vy from position
 
         # Size: [l, w, h]
         siz_x = torch.tensor(bbox.lwh, device=dev).reshape(1, 3, 1)

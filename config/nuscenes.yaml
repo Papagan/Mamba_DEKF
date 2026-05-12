@@ -44,7 +44,7 @@ MAMBA:
 MATCHING:
   BEV:
     # Predict, BackPredict, Fusion
-    COST_STATE: {0: "BackPredict", 1: "BackPredict", 2: "Predict", 3: "Fusion", 4: "Predict", 5: "BackPredict", 6: "BackPredict"} 
+    COST_STATE: {0: "BackPredict", 1: "BackPredict", 2: "Predict", 3: "Fusion", 4: "Predict", 5: "BackPredict", 6: "BackPredict"}
     # iou_3d, giou_3d, dist_3d, ro_gdiou_3d
     COST_MODE: {0: "RO_GDIOU_3D", 1: "RO_GDIOU_3D", 2: "RO_GDIOU_3D", 3: "RO_GDIOU_3D", 4: "RO_GDIOU_3D", 5: "RO_GDIOU_3D", 6: "RO_GDIOU_3D"} 
      # Hungarian, Greedy
