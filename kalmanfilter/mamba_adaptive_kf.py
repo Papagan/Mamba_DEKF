@@ -917,6 +917,9 @@ class TemporalMamba(nn.Module):
         if torch.isnan(h_last).any():
             h_last = torch.nan_to_num(h_last, nan=0.0)
 
+        B = h_last.shape[0]
+        dev = h_last.device
+
         # ---- Position Noise (Cholesky heads) ----
         Q_pos = self.head_Q_pos(h_last)    # [B, 6, 6]
         R_pos = self.head_R_pos(h_last)    # [B, 3, 3]
@@ -928,9 +931,6 @@ class TemporalMamba(nn.Module):
         R_siz = torch.diag(r_siz_diag).unsqueeze(0).expand(B, -1, -1) # [B, 3, 3]
 
         # ---- Orientation: Von Mises kappa + static Q, derived R ----
-        B = h_last.shape[0]
-        dev = h_last.device
-
         # kappa: concentration parameter (higher = more confident)
         kappa_ori = F.softplus(self.head_kappa_ori(h_last)) + 1e-3   # [B, 1]
 
