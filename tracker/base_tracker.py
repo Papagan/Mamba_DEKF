@@ -34,7 +34,7 @@ _DEFAULT_MAMBA_CFG = {
     "EXPAND": 2,
     "N_MAMBA_LAYERS": 3,
     "EMBED_DIM": 32,
-    "HISTORY_LEN": 10,      # T: temporal window for Mamba input
+    "HISTORY_LEN": 5,       # T: temporal window for Mamba input
     "MAX_BATCH_SIZE": 256,   # pre-allocated batch size
     "MIN_DIAG_Q": 0.1,       # Q head Cholesky floor
     "MIN_DIAG_R": 0.1,       # R head Cholesky floor

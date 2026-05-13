@@ -90,11 +90,12 @@ def training_step(
     mamba_out = mamba(history)
 
     # ---- Step 2: Init KF from GT state at frame T (+ noise) ----
-    # Noise injection simulates the imperfect state estimate of a real tracker
-    # and prevents the model from collapsing to trivial min-diag/κ→∞ solutions.
-    noise_scale_pos = 0.3   # ~0.3 m positional uncertainty
-    noise_scale_siz = 0.1   # ~0.1 m size uncertainty
-    noise_scale_ori = 0.05  # ~0.05 rad (~3°) angular uncertainty
+    # Noise scales calibrated from CenterPoint nuScenes detection statistics
+    # (see checkpoints/mamba_dekf/noise.log). Values represent ~50-75th
+    # percentile across categories.
+    noise_scale_pos = 0.5    # pos state noise (~median: car 0.5, ped 0.27)
+    noise_scale_siz = 0.15   # size state noise (car 0.24, ped 0.06, bus 1.2)
+    noise_scale_ori = 0.15   # ori state noise (compromise; raw yaw noise 0.5-1.0)
 
     pos_x0 = gt_pos.unsqueeze(-1)                                    # [B, 6, 1]
     siz_x0 = gt_siz.unsqueeze(-1)                                    # [B, 3, 1]
@@ -116,10 +117,12 @@ def training_step(
     kf = DecoupledAdaptiveKF(batch_size=B, device=device)
     kf.init_states(pos_x0, pos_P0, siz_x0, siz_P0, ori_x0, ori_P0)
 
-    # Measurement noise scale for teacher forcing
-    meas_noise_pos = 0.15  # ~0.15 m detector noise
-    meas_noise_siz = 0.05  # ~0.05 m size noise
-    meas_noise_ori = 0.03  # ~0.03 rad (~1.7°) angle noise
+    # Measurement noise for teacher forcing — calibrated from noise.log.
+    # Conservative estimate (below raw detector std because KF smoothing
+    # reduces effective noise in continuous tracking).
+    meas_noise_pos = 0.35   # position measurement noise (~avg across categories)
+    meas_noise_siz = 0.08   # size measurement noise (car 0.24, ped 0.06 → compromise)
+    meas_noise_ori = 0.15   # ori measurement noise (target κ ≈ 1/0.15² ≈ 44)
 
     # ---- Step 3: K-step KF rollout with teacher forcing ----
     Q_pos = mamba_out["Q_pos"]
