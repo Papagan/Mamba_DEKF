@@ -292,7 +292,16 @@ class Base3DTracker:
             if displacement > 10.0:
                 return  # discard prediction, keep previous-frame coordinates
 
-        predict_xyz = [px[0], px[1], px[2]]
+        # For brand-new tracks, use the detection position as the "prediction".
+        # The KF starts with zero velocity (CenterPoint default), so F@x = x
+        # (no displacement). Using the raw detection position ensures the first
+        # Ro-GDIoU match has the best possible chance. After the first successful
+        # KF update, velocity is inferred from position change and KF predictions
+        # become meaningful.
+        if traj.track_length <= 1:
+            predict_xyz = bbox.global_xyz
+        else:
+            predict_xyz = [px[0], px[1], px[2]]
         predict_lwh = [sx[0], sx[1], sx[2]]
         predict_yaw = float(ox[0])
 
