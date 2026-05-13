@@ -853,13 +853,42 @@ class TemporalMamba(nn.Module):
         self.head_R_pos = CholeskyHead(d_model, mat_dim=3, min_diag=min_diag_r)   # R for Pos  [B,3,3]
 
         # ---- Size Noise (category-aware embeddings — rigid-body prior) ----
-        # Different object categories have wildly different size noise
-        # (ped 0.06m vs trailer 1.93m, a 30x gap). Per-category learnable
-        # embeddings let each class learn its own noise scale.
+        # Initialised from CenterPoint nuScenes detection statistics
+        # (noise.log) so each class starts near its observed noise level.
+        # Classes beyond the 7 known ones default to car-like values.
         self.raw_q_siz = nn.Embedding(num_classes, 3)
         self.raw_r_siz = nn.Embedding(num_classes, 3)
-        nn.init.constant_(self.raw_q_siz.weight, -4.0)
-        nn.init.constant_(self.raw_r_siz.weight, -2.0)
+
+        # Class 0: car       R=[0.058, 0.0064]  Q=R/5
+        # Class 1: pedestrian R=[0.0032, 0.0018]
+        # Class 2: bicycle    R=[0.0125, 0.0044]
+        # Class 3: motorcycle R=[0.0348, 0.0074]
+        # Class 4: bus        R=[1.46, 0.0215]
+        # Class 5: trailer    R=[3.74, 0.0318]
+        # Class 6: truck      R=[0.59, 0.0246]
+        # Classes 7+: neutral (car-like) default
+        import math as _math
+        _r_init = torch.tensor([
+            [-2.84, -5.05, _math.log(0.02)],   # 0: car
+            [-5.74, -6.32, _math.log(0.02)],   # 1: pedestrian
+            [-4.38, -5.43, _math.log(0.02)],   # 2: bicycle
+            [-3.36, -4.91, _math.log(0.02)],   # 3: motorcycle
+            [ 0.84, -3.84, _math.log(0.02)],   # 4: bus
+            [ 3.72, -3.45, _math.log(0.02)],   # 5: trailer
+            [-0.22, -3.70, _math.log(0.02)],   # 6: truck
+        ])
+        # Q ≈ R / 5 (size changes slowly under rigid-body assumption)
+        _q_init = _r_init.clone()
+        _q_init[_q_init > -1.0] -= _math.log(5.0)  # scale down larger values
+        # Pad remaining classes with car-like defaults
+        if num_classes > 7:
+            _pad_r = _r_init[0:1].repeat(num_classes - 7, 1)
+            _pad_q = _q_init[0:1].repeat(num_classes - 7, 1)
+            _r_init = torch.cat([_r_init, _pad_r], dim=0)
+            _q_init = torch.cat([_q_init, _pad_q], dim=0)
+        with torch.no_grad():
+            self.raw_q_siz.weight.copy_(_q_init)
+            self.raw_r_siz.weight.copy_(_r_init)
 
         # ---- Orientation: Von Mises kappa head + static process noise ----
         self.head_kappa_ori = nn.Linear(d_model, 1)
