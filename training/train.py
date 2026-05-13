@@ -85,9 +85,17 @@ def training_step(
     gt_future_ori = batch["gt_future_ori"].to(device)      # [B, K, 1]
     delta_ts_future = batch["delta_ts_future"].to(device)  # [B, K]
     instance_tokens = batch["instance_token"]              # list of B strings
+    categories = batch["category"]                          # list of B strings
+
+    # Map nuScenes category names to integer class IDs for size embeddings
+    _CAT_ID_MAP = {"car": 0, "pedestrian": 1, "bicycle": 2, "motorcycle": 3,
+                   "bus": 4, "trailer": 5, "truck": 6}
+    class_ids = torch.tensor(
+        [_CAT_ID_MAP.get(c.split(".")[-1], 0) for c in categories],
+        dtype=torch.long, device=device)                   # [B]
 
     # ---- Step 1: TemporalMamba forward (ONCE) → Q/R/embedding ----
-    mamba_out = mamba(history)
+    mamba_out = mamba(history, class_ids=class_ids)
 
     # ---- Step 2: Init KF from GT state at frame T (+ noise) ----
     # Noise scales calibrated from CenterPoint nuScenes detection statistics
@@ -340,6 +348,7 @@ def main():
         embed_dim=model_cfg.get("EMBED_DIM", 32),
         min_diag_q=model_cfg.get("MIN_DIAG_Q", 0.1),
         min_diag_r=model_cfg.get("MIN_DIAG_R", 0.1),
+        num_classes=model_cfg.get("NUM_CLASSES", 10),
     ).to(device)
 
     n_params = sum(p.numel() for p in mamba.parameters() if p.requires_grad)

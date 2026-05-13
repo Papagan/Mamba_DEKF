@@ -800,6 +800,7 @@ class TemporalMamba(nn.Module):
         embed_dim: int = 32,
         min_diag_q: float = 0.1,
         min_diag_r: float = 0.1,
+        num_classes: int = 10,
     ) -> None:
         """
         Args:
@@ -811,6 +812,7 @@ class TemporalMamba(nn.Module):
             embed_dim      : Output temporal embedding dimension for association.
             min_diag_q     : Floor on Cholesky diagonal for Q heads (process noise).
             min_diag_r     : Floor on Cholesky diagonal for R heads (measurement noise).
+            num_classes    : Number of object categories for size embeddings.
         """
         super().__init__()
         self.d_model = d_model
@@ -850,10 +852,14 @@ class TemporalMamba(nn.Module):
         self.head_Q_pos = CholeskyHead(d_model, mat_dim=6, min_diag=min_diag_q)   # Q for Pos  [B,6,6]
         self.head_R_pos = CholeskyHead(d_model, mat_dim=3, min_diag=min_diag_r)   # R for Pos  [B,3,3]
 
-        # ---- Size Noise (static global params — rigid-body prior) ----
-        # Size is locked after EMA convergence; no neural prediction needed.
-        self.raw_q_siz_diag = nn.Parameter(torch.full((3,), -4.0))    # log-space diag
-        self.raw_r_siz_diag = nn.Parameter(torch.full((3,), -2.0))    # log-space diag
+        # ---- Size Noise (category-aware embeddings — rigid-body prior) ----
+        # Different object categories have wildly different size noise
+        # (ped 0.06m vs trailer 1.93m, a 30x gap). Per-category learnable
+        # embeddings let each class learn its own noise scale.
+        self.raw_q_siz = nn.Embedding(num_classes, 3)
+        self.raw_r_siz = nn.Embedding(num_classes, 3)
+        nn.init.constant_(self.raw_q_siz.weight, -4.0)
+        nn.init.constant_(self.raw_r_siz.weight, -2.0)
 
         # ---- Orientation: Von Mises kappa head + static process noise ----
         self.head_kappa_ori = nn.Linear(d_model, 1)
@@ -871,6 +877,7 @@ class TemporalMamba(nn.Module):
     def forward(
         self,
         track_history: Tensor,
+        class_ids: Optional[Tensor] = None,
     ) -> Dict[str, Tensor]:
         """
         Process joint historical states and produce noise matrices + embedding.
@@ -880,6 +887,8 @@ class TemporalMamba(nn.Module):
                             B = number of active tracklets
                             T = temporal window length
                             12 = [x,y,z,vx,vy,vz, l,w,h, theta,omega, det_score]
+            class_ids     : [B] — integer category IDs for per-class size noise.
+                            If None, uses class 0 (car) for all samples.
 
         Returns:
             dict with keys:
@@ -924,11 +933,15 @@ class TemporalMamba(nn.Module):
         Q_pos = self.head_Q_pos(h_last)    # [B, 6, 6]
         R_pos = self.head_R_pos(h_last)    # [B, 3, 3]
 
-        # ---- Size Noise (static params, expanded across batch) ----
-        q_siz_diag = F.softplus(self.raw_q_siz_diag) + 1e-4           # [3]
-        r_siz_diag = F.softplus(self.raw_r_siz_diag) + 1e-4           # [3]
-        Q_siz = torch.diag(q_siz_diag).unsqueeze(0).expand(B, -1, -1) # [B, 3, 3]
-        R_siz = torch.diag(r_siz_diag).unsqueeze(0).expand(B, -1, -1) # [B, 3, 3]
+        # ---- Size Noise (category-aware embeddings) ----
+        # Each category learns its own Q/R diagonal in log-space.
+        # Pedestrians (~0.06m noise) vs trailers (~1.93m noise) differ by 30×.
+        if class_ids is None:
+            class_ids = torch.zeros(B, dtype=torch.long, device=dev)
+        q_siz_diag = F.softplus(self.raw_q_siz(class_ids)) + 1e-4    # [B, 3]
+        r_siz_diag = F.softplus(self.raw_r_siz(class_ids)) + 1e-4    # [B, 3]
+        Q_siz = torch.diag_embed(q_siz_diag)                           # [B, 3, 3]
+        R_siz = torch.diag_embed(r_siz_diag)                           # [B, 3, 3]
 
         # ---- Orientation: Von Mises kappa + static Q, derived R ----
         # kappa: concentration parameter (higher = more confident)
@@ -978,6 +991,7 @@ class MambaDecoupledEKF(nn.Module):
         embed_dim: int = 32,
         min_diag_q: float = 0.1,
         min_diag_r: float = 0.1,
+        num_classes: int = 10,
         device: torch.device = torch.device("cpu"),
     ) -> None:
         super().__init__()
@@ -990,6 +1004,7 @@ class MambaDecoupledEKF(nn.Module):
             embed_dim=embed_dim,
             min_diag_q=min_diag_q,
             min_diag_r=min_diag_r,
+            num_classes=num_classes,
         )
         self.kf = DecoupledAdaptiveKF(batch_size, device)
         self.device = device
@@ -998,6 +1013,7 @@ class MambaDecoupledEKF(nn.Module):
         self,
         track_history: Tensor,
         delta_t: float,
+        class_ids: Optional[Tensor] = None,
     ) -> Tuple[Dict[str, Tensor], Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
         """
         Run Mamba to get adaptive Q/R, then run KF predict.
@@ -1005,12 +1021,13 @@ class MambaDecoupledEKF(nn.Module):
         Args:
             track_history : [B, T, 12] — joint historical states
             delta_t       : elapsed seconds
+            class_ids     : [B] — integer category IDs for size noise
 
         Returns:
             mamba_out : dict with Q_pos/Q_siz/Q_ori/R_pos/R_siz/R_ori/embedding
             pos_x, pos_P, siz_x, siz_P, ori_x, ori_P  (predicted states)
         """
-        mamba_out = self.mamba(track_history)
+        mamba_out = self.mamba(track_history, class_ids=class_ids)
 
         pos_x, pos_P, siz_x, siz_P, ori_x, ori_P = self.kf.predict(
             delta_t,

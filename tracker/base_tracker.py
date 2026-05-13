@@ -38,6 +38,7 @@ _DEFAULT_MAMBA_CFG = {
     "MAX_BATCH_SIZE": 256,   # pre-allocated batch size
     "MIN_DIAG_Q": 0.1,       # Q head Cholesky floor
     "MIN_DIAG_R": 0.1,       # R head Cholesky floor
+    "NUM_CLASSES": 10,        # number of object categories for size embeddings
 }
 
 
@@ -75,6 +76,7 @@ class Base3DTracker:
             embed_dim=mamba_cfg["EMBED_DIM"],
             min_diag_q=mamba_cfg.get("MIN_DIAG_Q", 0.1),
             min_diag_r=mamba_cfg.get("MIN_DIAG_R", 0.1),
+            num_classes=mamba_cfg.get("NUM_CLASSES", 10),
             device=self.device,
         ).to(self.device)
 
@@ -376,9 +378,11 @@ class Base3DTracker:
         self.mamba_ekf.kf.init_states(pos_x, pos_P, siz_x, siz_P, ori_x, ori_P)
 
         # ---- 4. Mamba predict: history → Q/R/embedding, then KF predict ----
+        class_ids = torch.tensor([t.category_num for t in trajs],
+                                 dtype=torch.long, device=self.device)
         with torch.no_grad():
             mamba_out, px, pP, sx, sP, ox, oP = self.mamba_ekf.predict_with_mamba(
-                history, delta_t
+                history, delta_t, class_ids=class_ids,
             )
 
         # ---- 5. Write predicted states back to per-track storage ----

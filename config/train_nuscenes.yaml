@@ -20,6 +20,7 @@ MODEL:
   N_MAMBA_LAYERS: 3
   EMBED_DIM: 32
   HISTORY_LEN: 5            # reduced from 10; 5+5=10 frame minimum per sample
+  NUM_CLASSES: 10            # number of categories for size noise embeddings
   MIN_DIAG_Q: 0.1           # floor on Cholesky diagonal for position Q head
   MIN_DIAG_R: 0.1           # floor on Cholesky diagonal for position R head
 
