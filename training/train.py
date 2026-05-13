@@ -60,14 +60,14 @@ def training_step(
     device: torch.device,
 ) -> tuple:
     """
-    Multi-step KF rollout training step.
+    Multi-step KF rollout training with noisy teacher forcing.
 
-    Mamba runs ONCE to predict Q/R from the history window.
-    The KF is initialised from GT state at frame T, then auto-regressively
-    predict-updated for K rollout steps. Each predict step is compared to
-    the corresponding GT via NLL. This forces Mamba to learn Q/R that keep
-    the filter stable over multiple steps — a single-step prediction is
-    too easy and leads to degenerate R→0 collapse.
+    Mamba runs ONCE to predict Q/R/kappa from the history window.
+    The KF is initialised from a NOISY GT state (simulating tracking
+    uncertainty), then runs K predict-update steps. Noisy GT measurements
+    are fed to KF.update (teacher forcing), but the NLL loss at each step
+    compares predictions to CLEAN GT. The noise prevents collapse to
+    trivial solutions (min-diag Q, κ→∞).
 
     Returns:
         loss   : scalar tensor
@@ -89,10 +89,24 @@ def training_step(
     # ---- Step 1: TemporalMamba forward (ONCE) → Q/R/embedding ----
     mamba_out = mamba(history)
 
-    # ---- Step 2: Init KF from GT state at frame T ----
+    # ---- Step 2: Init KF from GT state at frame T (+ noise) ----
+    # Noise injection simulates the imperfect state estimate of a real tracker
+    # and prevents the model from collapsing to trivial min-diag/κ→∞ solutions.
+    noise_scale_pos = 0.3   # ~0.3 m positional uncertainty
+    noise_scale_siz = 0.1   # ~0.1 m size uncertainty
+    noise_scale_ori = 0.05  # ~0.05 rad (~3°) angular uncertainty
+
     pos_x0 = gt_pos.unsqueeze(-1)                                    # [B, 6, 1]
     siz_x0 = gt_siz.unsqueeze(-1)                                    # [B, 3, 1]
     ori_x0 = gt_ori.unsqueeze(-1)                                    # [B, 2, 1]
+
+    # Add noise to position state ([x,y,z] only — velocity untouched)
+    pos_x0 = pos_x0 + torch.randn_like(pos_x0) * noise_scale_pos * torch.tensor(
+        [1.0, 1.0, 1.0, 0.0, 0.0, 0.0], device=device).view(1, 6, 1)
+    siz_x0 = siz_x0 + torch.randn_like(siz_x0) * noise_scale_siz
+    ori_x0 = ori_x0 + torch.randn_like(ori_x0) * noise_scale_ori * torch.tensor(
+        [1.0, 0.0], device=device).view(1, 2, 1)  # noise on theta, not omega
+
     pos_P0 = torch.eye(6, device=device).unsqueeze(0).expand(B, -1, -1).clone()
     pos_P0[:, 3, 3] = 10.0   # vx variance: high — K can infer speed from position
     pos_P0[:, 4, 4] = 10.0   # vy variance
@@ -101,6 +115,11 @@ def training_step(
 
     kf = DecoupledAdaptiveKF(batch_size=B, device=device)
     kf.init_states(pos_x0, pos_P0, siz_x0, siz_P0, ori_x0, ori_P0)
+
+    # Measurement noise scale for teacher forcing
+    meas_noise_pos = 0.15  # ~0.15 m detector noise
+    meas_noise_siz = 0.05  # ~0.05 m size noise
+    meas_noise_ori = 0.03  # ~0.03 rad (~1.7°) angle noise
 
     # ---- Step 3: K-step KF rollout with teacher forcing ----
     Q_pos = mamba_out["Q_pos"]
@@ -144,11 +163,19 @@ def training_step(
             else:
                 detail_accum[key] = detail_accum.get(key, 0.0) + val
 
-        # No teacher forcing — KF runs pure prediction for K steps.
-        # Without GT measurements to reset the filter, prediction errors
-        # from step k propagate to step k+1, amplifying the loss at later
-        # steps. This forces Mamba to learn Q that accounts for real
-        # motion uncertainty rather than collapsing to the minimum.
+        # Noisy teacher forcing: update KF with GT + measurement noise.
+        # The noise prevents the model from collapsing to trivial solutions
+        # (min_diag Q, κ→∞) by forcing it to handle realistic measurement
+        # uncertainty. Predictions are compared to CLEAN GT — noise only
+        # enters through the KF update, simulating detector noise.
+        z_pos_k = gt_future_pos[:, k, :].unsqueeze(-1) \
+            + torch.randn(B, 3, 1, device=device) * meas_noise_pos  # [B, 3, 1]
+        z_siz_k = gt_future_siz[:, k, :].unsqueeze(-1) \
+            + torch.randn(B, 3, 1, device=device) * meas_noise_siz   # [B, 3, 1]
+        z_ori_k = gt_future_ori[:, k, :].unsqueeze(-1) \
+            + torch.randn(B, 1, 1, device=device) * meas_noise_ori   # [B, 1, 1]
+        kf.update(z_pos_k, z_siz_k, z_ori_k,
+                  R_pos=R_pos, R_siz=R_siz, R_ori=R_ori)
 
     # Average state losses across rollout steps; contrastive stays raw
     detail = {k: v / K for k, v in detail_accum.items()}
@@ -158,6 +185,12 @@ def training_step(
         loss_fn.physics_scale * detail["loss_state"] +
         loss_fn.lambda_contrast * detail["loss_contrastive"]
     )
+
+    # Weak κ² penalty prevents unbounded concentration growth.
+    # 1e-5 is small enough to not affect the primary learning signal
+    # but large enough to stop κ from reaching 2000+.
+    kappa_reg = 1e-5 * (mamba_out["kappa_ori"] ** 2).mean()
+    detail["loss_kappa_reg"] = kappa_reg.item()
 
     # ---- Step 4: Q/R/kappa variance monitor ----
     with torch.no_grad():
@@ -171,7 +204,7 @@ def training_step(
         detail["std_kappa"] = mamba_out["kappa_ori"].std(dim=0).mean().item()
         detail["mean_kappa"] = mamba_out["kappa_ori"].mean().item()
 
-    return total_loss / K, detail
+    return total_loss / K + kappa_reg, detail
 
 
 # ======================================================================
