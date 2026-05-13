@@ -230,7 +230,7 @@ class Base3DTracker:
         Stack per-track KF states into batched tensors for the filters.
 
         Returns:
-            pos_x [B,8,1], pos_P [B,8,8],
+            pos_x [B,6,1], pos_P [B,6,6],
             siz_x [B,3,1], siz_P [B,3,3],
             ori_x [B,2,1], ori_P [B,2,2]
         """
@@ -317,7 +317,7 @@ class Base3DTracker:
         Write KF-updated (fused) state back into a bbox after matching.
 
         Args:
-            pos_x : [1, 8, 1]
+            pos_x : [1, 6, 1]
             siz_x : [1, 3, 1]
             ori_x : [1, 2, 1]
         """

@@ -5,7 +5,7 @@
 # training samples for TemporalMamba.
 #
 # Each sample:
-#   Input  : track_history [T, 14]  — past T frames of a GT tracklet
+#   Input  : track_history [T, 12]  — past T frames of a GT tracklet
 #   Target : gt_next_pos [3], gt_next_size [3], gt_next_ori [1]
 #   Meta   : delta_t, instance_token (for contrastive pairing)
 # ------------------------------------------------------------------------
@@ -199,7 +199,7 @@ class TrackletDataset(Dataset):
     PyTorch Dataset for training TemporalMamba with multi-step KF rollout.
 
     Produces sliding-window samples from GT tracklets:
-      - Input:  track_history [T, 14]
+      - Input:  track_history [T, 12]
       - Target: K future GT states (pos/siz/ori) + delta_ts for each step
       - Meta:   instance_token
 

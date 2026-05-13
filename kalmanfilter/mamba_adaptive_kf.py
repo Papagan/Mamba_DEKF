@@ -610,7 +610,7 @@ class DecoupledAdaptiveKF(nn.Module):
     ) -> None:
         """
         Args:
-            pos_x0 : [B, 8, 1]   pos_P0 : [B, 8, 8]
+            pos_x0 : [B, 6, 1]   pos_P0 : [B, 6, 6]
             siz_x0 : [B, 3, 1]   siz_P0 : [B, 3, 3]
             ori_x0 : [B, 2, 1]   ori_P0 : [B, 2, 2]
         """
@@ -635,7 +635,7 @@ class DecoupledAdaptiveKF(nn.Module):
             Q_ori   : [B, 2, 2]  — from Module B (PSD-guaranteed)
 
         Returns:
-            pos_x_pred, pos_P_pred : [B,8,1], [B,8,8]
+            pos_x_pred, pos_P_pred : [B,6,1], [B,6,6]
             siz_x_pred, siz_P_pred : [B,3,1], [B,3,3]
             ori_x_pred, ori_P_pred : [B,2,1], [B,2,2]
         """
@@ -662,7 +662,7 @@ class DecoupledAdaptiveKF(nn.Module):
             z_ori : [B, 1, 1]    R_ori : [B, 1, 1]
 
         Returns:
-            pos_x_upd, pos_P_upd : [B,8,1], [B,8,8]
+            pos_x_upd, pos_P_upd : [B,6,1], [B,6,6]
             siz_x_upd, siz_P_upd : [B,3,1], [B,3,3]
             ori_x_upd, ori_P_upd : [B,2,1], [B,2,2]
         """

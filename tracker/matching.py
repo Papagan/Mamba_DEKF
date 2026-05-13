@@ -263,7 +263,7 @@ def cost_calculate_uncertainty_aware(
         trk_embeddings : [N_trk, embed_dim] — Mamba temporal embeddings
         det_embeddings : [N_det, embed_dim] — detection embeddings
                          (for new dets with no history, use zero vectors)
-        trk_pos_P      : list of [8, 8] np arrays — position covariance
+        trk_pos_P      : list of [6, 6] np arrays — position covariance
         trk_ori_P      : list of [2, 2] np arrays — orientation covariance
         is_rv          : flag for re-projected view matching
 

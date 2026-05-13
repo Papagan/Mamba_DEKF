@@ -304,7 +304,7 @@ def compute_uncertainty_penalty(
     # P_ori (2x2) captures theta/omega variance.
 
     Args:
-        pos_P_list : list of [8, 8] np arrays — position covariance per trajectory
+        pos_P_list : list of [6, 6] np arrays — position covariance per trajectory
         ori_P_list : list of [2, 2] np arrays — orientation covariance per trajectory
 
     Returns:
