@@ -300,6 +300,10 @@ class Base3DTracker:
         # become meaningful.
         if traj.track_length <= 1:
             predict_xyz = bbox.global_xyz
+            import os as _os
+            if _os.environ.get("DEBUG_TRACKER"):
+                print(f"[NEWBORN] track={traj.track_id} len={traj.track_length} "
+                      f"KF=[{px[0]:.1f},{px[1]:.1f}] det={bbox.global_xyz[:2]}", flush=True)
         else:
             predict_xyz = [px[0], px[1], px[2]]
         predict_lwh = [sx[0], sx[1], sx[2]]
