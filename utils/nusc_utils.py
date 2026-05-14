@@ -30,16 +30,6 @@ CLASS_STR_TO_SEG_CLASS = {
     5: "trailer",
     6: "truck",
 }
-# Short name → nuScenes full tracking_name (required by eval)
-SHORT_TO_NUSC_NAME = {
-    "car": "vehicle.car",
-    "truck": "vehicle.truck",
-    "bus": "vehicle.bus",
-    "trailer": "vehicle.trailer",
-    "motorcycle": "vehicle.motorcycle",
-    "bicycle": "vehicle.bicycle",
-    "pedestrian": "human.pedestrian",
-}
 
 
 def save_results_nuscenes(tracking_results, result_path):
@@ -94,8 +84,7 @@ def save_results_nuscenes(tracking_results, result_path):
                         float(bbox.global_velocity[1]),
                     ],
                     "tracking_id": str(track_id),
-                    "tracking_name": SHORT_TO_NUSC_NAME.get(
-                        bbox.category, bbox.category),
+                    "tracking_name": bbox.category,
                     "tracking_score": bbox.det_score,
                 }
                 sample_results.append(box_result)
@@ -196,8 +185,7 @@ def save_results_nuscenes_for_motion(tracking_results, result_path):
                         float(bbox.global_velocity_curve[1]),
                     ],
                     "tracking_id": str(track_id),
-                    "tracking_name": SHORT_TO_NUSC_NAME.get(
-                        bbox.category, bbox.category),
+                    "tracking_name": bbox.category,
                     "tracking_score": bbox.det_score,
                 }
                 sample_results.append(box_result)
