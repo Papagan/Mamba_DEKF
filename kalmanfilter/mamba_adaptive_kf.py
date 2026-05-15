@@ -119,6 +119,7 @@ class PositionFilter(nn.Module):
         self.B = batch_size
         self.device = device
 
+
         self.x: Tensor = torch.zeros(batch_size, self.STATE_DIM, 1, device=device)
         self.P: Tensor = torch.eye(self.STATE_DIM, device=device).unsqueeze(0).repeat(batch_size, 1, 1)
 
@@ -145,63 +146,57 @@ class PositionFilter(nn.Module):
         self.P = P0.to(self.device)
         self.B = x0.shape[0]
 
-    def build_F(self, delta_t: float) -> Tensor:
+    def build_F(self, delta_t: Tensor) -> Tensor:
         """
-        Construct the CV state-transition matrix F for a given delta_t.
+        Construct batched CV state-transition matrices.
 
-        # CV kinematics (dt = delta_t):
-        #   x_{k+1}  = x_k  + vx_k*dt
-        #   y_{k+1}  = y_k  + vy_k*dt
-        #   z_{k+1}  = z_k  + vz_k*dt
-        #   vx_{k+1} = vx_k
-        #   vy_{k+1} = vy_k
-        #   vz_{k+1} = vz_k
-        #
-        # F = [[1, 0, 0, dt,  0,  0],
-        #      [0, 1, 0,  0, dt,  0],
-        #      [0, 0, 1,  0,  0, dt],
-        #      [0, 0, 0,  1,  0,  0],
-        #      [0, 0, 0,  0,  1,  0],
-        #      [0, 0, 0,  0,  0,  1]]
+        # F[b, i, j] for each sample with its own dt[b].
 
         Args:
-            delta_t : Elapsed time in seconds.
+            delta_t : Seconds. Shape: [B] or [B, 1] or scalar.
 
         Returns:
-            F : [6, 6]
+            F : [B, 6, 6]
         """
-        dt = delta_t
-        F = torch.eye(self.STATE_DIM, device=self.device)
-        # position <- velocity
-        F[0, 3] = dt   # x  <- vx*dt
-        F[1, 4] = dt   # y  <- vy*dt
-        F[2, 5] = dt   # z  <- vz*dt
+        if not isinstance(delta_t, Tensor):
+            delta_t = torch.tensor(delta_t, device=self.device, dtype=torch.float32)
+        dt = delta_t.view(-1, 1, 1)                        # [B, 1, 1]
+        B = dt.shape[0]
+        F = torch.eye(self.STATE_DIM, device=dt.device, dtype=dt.dtype)
+        F = F.unsqueeze(0).expand(B, -1, -1).clone()       # [B, 6, 6]
+        F[:, 0, 3] = dt.squeeze(-1).squeeze(-1)            # x  ← vx*dt
+        F[:, 1, 4] = dt.squeeze(-1).squeeze(-1)            # y  ← vy*dt
+        F[:, 2, 5] = dt.squeeze(-1).squeeze(-1)            # z  ← vz*dt
         return F
 
     def predict(
         self,
-        delta_t: float,
+        delta_t: Tensor,
         Q: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
         """
-        Kalman predict step (batched, no for-loop).
+        Kalman predict step (batched, per-sample delta_t).
 
         # x_pred = F @ x                      [B,6,6] @ [B,6,1] -> [B,6,1]
         # P_pred = F @ P @ F^T + Q             [B,6,6]
 
         Args:
-            delta_t : Elapsed time in seconds since last update.
+            delta_t : Elapsed seconds. Shape: [B], [B, 1], or scalar.
             Q       : [B, 6, 6] — process noise from Module B. If None, uses default.
 
         Returns:
             x_pred : [B, 6, 1]
             P_pred : [B, 6, 6]
         """
-        F = self.build_F(delta_t)                           # [6, 6]
-        F_batch = F.unsqueeze(0).expand(self.B, -1, -1)     # [B, 6, 6]
+        F_batch = self.build_F(delta_t)                     # [B_dt, 6, 6]
+        B_state = self.x.shape[0]
+        # When delta_t is a scalar, build_F returns [1,6,6] — broadcast to state batch
+        if F_batch.shape[0] == 1 and B_state > 1:
+            F_batch = F_batch.expand(B_state, -1, -1)
+        B = F_batch.shape[0]
 
         if Q is None:
-            Q = self._default_Q.unsqueeze(0).expand(self.B, -1, -1)  # [B, 6, 6]
+            Q = self._default_Q.unsqueeze(0).expand(B, -1, -1)  # [B, 6, 6]
 
         # x_pred = F @ x   →  [B, 6, 1]
         self.x = torch.bmm(F_batch, self.x)
@@ -303,6 +298,7 @@ class SizeFilter(nn.Module):
         self.B = batch_size
         self.device = device
 
+
         self.x: Tensor = torch.zeros(batch_size, self.STATE_DIM, 1, device=device)
         self.P: Tensor = torch.eye(self.STATE_DIM, device=device).unsqueeze(0).repeat(batch_size, 1, 1)
 
@@ -321,7 +317,7 @@ class SizeFilter(nn.Module):
 
     def predict(
         self,
-        delta_t: float,
+        delta_t,          # unused (F = I constant), kept for API consistency
         Q: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
         """
@@ -330,8 +326,12 @@ class SizeFilter(nn.Module):
         # x_pred = x          (size unchanged)
         # P_pred = I @ P @ I^T + Q = P + Q
 
+        delta_t is ignored — size is assumed constant (rigid-body prior).
+        Kept in the signature for drop-in interchangeability with the
+        Position / Orientation filters.
+
         Args:
-            delta_t : Elapsed time (unused for constant model; kept for API consistency).
+            delta_t : Elapsed time (unused; kept for API consistency).
             Q       : [B, 3, 3] — process noise from Module B.
 
         Returns:
@@ -434,6 +434,7 @@ class OrientationFilter(nn.Module):
         self.B = batch_size
         self.device = device
 
+
         self.x: Tensor = torch.zeros(batch_size, self.STATE_DIM, 1, device=device)
         self.P: Tensor = torch.eye(self.STATE_DIM, device=device).unsqueeze(0).repeat(batch_size, 1, 1)
 
@@ -453,51 +454,54 @@ class OrientationFilter(nn.Module):
         self.P = P0.to(self.device)
         self.B = x0.shape[0]
 
-    def build_F(self, delta_t: float) -> Tensor:
+    def build_F(self, delta_t: Tensor) -> Tensor:
         """
-        CV state-transition Jacobian for orientation.
-
-        # theta_{k+1} = theta_k + omega_k * dt
-        # omega_{k+1} = omega_k
-        #
-        # F = [[1, dt],
-        #      [0,  1]]
+        Construct batched CV state-transition matrices for orientation.
 
         Args:
-            delta_t : Elapsed time in seconds.
+            delta_t : Seconds. Shape: [B] or [B, 1] or scalar.
 
         Returns:
-            F : [2, 2]
+            F : [B, 2, 2]
         """
-        F = torch.eye(self.STATE_DIM, device=self.device)
-        F[0, 1] = delta_t
+        if not isinstance(delta_t, Tensor):
+            delta_t = torch.tensor(delta_t, device=self.device, dtype=torch.float32)
+        dt = delta_t.view(-1, 1, 1)                        # [B, 1, 1]
+        B = dt.shape[0]
+        F = torch.eye(self.STATE_DIM, device=dt.device, dtype=dt.dtype)
+        F = F.unsqueeze(0).expand(B, -1, -1).clone()       # [B, 2, 2]
+        F[:, 0, 1] = dt.squeeze(-1).squeeze(-1)            # theta ← omega*dt
         return F
 
     def predict(
         self,
-        delta_t: float,
+        delta_t: Tensor,
         Q: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
         """
-        EKF predict step with angle wrapping (batched, no for-loop).
+        EKF predict step with angle wrapping (batched, per-sample delta_t).
 
         # x_pred = F(dt) @ x                  [B,2,2] @ [B,2,1] -> [B,2,1]
         # theta_pred = wrap_to_pi(theta_pred)
         # P_pred = F @ P @ F^T + Q            [B,2,2]
 
         Args:
-            delta_t : Elapsed time in seconds.
+            delta_t : Elapsed seconds. Shape: [B], [B, 1], or scalar.
             Q       : [B, 2, 2] — process noise from Module B.
 
         Returns:
             x_pred : [B, 2, 1]
             P_pred : [B, 2, 2]
         """
-        F = self.build_F(delta_t)                            # [2, 2]
-        F_batch = F.unsqueeze(0).expand(self.B, -1, -1)      # [B, 2, 2]
+        F_batch = self.build_F(delta_t)                     # [B_dt, 2, 2]
+        B_state = self.x.shape[0]
+        # When delta_t is a scalar, build_F returns [1,2,2] — broadcast to state batch
+        if F_batch.shape[0] == 1 and B_state > 1:
+            F_batch = F_batch.expand(B_state, -1, -1)
+        B = F_batch.shape[0]
 
         if Q is None:
-            Q = self._default_Q.unsqueeze(0).expand(self.B, -1, -1)
+            Q = self._default_Q.unsqueeze(0).expand(B, -1, -1)
 
         # x_pred = F @ x   →  [B, 2, 1]
         self.x = torch.bmm(F_batch, self.x)
@@ -598,6 +602,7 @@ class DecoupledAdaptiveKF(nn.Module):
         self.B = batch_size
         self.device = device
 
+
         self.pos_filter = PositionFilter(batch_size, device)
         self.siz_filter = SizeFilter(batch_size, device)
         self.ori_filter = OrientationFilter(batch_size, device)
@@ -620,7 +625,7 @@ class DecoupledAdaptiveKF(nn.Module):
 
     def predict(
         self,
-        delta_t: float,
+        delta_t,          # float (scalar) or [B] Tensor — per-sample when batched
         Q_pos: Optional[Tensor] = None,
         Q_siz: Optional[Tensor] = None,
         Q_ori: Optional[Tensor] = None,
@@ -628,8 +633,14 @@ class DecoupledAdaptiveKF(nn.Module):
         """
         Run predict step on all three filters independently.
 
+        Each active track can have its own dt when delta_t is a [B] Tensor.
+        The Position and Orientation filters build per-sample state-transition
+        matrices F[b] from dt[b]; the Size filter ignores dt (F = I constant).
+
         Args:
-            delta_t : Elapsed time in seconds.
+            delta_t : Elapsed seconds.  Scalar float (inference: all tracks share
+                      the same inter-frame dt) or [B] Tensor (training: per-sample
+                      rollout dt preserves individual object dynamics).
             Q_pos   : [B, 6, 6]  — from Module B (PSD-guaranteed)
             Q_siz   : [B, 3, 3]  — from Module B (PSD-guaranteed)
             Q_ori   : [B, 2, 2]  — from Module B (PSD-guaranteed)
@@ -1022,6 +1033,7 @@ class MambaDecoupledEKF(nn.Module):
         min_diag_r: float = 0.1,
         num_classes: int = 10,
         device: torch.device = torch.device("cpu"),
+        base_noise_cfg: dict = None,
     ) -> None:
         super().__init__()
         self.mamba = TemporalMamba(
@@ -1036,28 +1048,129 @@ class MambaDecoupledEKF(nn.Module):
             num_classes=num_classes,
         )
         self.kf = DecoupledAdaptiveKF(batch_size, device)
+        self.base_noise_cfg = base_noise_cfg
         self.device = device
+
+
+    def _get_base_noise(self, bsize: int, dtype: torch.dtype, class_ids: Tensor = None) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+        """
+        Produce baseline static decoupling Q/R tensors for Fallback/IMM mode based on DEKF_BASE_NOISE config.
+        """
+        if self.base_noise_cfg is None:
+            # Fallback exact defaults
+            q_pos = [0.1, 0.1, 0.1, 1.5, 1.5, 1.5]
+            q_siz = [0.05, 0.05, 0.05]
+            q_ori = [0.1]
+            
+            r_pos = torch.full((bsize, 3,), 0.2, device=self.device, dtype=dtype)
+            r_siz = torch.full((bsize, 3,), 0.3, device=self.device, dtype=dtype)
+            r_ori = torch.full((bsize, 1,), 0.2, device=self.device, dtype=dtype)
+        else:
+            Q_cfg = self.base_noise_cfg["Q"]
+            q_pos = Q_cfg["POS"]
+            q_siz = Q_cfg["SIZ"]
+            q_ori = Q_cfg["ORI"]
+            
+            R_cfg = self.base_noise_cfg["R"]
+            mul = R_cfg.get("MEAS_MULTIPLIER", 1.0)
+            
+            p_std = torch.tensor(R_cfg["POS_STD"], device=self.device, dtype=dtype) * mul
+            s_std = torch.tensor(R_cfg["SIZ_STD"], device=self.device, dtype=dtype) * mul
+            o_std = torch.tensor(R_cfg["ORI_STD"], device=self.device, dtype=dtype) * mul
+            
+            if class_ids is None:
+                r_pos = p_std[0].expand(bsize, 3) ** 2
+                r_siz = s_std[0].expand(bsize, 3) ** 2
+                r_ori = o_std[0].expand(bsize, 1) ** 2
+            else:
+                c_ids = torch.clamp(class_ids, 0, len(p_std) - 1)
+                r_pos = (p_std[c_ids] ** 2).unsqueeze(1).expand(bsize, 3)
+                r_siz = (s_std[c_ids] ** 2).unsqueeze(1).expand(bsize, 3)
+                r_ori = (o_std[c_ids] ** 2).unsqueeze(1).expand(bsize, 1)
+
+        # Process Noise Q (Constant)
+        q_pos_diag = torch.tensor(q_pos, device=self.device, dtype=dtype)
+        Q_pos_base = torch.diag(q_pos_diag).unsqueeze(0).expand(bsize, -1, -1)
+        
+        q_siz_diag = torch.tensor(q_siz, device=self.device, dtype=dtype)
+        Q_siz_base = torch.diag(q_siz_diag).unsqueeze(0).expand(bsize, -1, -1)
+        
+        # Ori process noise
+        q_ori_full = torch.tensor([q_ori[0], 0.5], device=self.device, dtype=dtype)
+        Q_ori_base = torch.diag(q_ori_full).unsqueeze(0).expand(bsize, -1, -1)
+
+        # Measurement Noise R (Batched diagonals)
+        R_pos_base = torch.diag_embed(r_pos)
+        R_siz_base = torch.diag_embed(r_siz)
+        R_ori_base = torch.diag_embed(r_ori)
+
+        return Q_pos_base, R_pos_base, Q_siz_base, R_siz_base, Q_ori_base, R_ori_base
 
     def predict_with_mamba(
         self,
         track_history: Tensor,
-        delta_t: float,
+        delta_t,          # float (scalar) or [B] Tensor — per-sample when batched
         class_ids: Optional[Tensor] = None,
+        mode: str = "mamba",
     ) -> Tuple[Dict[str, Tensor], Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
         """
         Run Mamba to get adaptive Q/R, then run KF predict.
 
+        delta_t is forwarded to DecoupledAdaptiveKF.predict():
+          - Inference: scalar float (all tracks share the inter-frame dt).
+          - Training:   [B] Tensor (each sample has its own rollout step dt).
+
         Args:
             track_history : [B, T, 12] — joint historical states
-            delta_t       : elapsed seconds
+            delta_t       : Elapsed seconds (float or [B] Tensor).
             class_ids     : [B] — integer category IDs for size noise
+            mode          : "mamba", "pure_dekf", or "fusion"
 
         Returns:
             mamba_out : dict with Q_pos/Q_siz/Q_ori/R_pos/R_siz/R_ori/embedding
             pos_x, pos_P, siz_x, siz_P, ori_x, ori_P  (predicted states)
         """
+        # Run Mamba network (O(N) operation)
         mamba_out = self.mamba(track_history, class_ids=class_ids)
 
+        if mode == "pure_dekf":
+            # Bypass Mamba noise predictions, inject static DEKF physical priors
+            bsize = track_history.size(0)
+            dtype = track_history.dtype
+            Q_p, R_p, Q_s, R_s, Q_o, R_o = self._get_base_noise(bsize, dtype, class_ids)
+            mamba_out.update({
+                "Q_pos": Q_p, "R_pos": R_p,
+                "Q_siz": Q_s, "R_siz": R_s,
+                "Q_ori": Q_o, "R_ori": R_o
+            })
+            
+        elif mode == "fusion":
+            # State-level Variance Fusion (Strategy B: Soft-Gating via Trace constraint)
+            bsize = track_history.size(0)
+            dtype = track_history.dtype
+            Q_p, R_p, Q_s, R_s, Q_o, R_o = self._get_base_noise(bsize, dtype, class_ids)
+            
+            def fuse_covariance(Q_m: Tensor, Q_b: Tensor, strict_ratio: float = 2.0) -> Tensor:
+                # trace shape: [B, 1, 1]
+                tr_m = Q_m.diagonal(dim1=-2, dim2=-1).sum(-1, keepdim=True).unsqueeze(-1)
+                tr_b = Q_b.diagonal(dim1=-2, dim2=-1).sum(-1, keepdim=True).unsqueeze(-1)
+                
+                # If Mamba trace jumps heavily above baseline (meaning OOD/Out-of-control)
+                # the weight drops to 0, smoothly falling back to physical priors.
+                # If Mamba trace is tight and confident, weight stays 1.0 (trust Mamba).
+                weight = torch.clamp(strict_ratio - (tr_m / (tr_b + 1e-6)), min=0.0, max=1.0)
+                
+                return weight * Q_m + (1.0 - weight) * Q_b
+            
+            # Fuse process noises (Q controls Kalman Gain scaling for prediction)
+            mamba_out["Q_pos"] = fuse_covariance(mamba_out["Q_pos"], Q_p)
+            mamba_out["Q_siz"] = fuse_covariance(mamba_out["Q_siz"], Q_s)
+            
+            # Fuse observation noises (R controls trustworthiness of incoming detections)
+            mamba_out["R_pos"] = fuse_covariance(mamba_out["R_pos"], R_p)
+            mamba_out["R_siz"] = fuse_covariance(mamba_out["R_siz"], R_s)
+
+        # Execute KF predict step using the active (or fused) noise models
         pos_x, pos_P, siz_x, siz_P, ori_x, ori_P = self.kf.predict(
             delta_t,
             Q_pos=mamba_out["Q_pos"],

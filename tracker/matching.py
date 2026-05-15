@@ -241,6 +241,7 @@ def cost_calculate_uncertainty_aware(
     trk_pos_P: list,
     trk_ori_P: list,
     is_rv: bool = False,
+    cal_flag = "Predict",
 ) -> tuple:
     """
     Compute uncertainty-aware cost matrix combining geometric affinity,
@@ -266,6 +267,8 @@ def cost_calculate_uncertainty_aware(
         trk_pos_P      : list of [6, 6] np arrays — position covariance
         trk_ori_P      : list of [2, 2] np arrays — orientation covariance
         is_rv          : flag for re-projected view matching
+        cal_flag       : "Predict", "BackPredict", or list of them (len=N_trk).
+                         "Fusion" is resolved to "Predict".
 
     Returns:
         cost_matrix       : [N_trk, N_det] — combined cost (lower = better)
@@ -290,12 +293,20 @@ def cost_calculate_uncertainty_aware(
     else:
         uncertainty_vec = np.zeros(N_trk)
 
+    # ---- resolve per-trajectory cal_flag ----
+    if isinstance(cal_flag, list):
+        cal_flags = [("Predict" if cf == "Fusion" else cf) for cf in cal_flag]
+    else:
+        cf = "Predict" if cal_flag == "Fusion" else cal_flag
+        cal_flags = [cf] * N_trk
+
     # ---- compute combined cost per pair ----
     for t, trk in enumerate(trajs):
+        cf = cal_flags[t]
         for d, det in enumerate(dets):
             cost_matrix[t, d] = cal_uncertainty_aware_cost(
                 trk, det, cfg,
-                cal_flag="Predict",
+                cal_flag=cf,
                 cos_sim=float(cos_sim_matrix[t, d]),
                 uncertainty=float(uncertainty_vec[t]),
             )
@@ -317,6 +328,7 @@ def match_trajs_and_dets_uncertainty_aware(
     det_embeddings: np.ndarray = None,
     trk_pos_P: list = None,
     trk_ori_P: list = None,
+    cal_flag = "Predict",
 ) -> tuple:
     """
     Uncertainty-aware matching pipeline (Module C entry point).
@@ -331,8 +343,9 @@ def match_trajs_and_dets_uncertainty_aware(
         cfg            : config dict
         trk_embeddings : [N_trk, embed_dim] or None
         det_embeddings : [N_det, embed_dim] or None
-        trk_pos_P      : list of [8,8] arrays or None
+        trk_pos_P      : list of [6,6] arrays or None
         trk_ori_P      : list of [2,2] arrays or None
+        cal_flag       : "Predict", "BackPredict", or list of them (len=N_trk)
 
     Returns:
         matched_indices : [M, 2] — (trajectory_idx, detection_idx) pairs
@@ -350,6 +363,7 @@ def match_trajs_and_dets_uncertainty_aware(
         trajs, dets, cfg,
         trk_embeddings, det_embeddings,
         trk_pos_P, trk_ori_P,
+        cal_flag=cal_flag,
     )
 
     category_map = cfg["CATEGORY_MAP_TO_NUMBER"]

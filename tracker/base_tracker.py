@@ -64,6 +64,9 @@ class Base3DTracker:
         self.history_len: int = mamba_cfg["HISTORY_LEN"]
         self.max_batch: int = mamba_cfg["MAX_BATCH_SIZE"]
 
+        # ---- Filter Mode (mamba, pure_dekf, fusion) ----
+        self.filter_mode = str(cfg.get("FILTER_MODE", "mamba")).lower()
+
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.mamba_ekf = MambaDecoupledEKF(
@@ -78,6 +81,7 @@ class Base3DTracker:
             min_diag_r=mamba_cfg.get("MIN_DIAG_R", 0.1),
             num_classes=mamba_cfg.get("NUM_CLASSES", 10),
             device=self.device,
+            base_noise_cfg=cfg.get("DEKF_BASE_NOISE", None),
         ).to(self.device)
 
         # ---- Load trained weights if checkpoint path is provided ----
@@ -310,6 +314,7 @@ class Base3DTracker:
         predict_yaw = float(ox[0])
 
         bbox.global_xyz_lwh_yaw_predict = predict_xyz + predict_lwh + [predict_yaw]
+        bbox.global_velocity_fusion = [px[3], px[4]]
         bbox.global_yaw_fusion = predict_yaw
         bbox.lwh_fusion = predict_lwh
 
@@ -395,7 +400,7 @@ class Base3DTracker:
                                  dtype=torch.long, device=self.device)
         with torch.no_grad():
             mamba_out, px, pP, sx, sP, ox, oP = self.mamba_ekf.predict_with_mamba(
-                history, delta_t, class_ids=class_ids,
+                history, delta_t, class_ids=class_ids, mode=self.filter_mode
             )
 
         # ---- 5. Write predicted states back to per-track storage ----
@@ -548,14 +553,42 @@ class Base3DTracker:
                 low_det_indices.append(i)
                 low_dets.append(det)
 
-        # ---- detection embeddings (zeros for new detections with no history) ----
-        det_embeddings_all = np.zeros((dets_cnt, self.embed_dim), dtype=np.float32) \
-            if dets_cnt > 0 else None
+        # ---- detection embeddings ----
+        cost_mode = self.cfg.get("THRESHOLD", {}).get("BEV", {}).get("COST_MODE", "geometric")
+        if dets_cnt > 0 and cost_mode == "full" and self.filter_mode in ["mamba", "fusion"]:
+            det_history = torch.zeros(dets_cnt, self.history_len, 12, device=self.device)
+            # Fill the last step with detection features
+            for idx, det in enumerate(frame_info.bboxes):
+                # [dx, dy, z, vx, vy, vz, l, w, h, yaw, omega, det_score]
+                det_history[idx, -1, :] = torch.tensor([
+                    0.0, 0.0, det.global_xyz[2],
+                    0.0, 0.0, 0.0,
+                    det.lwh[0], det.lwh[1], det.lwh[2],
+                    det.global_yaw, 0.0, det.det_score
+                ], device=self.device)
+            cat_map = self.cfg["CATEGORY_MAP_TO_NUMBER"]
+            det_class_ids = torch.tensor(
+                [cat_map.get(det.category, 0) for det in frame_info.bboxes],
+                dtype=torch.long, device=self.device)
+            with torch.no_grad():
+                det_mamba_out = self.mamba_ekf.mamba(det_history, class_ids=det_class_ids)
+            det_embeddings_all = det_mamba_out["embedding"].cpu().numpy()
+        else:
+            det_embeddings_all = np.zeros((dets_cnt, self.embed_dim), dtype=np.float32) if dets_cnt > 0 else None
 
         # ---- bookkeeping ----
         matched_track_ids: List[int] = []
         matched_bboxes: List[BBox] = []
         matched_traj_full_set: set = set()  # indices into full trajs list
+
+        # ---- per-trajectory cal_flag from COST_STATE config ----
+        if trajs_cnt > 0:
+            cost_state_cfg = self.cfg["MATCHING"]["BEV"]["COST_STATE"]
+            cal_flags = [
+                cost_state_cfg.get(t.category_num, "Predict") for t in trajs
+            ]
+        else:
+            cal_flags = []
 
         # ================================================================
         # Stage 1: all active trajs  vs  high-score dets  (strict)
@@ -569,6 +602,7 @@ class Base3DTracker:
                 det_embeddings=det_emb_high,
                 trk_pos_P=trk_pos_P,
                 trk_ori_P=trk_ori_P,
+                cal_flag=cal_flags,
             )
         else:
             match_res_1 = np.empty((0, 2), dtype=int)
@@ -603,6 +637,7 @@ class Base3DTracker:
                 if trk_pos_P is not None else None
             um_trk_ori_P = [trk_ori_P[i] for i in unmatched_traj_full_indices] \
                 if trk_ori_P is not None else None
+            um_cal_flags = [cal_flags[i] for i in unmatched_traj_full_indices]
             det_emb_low = det_embeddings_all[low_det_indices] \
                 if det_embeddings_all is not None else None
 
@@ -619,6 +654,7 @@ class Base3DTracker:
                 det_embeddings=det_emb_low,
                 trk_pos_P=um_trk_pos_P,
                 trk_ori_P=um_trk_ori_P,
+                cal_flag=um_cal_flags,
             )
         else:
             match_res_2 = np.empty((0, 2), dtype=int)

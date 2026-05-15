@@ -60,6 +60,7 @@ def von_mises_loss(
     pred = pred_yaw.squeeze(-1)       # [B]
     gt = gt_yaw.squeeze(-1)           # [B]
     k = kappa.squeeze(-1)             # [B]
+    k = torch.clamp(k, max=50.0)       # safety: prevent i0e overflow
 
     diff = pred - gt
     cos_term = -k * torch.cos(diff)                        # [B]
@@ -127,8 +128,15 @@ def kalman_nll_loss(
     # ---- logdet(S_reg)  →  [B] ----
     logdet = torch.linalg.slogdet(S_reg)[1]                   # log|S_reg|
 
-    # ---- y^T @ inv(S_reg) @ y  (solve avoids explicit inverse) ----
-    sol = torch.linalg.solve(S_reg, y)                        # [B, m, 1]
+    # ---- y^T @ inv(S_reg) @ y  (Cholesky solve with fallback) ----
+    try:
+        L = torch.linalg.cholesky(S_reg)                      # [B, m, m]
+        sol = torch.cholesky_solve(y, L)                      # [B, m, 1]
+    except RuntimeError:
+        # Fallback: increase regularisation and retry
+        S_reg = S + (eps * 100) * I
+        L = torch.linalg.cholesky(S_reg)
+        sol = torch.cholesky_solve(y, L)
     quad_form = torch.bmm(y.transpose(-1, -2), sol).squeeze(-1).squeeze(-1)  # [B]
 
     # ---- logdet safety guard (belt-and-suspenders) ----
@@ -141,92 +149,6 @@ def kalman_nll_loss(
 
     # ---- per-sample NLL + guard, then mean over batch ----
     nll_per_sample = 0.5 * (logdet + quad_form) + logdet_guard
-    return nll_per_sample.mean()
-
-
-# ======================================================================
-# Kalman NLL for Yaw (Orientation)
-# ======================================================================
-
-def wrap_to_pi(angles: torch.Tensor) -> torch.Tensor:
-    """Wrap angles to [-pi, pi]."""
-    return angles - 2.0 * math.pi * torch.round(angles / (2.0 * math.pi))
-
-
-def kalman_nll_loss_yaw(
-    z_gt: torch.Tensor,        # [B, 1]      — ground-truth yaw
-    x_pred: torch.Tensor,      # [B, 2, 1]   — predicted state [theta, omega]
-    P_pred: torch.Tensor,      # [B, 2, 2]   — predicted state covariance
-    H: torch.Tensor,           # [1, 2]       — observation matrix (selects theta)
-    R_pred: torch.Tensor,      # [B, 1, 1]   — measurement noise covariance (PSD)
-    logdet_guard_weight: float = 0.1,
-    eps: float = 1e-5,
-) -> torch.Tensor:
-    """
-    Gaussian NLL specialised for orientation (yaw) angle.
-
-    Key differences from generic kalman_nll_loss:
-
-    1. Residual y is wrapped to [-pi, pi] so that angular differences
-       are geometrically correct (e.g., π - (-π) = 0, not 2π).
-       # y = wrap_to_pi(z_gt - H @ x_pred)
-
-    2. A logdet guard prevents the "cheating" solution where Mamba
-       predicts infinite R to drive the Mahalanobis term to zero.
-       # penalty = λ * max(0, -logdet(S) - 2.0)
-
-       Unlike the old trace penalty (λ * trace(S)), this does NOT
-       push R toward zero — it only activates when the innovation
-       covariance S is pathologically large, which is the anti-cheat
-       case. The min_diag constraint in CholeskyHead already prevents
-       R → 0, so a separate lower-bound penalty is unnecessary.
-
-    Args:
-        z_gt:               Ground-truth yaw, shape [B, 1].
-        x_pred:             Predicted state [theta, omega], shape [B, 2, 1].
-        P_pred:             Predicted state covariance, shape [B, 2, 2].
-        H:                  Observation matrix [[1, 0]], shape [1, 2].
-        R_pred:             Measurement noise from Mamba, shape [B, 1, 1].
-        logdet_guard_weight: Weight λ for the anti-cheat logdet guard.
-        eps:                Small diagonal regularisation.
-
-    Returns:
-        Scalar loss (mean over batch).
-    """
-    B = z_gt.shape[0]
-    m = H.shape[0]          # = 1 for yaw
-    dev = z_gt.device
-
-    H = H.to(device=dev)
-
-    # ---- innovation  y = wrap_to_pi(z_gt - H @ x_pred)  → [B, 1, 1] ----
-    z = z_gt.unsqueeze(-1)                                    # [B, 1, 1]
-    H_batch = H.unsqueeze(0).expand(B, -1, -1)                # [B, 1, 2]
-    predicted_obs = torch.bmm(H_batch, x_pred)                # [B, 1, 1]
-    y_raw = z - predicted_obs                                  # [B, 1, 1]
-    y = wrap_to_pi(y_raw)                                      # [B, 1, 1]
-
-    # ---- innovation covariance  S = H @ P @ H^T + R  → [B, 1, 1] ----
-    S = torch.bmm(torch.bmm(H_batch, P_pred), H_batch.transpose(-1, -2)) + R_pred
-
-    # ---- regularise: S_reg = S + eps * I ----
-    I = torch.eye(m, device=dev, dtype=S.dtype).unsqueeze(0).expand(B, -1, -1)
-    S_reg = S + eps * I
-
-    # ---- logdet(S_reg) → [B] ----
-    logdet = torch.linalg.slogdet(S_reg)[1]
-
-    # ---- y^T @ inv(S_reg) @ y  (solve avoids explicit inverse) ----
-    sol = torch.linalg.solve(S_reg, y)                        # [B, 1, 1]
-    quad_form = torch.bmm(y.transpose(-1, -2), sol).squeeze(-1).squeeze(-1)  # [B]
-
-    # ---- logdet guard: prevents Mamba from predicting infinite R ----
-    # Only penalises pathologically LARGE S (logdet → +∞), never pushes R toward zero.
-    # Gradient is zero when logdet(S) < 2.0 (the vast majority of healthy cases).
-    logdet_penalty = logdet_guard_weight * F.relu(logdet - 2.0)   # [B]
-
-    # per-sample NLL + anti-cheat guard, mean over batch
-    nll_per_sample = 0.5 * (logdet + quad_form) + logdet_penalty
     return nll_per_sample.mean()
 
 

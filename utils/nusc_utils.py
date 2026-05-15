@@ -60,7 +60,11 @@ def save_results_nuscenes(tracking_results, result_path):
 
             sample_results = []
             for track_id, bbox in trajs.items():
-                global_orientation = transform_yaw2quaternion(bbox.global_yaw)
+                # Use KF-fused yaw and velocity for evaluation.
+                # The raw detection yaw/velocity (global_yaw, global_velocity) are
+                # never updated after BBox construction; using them would discard
+                # the KF's state estimates and degrade AMOTA/AMOTP metrics.
+                global_orientation = transform_yaw2quaternion(bbox.global_yaw_fusion)
                 box_result = {
                     "sample_token": sample_token,
                     "translation": [
@@ -80,8 +84,8 @@ def save_results_nuscenes(tracking_results, result_path):
                         float(global_orientation[3]),
                     ],
                     "velocity": [
-                        float(bbox.global_velocity[0]),
-                        float(bbox.global_velocity[1]),
+                        float(bbox.global_velocity_fusion[0]),
+                        float(bbox.global_velocity_fusion[1]),
                     ],
                     "tracking_id": str(track_id),
                     "tracking_name": bbox.category,

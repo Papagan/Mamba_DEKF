@@ -19,7 +19,7 @@ MODEL:
   EXPAND: 2
   N_MAMBA_LAYERS: 3
   EMBED_DIM: 32
-  HISTORY_LEN: 5            # reduced from 10; 5+5=10 frame minimum per sample
+  HISTORY_LEN: 4            # reduced from 10; 5+5=10 frame minimum per sample
   NUM_CLASSES: 10            # number of categories for size noise embeddings
   MIN_DIAG_Q: 0.1           # floor on Cholesky diagonal for position Q head
   MIN_DIAG_R: 0.1           # floor on Cholesky diagonal for position R head
@@ -29,7 +29,8 @@ TRAINING:
   BATCH_SIZE: 128
   NUM_WORKERS: 4
   EPOCHS: 100
-  LR: 1.0e-3
+  LR: 1.0e-3                # base LR for projection/head layers
+  MAMBA_LR: 5.0e-5          # lower LR for Mamba SSM backbone
   WEIGHT_DECAY: 1.0e-4
   WARMUP_EPOCHS: 3
   GRAD_CLIP_NORM: 1.0
@@ -38,7 +39,13 @@ TRAINING:
   SAVE_DIR: checkpoints/mamba_dekf/
   AUTO_UNSEAL_EPOCH: 40          # epoch at which to auto-toggle cost to "full"
   INFERENCE_CONFIG: config/nuscenes.yaml   # which inference config to update
-  ROLLOUT_STEPS: 5               # KF auto-regressive rollout depth (1 = single-step)
+  ROLLOUT_STEPS: 3               # KF auto-regressive rollout depth (1 = single-step)
+  NOISE_MAP:                     # Category-specific noise injection
+    # Order: [Car, Pedestrian, Bicycle, Motorcycle, Bus, Trailer, Truck]
+    POS_STD: [0.51, 0.27, 0.55, 0.86, 1.26, 0.91, 0.64]
+    SIZ_STD: [0.16, 0.05, 0.09, 0.13, 0.67, 1.05, 0.46]
+    ORI_STD: [0.50, 0.91, 0.86, 0.96, 0.48, 0.53, 0.45]
+    MEAS_MULTIPLIER: 0.7
 
 # ---- Loss ----
 LOSS:
@@ -47,4 +54,5 @@ LOSS:
   W_ORI: 5.0            # Von Mises loss weight (reduced from 50; VM loss is ~0.1-1.0 vs old NLL ~-1.0)
   LAMBDA_CONTRAST: 0.1
   INFONCE_TEMPERATURE: 0.07
-  PHYSICS_SCALE: 50.0   # global multiplier for state losses vs contrastive
+  PHYSICS_SCALE: 20.0   # global multiplier for state losses vs contrastive
+

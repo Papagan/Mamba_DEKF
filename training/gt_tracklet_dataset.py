@@ -204,7 +204,10 @@ class TrackletDataset(Dataset):
       - Meta:   instance_token
 
     The 12-dim feature format matches base_tracker._extract_track_history():
-        [x, y, z, vx, vy, vz, l, w, h, theta, omega, det_score]
+        [Δx, Δy, z, vx, vy, vz, l, w, h, theta, omega, det_score]
+
+    x, y are relative to the current frame (last history step) to keep
+    magnitudes small and avoid gradient saturation in Mamba's input projection.
     """
 
     def __init__(
@@ -265,16 +268,21 @@ class TrackletDataset(Dataset):
         K = self.rollout_steps
 
         # ---- Build history [T, 12] (right-aligned, zero-padded) ----
+        # x, y are made relative to the current frame's position to match
+        # inference (_extract_track_history).  This keeps feature magnitudes
+        # small and avoids a train/inference domain gap on the first two dims.
         history = np.zeros((T, 12), dtype=np.float32)
         mask = np.zeros(T, dtype=np.bool_)
+        cur = s["current_frame"]
+        ref_xyz = cur["global_xyz"]  # [x, y, z] reference for relative coords
         n_frames = len(s["history_frames"])
         for t_idx, frame in enumerate(s["history_frames"]):
             offset = T - n_frames + t_idx
-            history[offset] = frame["feature_12"]
+            feat = frame["feature_12"]
+            history[offset, 0] = feat[0] - ref_xyz[0]   # Δx
+            history[offset, 1] = feat[1] - ref_xyz[1]   # Δy
+            history[offset, 2:] = feat[2:]               # z, vx, vy, 0, l, w, h, θ, ω, score
             mask[offset] = True
-
-        # ---- Current state (for KF init at frame T) ----
-        cur = s["current_frame"]
         # pos state: [x, y, z, vx, vy, vz=0]  (6D CV model)
         gt_current_pos = np.array([
             cur["global_xyz"][0], cur["global_xyz"][1], cur["global_xyz"][2],

@@ -58,6 +58,7 @@ def training_step(
     batch: dict,
     loss_fn: JointLoss,
     device: torch.device,
+    noise_cfg: dict = None,
 ) -> tuple:
     """
     Multi-step KF rollout training with noisy teacher forcing.
@@ -98,18 +99,31 @@ def training_step(
     mamba_out = mamba(history, class_ids=class_ids)
 
     # ---- Step 2: Init KF from GT state at frame T (+ noise) ----
-    # Noise scales calibrated from CenterPoint nuScenes detection statistics
-    # (see checkpoints/mamba_dekf/noise.log). Values represent ~50-75th
-    # percentile across categories.
-    noise_scale_pos = 0.5    # pos state noise (~median: car 0.5, ped 0.27)
-    noise_scale_siz = 0.15   # size state noise (car 0.24, ped 0.06, bus 1.2)
-    noise_scale_ori = 0.15   # ori state noise (compromise; raw yaw noise 0.5-1.0)
+    if noise_cfg is None:
+        noise_cfg = {
+            "POS_STD": [0.51, 0.27, 0.55, 0.86, 1.26, 0.91, 0.64],
+            "SIZ_STD": [0.16, 0.05, 0.09, 0.13, 0.67, 1.05, 0.46],
+            "ORI_STD": [0.50, 0.91, 0.86, 0.96, 0.48, 0.53, 0.45],
+            "MEAS_MULTIPLIER": 0.7
+        }
+
+    # Category-specific noise mapped from yaml config
+    # [Car, Pedestrian, Bicycle, Motorcycle, Bus, Trailer, Truck]
+    pos_std_map = torch.tensor(noise_cfg["POS_STD"], device=device)
+    siz_std_map = torch.tensor(noise_cfg["SIZ_STD"], device=device)
+    ori_std_map = torch.tensor(noise_cfg["ORI_STD"], device=device)
+
+    # Broadcast category-specific noise to batch
+    safe_class_ids = torch.clamp(class_ids, min=0, max=6)
+    noise_scale_pos = pos_std_map[safe_class_ids].view(B, 1, 1)  # [B, 1, 1]
+    noise_scale_siz = siz_std_map[safe_class_ids].view(B, 1, 1)
+    noise_scale_ori = ori_std_map[safe_class_ids].view(B, 1, 1)
 
     pos_x0 = gt_pos.unsqueeze(-1)                                    # [B, 6, 1]
     siz_x0 = gt_siz.unsqueeze(-1)                                    # [B, 3, 1]
     ori_x0 = gt_ori.unsqueeze(-1)                                    # [B, 2, 1]
 
-    # Add noise to position state ([x,y,z] only — velocity untouched)
+    # Add dynamically mapped category noise to position state ([x,y,z] only)
     pos_x0 = pos_x0 + torch.randn_like(pos_x0) * noise_scale_pos * torch.tensor(
         [1.0, 1.0, 1.0, 0.0, 0.0, 0.0], device=device).view(1, 6, 1)
     siz_x0 = siz_x0 + torch.randn_like(siz_x0) * noise_scale_siz
@@ -125,12 +139,11 @@ def training_step(
     kf = DecoupledAdaptiveKF(batch_size=B, device=device)
     kf.init_states(pos_x0, pos_P0, siz_x0, siz_P0, ori_x0, ori_P0)
 
-    # Measurement noise for teacher forcing — calibrated from noise.log.
-    # Conservative estimate (below raw detector std because KF smoothing
-    # reduces effective noise in continuous tracking).
-    meas_noise_pos = 0.35   # position measurement noise (~avg across categories)
-    meas_noise_siz = 0.08   # size measurement noise (car 0.24, ped 0.06 → compromise)
-    meas_noise_ori = 0.15   # ori measurement noise (target κ ≈ 1/0.15² ≈ 44)
+    # Measurement noise for teacher forcing — scaled proportionally to std mapped from category
+    meas_mult = noise_cfg.get("MEAS_MULTIPLIER", 0.7)
+    meas_noise_pos = noise_scale_pos * meas_mult
+    meas_noise_siz = noise_scale_siz * meas_mult
+    meas_noise_ori = noise_scale_ori * meas_mult
 
     # ---- Step 3: K-step KF rollout with teacher forcing ----
     Q_pos = mamba_out["Q_pos"]
@@ -140,12 +153,14 @@ def training_step(
     R_siz = mamba_out["R_siz"]
     R_ori = mamba_out["R_ori"]
 
-    total_loss = 0.0
+    total_state_loss = 0.0
+    total_contrast_loss = 0.0
     detail_accum = {}
     detail_contrastive = {"loss_contrastive": 0.0, "n_valid_anchors": 0}
 
     for k in range(K):
-        dt_k = delta_ts_future[:, k].mean().item()
+        # Per-sample delta_t preserves individual object dynamics
+        dt_k = delta_ts_future[:, k]                          # [B]
 
         # KF predict with same Q for all steps
         pos_x_pred, pos_P_pred, siz_x_pred, siz_P_pred, ori_x_pred, ori_P_pred = \
@@ -155,45 +170,44 @@ def training_step(
         loss_k, detail_k = loss_fn(
             pos_x_pred, pos_P_pred, siz_x_pred, siz_P_pred, ori_x_pred, ori_P_pred,
             gt_future_pos[:, k, :], gt_future_siz[:, k, :], gt_future_ori[:, k, :],
-            mamba_out["embedding"] if k == 0 else None,  # contrastive only on step 0
+            mamba_out["embedding"] if k == 0 else None,
             instance_tokens if k == 0 else None,
             R_pos=R_pos, R_siz=R_siz, R_ori=R_ori,
             kappa_ori=mamba_out["kappa_ori"],
         )
 
-        total_loss += loss_k
+        total_state_loss += detail_k["loss_state"]
+        if k == 0:
+            total_contrast_loss = detail_k["loss_contrastive"]
         for key, val in detail_k.items():
             if key == "loss_contrastive":
                 detail_contrastive["loss_contrastive"] = max(
-                    detail_contrastive["loss_contrastive"], val)  # k=0 value
+                    detail_contrastive["loss_contrastive"], val)
             elif key == "n_valid_anchors":
                 detail_contrastive["n_valid_anchors"] = max(
                     detail_contrastive["n_valid_anchors"], int(val))
             elif key == "loss_total":
-                pass  # recomputed below
+                pass
             else:
                 detail_accum[key] = detail_accum.get(key, 0.0) + val
 
-        # Noisy teacher forcing: update KF with GT + measurement noise.
-        # The noise prevents the model from collapsing to trivial solutions
-        # (min_diag Q, κ→∞) by forcing it to handle realistic measurement
-        # uncertainty. Predictions are compared to CLEAN GT — noise only
-        # enters through the KF update, simulating detector noise.
+        # Noisy teacher forcing with category-aware measurement noise
         z_pos_k = gt_future_pos[:, k, :].unsqueeze(-1) \
-            + torch.randn(B, 3, 1, device=device) * meas_noise_pos  # [B, 3, 1]
+            + torch.randn(B, 3, 1, device=device) * meas_noise_pos
         z_siz_k = gt_future_siz[:, k, :].unsqueeze(-1) \
-            + torch.randn(B, 3, 1, device=device) * meas_noise_siz   # [B, 3, 1]
+            + torch.randn(B, 3, 1, device=device) * meas_noise_siz
         z_ori_k = gt_future_ori[:, k, :].unsqueeze(-1) \
-            + torch.randn(B, 1, 1, device=device) * meas_noise_ori   # [B, 1, 1]
+            + torch.randn(B, 1, 1, device=device) * meas_noise_ori
         kf.update(z_pos_k, z_siz_k, z_ori_k,
                   R_pos=R_pos, R_siz=R_siz, R_ori=R_ori)
 
-    # Average state losses across rollout steps; contrastive stays raw
+    # State losses averaged across rollout; contrastive kept raw
     detail = {k: v / K for k, v in detail_accum.items()}
     detail["loss_contrastive"] = detail_contrastive["loss_contrastive"]
     detail["n_valid_anchors"] = detail_contrastive["n_valid_anchors"]
+    avg_state_loss = detail["loss_state"]
     detail["loss_total"] = (
-        loss_fn.physics_scale * detail["loss_state"] +
+        loss_fn.physics_scale * avg_state_loss +
         loss_fn.lambda_contrast * detail["loss_contrastive"]
     )
 
@@ -215,7 +229,10 @@ def training_step(
         detail["std_kappa"] = mamba_out["kappa_ori"].std(dim=0).mean().item()
         detail["mean_kappa"] = mamba_out["kappa_ori"].mean().item()
 
-    return total_loss / K + kappa_reg, detail
+    real_loss = (loss_fn.physics_scale * avg_state_loss
+                 + loss_fn.lambda_contrast * total_contrast_loss
+                 + kappa_reg)
+    return real_loss, detail
 
 
 # ======================================================================
@@ -228,6 +245,7 @@ def validate(
     val_loader: DataLoader,
     loss_fn: JointLoss,
     device: torch.device,
+    noise_cfg: dict = None,
 ) -> dict:
     """Run validation and return average losses."""
     mamba.eval()
@@ -235,7 +253,7 @@ def validate(
     n_batches = 0
 
     for batch in val_loader:
-        _, detail = training_step(mamba, batch, loss_fn, device)
+        _, detail = training_step(mamba, batch, loss_fn, device, noise_cfg)
         for k, v in detail.items():
             totals[k] = totals.get(k, 0.0) + v
         n_batches += 1
@@ -444,11 +462,12 @@ def main():
         n_batches = 0
         nan_count = 0
         t0 = time.time()
+        noise_cfg = train_cfg.get("NOISE_MAP", None)
 
         for batch_idx, batch in enumerate(train_loader):
             optimizer.zero_grad()
 
-            loss, detail = training_step(mamba, batch, loss_fn, device)
+            loss, detail = training_step(mamba, batch, loss_fn, device, noise_cfg)
 
             # Check for NaN / Inf loss before backward
             if torch.isnan(loss) or torch.isinf(loss):
@@ -503,7 +522,7 @@ def main():
         avg_train = {k: v / max(n_batches, 1) for k, v in epoch_detail.items()}
 
         # ---- Validation ----
-        avg_val = validate(mamba, val_loader, loss_fn, device)
+        avg_val = validate(mamba, val_loader, loss_fn, device, noise_cfg)
 
         logger.info(
             f"Epoch {epoch+1}/{epochs} ({dt_epoch:.1f}s) | "

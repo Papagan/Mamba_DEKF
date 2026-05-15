@@ -154,7 +154,7 @@ class Trajectory:
             ]
         # Overwrite bbox.lwh with the smoothed/locked estimate.
         # This propagates into all downstream consumers (fusion, output, eval).
-        bbox.lwh = list(self.smoothed_lwh)
+        bbox.lwh_ema = list(self.smoothed_lwh)
 
         # derived velocity estimates from raw bbox history (no KF needed)
         self.bboxes[-1].global_velocity_diff = self.cal_diff_velocity()
