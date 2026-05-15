@@ -173,12 +173,18 @@ class Base3DTracker:
                 omega = 0.0
                 if t_idx > 0:
                     prev_bbox = recent[t_idx - 1]
-                    dt_frames = bbox.frame_id - prev_bbox.frame_id
-                    if dt_frames > 0:
+                    dt = bbox.timestamp - prev_bbox.timestamp
+                    if dt > 0:
                         dy = yaw - prev_bbox.global_yaw
                         # wrap to [-pi, pi]
                         dy = dy - 2.0 * np.pi * round(dy / (2.0 * np.pi))
-                        omega = dy / (dt_frames / self.frame_rate)
+                        omega = dy / dt
+                    else:
+                        dt_frames = bbox.frame_id - prev_bbox.frame_id
+                        if dt_frames > 0:
+                            dy = yaw - prev_bbox.global_yaw
+                            dy = dy - 2.0 * np.pi * round(dy / (2.0 * np.pi))
+                            omega = dy / (dt_frames / self.frame_rate)
 
                 # vz = 0 (flat-world assumption consistent with PositionFilter)
                 # x, y are relative to the latest frame in this tracklet
@@ -511,6 +517,9 @@ class Base3DTracker:
         delta_t = self._compute_delta_t(frame_info.timestamp)
         self.last_timestamp = frame_info.timestamp
 
+        for det in frame_info.bboxes:
+            det.timestamp = frame_info.timestamp
+
         # ---- get active trajectories ----
         trajs = self.get_trajectory_bbox(self.all_trajs)
         trajs_cnt = len(trajs)
@@ -678,7 +687,7 @@ class Base3DTracker:
         for i in range(trajs_cnt):
             if i not in matched_traj_full_set:
                 track_id = trajs[i].track_id
-                self.all_trajs[track_id].unmatch_update(frame_info.frame_id)
+                self.all_trajs[track_id].unmatch_update(frame_info.frame_id, timestamp=frame_info.timestamp)
 
         # ---- batch KF update for all matched tracks (both stages) ----
         if mamba_out is not None and len(matched_track_ids) > 0:

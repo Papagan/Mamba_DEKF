@@ -17,6 +17,7 @@ class BBox:
         **kwargs,
     ):
         self.frame_id = frame_id
+        self.timestamp = kwargs.get("timestamp", 0.0)
         self.is_fake = False
         self.is_interpolation = False
         self.category = bbox["category"]

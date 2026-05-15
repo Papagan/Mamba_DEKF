@@ -49,10 +49,10 @@ TRAINING:
 
 # ---- Loss ----
 LOSS:
-  W_POS: 1.0
-  W_SIZ: 0.5
-  W_ORI: 5.0            # Von Mises loss weight (reduced from 50; VM loss is ~0.1-1.0 vs old NLL ~-1.0)
-  LAMBDA_CONTRAST: 0.1
+  W_POS: 3.0
+  W_SIZ: 2.5
+  W_ORI: 4.0            # Von Mises loss weight (reduced from 50; VM loss is ~0.1-1.0 vs old NLL ~-1.0)
+  LAMBDA_CONTRAST: 0.5
   INFONCE_TEMPERATURE: 0.07
   PHYSICS_SCALE: 20.0   # global multiplier for state losses vs contrastive
 

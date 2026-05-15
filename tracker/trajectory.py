@@ -170,7 +170,7 @@ class Trajectory:
 
         return self.bboxes[-1]
 
-    def unmatch_update(self, frame_id: int) -> None:
+    def unmatch_update(self, frame_id: int, timestamp: float = None) -> None:
         """
         Called when this trajectory has no matching detection.
 
@@ -180,10 +180,13 @@ class Trajectory:
 
         Args:
             frame_id : Current frame id.
+            timestamp : Current frame timestamp.
         """
         self.unmatch_length += 1
 
         fake_bbox = copy.deepcopy(self.bboxes[-1])
+        if timestamp is not None:
+            fake_bbox.timestamp = timestamp
         # Exponential score decay for coasted predictions.
         # Pure KF predictions should not inherit the last observation's full score —
         # the longer a track goes without a real detection, the lower its confidence.
@@ -305,7 +308,9 @@ class Trajectory:
         if len(self.bboxes) > 1:
             prev_bbox = self.bboxes[-2]
             cur_bbox = self.bboxes[-1]
-            time_diff = (cur_bbox.frame_id - prev_bbox.frame_id) / self.frame_rate
+            time_diff = getattr(cur_bbox, "timestamp", 0.0) - getattr(prev_bbox, "timestamp", 0.0)
+            if time_diff <= 0:
+                time_diff = (cur_bbox.frame_id - prev_bbox.frame_id) / self.frame_rate
             if time_diff > 0:
                 position_diff = np.array(cur_bbox.global_xyz[:2]) - np.array(prev_bbox.global_xyz[:2])
                 return (position_diff / time_diff).tolist()

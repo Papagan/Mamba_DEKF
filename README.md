@@ -350,6 +350,9 @@ Mamba-DEKF/
 Or override the path:
 
 ```bash
+# Python 字节码缓存
+find . -name "__pycache__" -type d -exec rm -rf {} +
+
 python main.py --dataset nuscenes -e -p 8
 ```
 
@@ -368,6 +371,9 @@ The architecture in `MAMBA:` must match what was trained. Loading uses `strict=F
 ## 8. Tracking + Evaluation
 
 ```bash
+# 清除Python 字节码缓存
+find . -name "__pycache__" -type d -exec rm -rf {} +
+
 # Online tracking + evaluation
 python main.py --dataset kitti     -e -p 2
 python main.py --dataset nuscenes  -e -p 2
