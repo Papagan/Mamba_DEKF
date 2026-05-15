@@ -141,9 +141,12 @@ def training_step(
 
     # Measurement noise for teacher forcing — scaled proportionally to std mapped from category
     meas_mult = noise_cfg.get("MEAS_MULTIPLIER", 0.7)
-    meas_noise_pos = noise_scale_pos * meas_mult
+    meas_noise_pos = noise_scale_pos * meas_mult       # [B, 1, 1] — position noise
     meas_noise_siz = noise_scale_siz * meas_mult
     meas_noise_ori = noise_scale_ori * meas_mult
+    # Velocity observation noise: 2× position std (4× variance) so KF
+    # trusts velocity less than position (CenterPoint velocity is often zero).
+    meas_noise_vel = noise_scale_pos * meas_mult * 2.0  # [B, 1, 1]
 
     # ---- Step 3: K-step KF rollout with teacher forcing ----
     Q_pos = mamba_out["Q_pos"]
@@ -192,8 +195,15 @@ def training_step(
                 detail_accum[key] = detail_accum.get(key, 0.0) + val
 
         # Noisy teacher forcing with category-aware measurement noise
-        z_pos_k = gt_future_pos[:, k, :].unsqueeze(-1) \
-            + torch.randn(B, 3, 1, device=device) * meas_noise_pos
+        # Position observation now 5D: [x, y, z, vx, vy]. Velocity is observed
+        # directly to eliminate the KF velocity-inference lag.
+        gt_vel_xy = gt_pos[:, 3:5]  # [B, 2] — GT velocity
+        z_pos_k = torch.cat([
+            gt_future_pos[:, k, :]                      # [B, 3]
+            + torch.randn(B, 3, device=device) * meas_noise_pos.squeeze(-1),
+            gt_vel_xy                                    # [B, 2]
+            + torch.randn(B, 2, device=device) * meas_noise_vel.squeeze(-1),
+        ], dim=1).unsqueeze(-1)  # [B, 5, 1]
         z_siz_k = gt_future_siz[:, k, :].unsqueeze(-1) \
             + torch.randn(B, 3, 1, device=device) * meas_noise_siz
         z_ori_k = gt_future_ori[:, k, :].unsqueeze(-1) \

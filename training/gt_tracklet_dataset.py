@@ -311,7 +311,7 @@ class TrackletDataset(Dataset):
         return {
             "track_history": torch.from_numpy(history),           # [T, 12]
             "history_mask": torch.from_numpy(mask),               # [T]
-            "gt_current_state_pos": torch.from_numpy(gt_current_pos),  # [8]
+            "gt_current_state_pos": torch.from_numpy(gt_current_pos),  # [6]
             "gt_current_state_siz": torch.from_numpy(gt_current_siz),  # [3]
             "gt_current_state_ori": torch.from_numpy(gt_current_ori),  # [2]
             "gt_future_pos": torch.from_numpy(gt_future_pos),        # [K, 3]

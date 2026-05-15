@@ -97,11 +97,16 @@ class PositionFilter(nn.Module):
     State vector (dim=6): [x, y, z, vx, vy, vz]
       - Acceleration is NOT modelled (avoids CA inference shock/catapult).
 
-    Observation vector (dim=3): [x, y, z]
+    Observation vector (dim=5): [x, y, z, vx, vy]
+      - Velocity is observed directly (when available from the detector) to
+        eliminate the KF velocity inference lag that causes prediction drift
+        for agile objects (bicycle, pedestrian) and degrades association.
+        When detection velocity is zero (CenterPoint default), the KF infers
+        velocity from position change; when non-zero, it converges instantly.
     """
 
     STATE_DIM: int = 6
-    OBS_DIM: int = 3
+    OBS_DIM: int = 5
 
     def __init__(self, batch_size: int, device: torch.device = torch.device("cpu")) -> None:
         """
@@ -113,7 +118,7 @@ class PositionFilter(nn.Module):
         -------------------
         x : [B, 6, 1]   — state mean
         P : [B, 6, 6]   — state covariance
-        H : [3, 6]       — observation matrix (constant)
+        H : [5, 6]       — observation matrix (constant)
         """
         super().__init__()
         self.B = batch_size
@@ -123,16 +128,20 @@ class PositionFilter(nn.Module):
         self.x: Tensor = torch.zeros(batch_size, self.STATE_DIM, 1, device=device)
         self.P: Tensor = torch.eye(self.STATE_DIM, device=device).unsqueeze(0).repeat(batch_size, 1, 1)
 
-        # H selects [x, y, z] from the 6-dim state — constant across batch
+        # H selects [x, y, z, vx, vy] from the 6-dim state — constant across batch
         # H = [[1,0,0,0,0,0],
         #      [0,1,0,0,0,0],
-        #      [0,0,1,0,0,0]]   shape: [3, 6]
+        #      [0,0,1,0,0,0],
+        #      [0,0,0,1,0,0],
+        #      [0,0,0,0,1,0]]   shape: [5, 6]
         self.register_buffer("H", torch.zeros(self.OBS_DIM, self.STATE_DIM, device=device))
         self.H[0, 0] = 1.0
         self.H[1, 1] = 1.0
         self.H[2, 2] = 1.0
+        self.H[3, 3] = 1.0
+        self.H[4, 4] = 1.0
 
-        # default Q/R when Module B is not yet active (explicit .to(device) avoids CPU/GPU mismatch)
+        # default Q/R when Module B is not yet active
         self.register_buffer("_default_Q", (0.01 * torch.eye(self.STATE_DIM)).to(device))
         self.register_buffer("_default_R", (0.1 * torch.eye(self.OBS_DIM)).to(device))
 
@@ -214,34 +223,34 @@ class PositionFilter(nn.Module):
         """
         Kalman update step (batched, no for-loop).
 
-        # H       : [3, 6] (constant)
-        # S       = H @ P @ H^T + R            [B,3,3]
-        # K       = P @ H^T @ S^{-1}           [B,6,3]
-        # innov   = z - H @ x                  [B,3,1]
+        # H       : [5, 6] (constant)
+        # S       = H @ P @ H^T + R            [B,5,5]
+        # K       = P @ H^T @ S^{-1}           [B,6,5]
+        # innov   = z - H @ x                  [B,5,1]
         # x_upd   = x + K @ innov              [B,6,1]
         # P_upd   = (I - K @ H) @ P            [B,6,6]
 
         Args:
-            z : [B, 3, 1] — observation [x, y, z]
-            R : [B, 3, 3] — measurement noise from Module B. If None, uses default.
+            z : [B, 5, 1] — observation [x, y, z, vx, vy]
+            R : [B, 5, 5] — measurement noise from Module B. If None, uses default.
 
         Returns:
             x_upd : [B, 6, 1]
             P_upd : [B, 6, 6]
         """
         if R is None:
-            R = self._default_R.unsqueeze(0).expand(self.B, -1, -1)  # [B, 3, 3]
+            R = self._default_R.unsqueeze(0).expand(self.B, -1, -1)  # [B, 5, 5]
 
-        H = self.H.unsqueeze(0).expand(self.B, -1, -1)      # [B, 3, 6]
-        Ht = H.transpose(-1, -2)                             # [B, 6, 3]
+        H = self.H.unsqueeze(0).expand(self.B, -1, -1)      # [B, 5, 6]
+        Ht = H.transpose(-1, -2)                             # [B, 6, 5]
 
-        # S = H @ P @ H^T + R   →  [B, 3, 3]
+        # S = H @ P @ H^T + R   →  [B, 5, 5]
         S = torch.bmm(torch.bmm(H, self.P), Ht) + R
 
-        # K = P @ H^T @ S^{-1}  →  [B, 6, 3]
+        # K = P @ H^T @ S^{-1}  →  [B, 6, 5]
         K = torch.bmm(torch.bmm(self.P, Ht), torch.linalg.inv(S))
 
-        # innovation = z - H @ x   →  [B, 3, 1]
+        # innovation = z - H @ x   →  [B, 5, 1]
         innov = z - torch.bmm(H, self.x)
 
         # x_upd = x + K @ innovation   →  [B, 6, 1]
@@ -668,7 +677,7 @@ class DecoupledAdaptiveKF(nn.Module):
         Run update step on all three filters independently.
 
         Args:
-            z_pos : [B, 3, 1]    R_pos : [B, 3, 3]
+            z_pos : [B, 5, 1]    R_pos : [B, 5, 5]
             z_siz : [B, 3, 1]    R_siz : [B, 3, 3]
             z_ori : [B, 1, 1]    R_ori : [B, 1, 1]
 
@@ -786,7 +795,7 @@ class TemporalMamba(nn.Module):
 
     Architecture:
         Input projection → LayerNorm → Mamba SSM backbone → Output projection
-        → 2 CholeskyHeads (Q_pos[6x6], R_pos[3x3]) — position only
+        → 2 CholeskyHeads (Q_pos[6x6], R_pos[5x5]) — position only
         → 1 kappa head (orientation concentration, Von Mises)
         → Static params: Q_siz, R_siz (size), Q_ori (orientation)
         → 1 Temporal Embedding head (for semantic data association)
@@ -861,7 +870,7 @@ class TemporalMamba(nn.Module):
 
         # ---- Position Noise (Cholesky heads — only Mamba-adaptive module) ----
         self.head_Q_pos = CholeskyHead(d_model, mat_dim=6, min_diag=min_diag_q)   # Q for Pos  [B,6,6]
-        self.head_R_pos = CholeskyHead(d_model, mat_dim=3, min_diag=min_diag_r)   # R for Pos  [B,3,3]
+        self.head_R_pos = CholeskyHead(d_model, mat_dim=5, min_diag=min_diag_r)   # R for Pos  [B,5,5] (x,y,z,vx,vy)
 
         # ---- Size Noise (category-aware embeddings — rigid-body prior) ----
         # Initialised from CenterPoint nuScenes detection statistics
@@ -935,7 +944,7 @@ class TemporalMamba(nn.Module):
                 "Q_pos"     : [B, 6, 6]  — position process noise     (PSD)
                 "Q_siz"     : [B, 3, 3]  — size process noise          (static)
                 "Q_ori"     : [B, 2, 2]  — orientation process noise   (static)
-                "R_pos"     : [B, 3, 3]  — position measurement noise  (PSD)
+                "R_pos"     : [B, 5, 5]  — position measurement noise  (PSD)
                 "R_siz"     : [B, 3, 3]  — size measurement noise      (static)
                 "R_ori"     : [B, 1, 1]  — orientation measurement noise (1/kappa)
                 "kappa_ori" : [B, 1]     — Von Mises concentration for loss
@@ -971,7 +980,7 @@ class TemporalMamba(nn.Module):
 
         # ---- Position Noise (Cholesky heads) ----
         Q_pos = self.head_Q_pos(h_last)    # [B, 6, 6]
-        R_pos = self.head_R_pos(h_last)    # [B, 3, 3]
+        R_pos = self.head_R_pos(h_last)    # [B, 5, 5]
 
         # ---- Size Noise (category-aware embeddings) ----
         # Each category learns its own Q/R diagonal in log-space.
@@ -1055,14 +1064,16 @@ class MambaDecoupledEKF(nn.Module):
     def _get_base_noise(self, bsize: int, dtype: torch.dtype, class_ids: Tensor = None) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
         """
         Produce baseline static decoupling Q/R tensors for Fallback/IMM mode based on DEKF_BASE_NOISE config.
+        R_pos is [B,5,5] for [x,y,z,vx,vy] observations — velocity is observed directly to eliminate
+        inference lag for agile objects.
         """
         if self.base_noise_cfg is None:
             # Fallback exact defaults
             q_pos = [0.1, 0.1, 0.1, 1.5, 1.5, 1.5]
             q_siz = [0.05, 0.05, 0.05]
             q_ori = [0.1]
-            
-            r_pos = torch.full((bsize, 3,), 0.2, device=self.device, dtype=dtype)
+
+            r_pos = torch.full((bsize, 5,), 0.2, device=self.device, dtype=dtype)
             r_siz = torch.full((bsize, 3,), 0.3, device=self.device, dtype=dtype)
             r_ori = torch.full((bsize, 1,), 0.2, device=self.device, dtype=dtype)
         else:
@@ -1070,21 +1081,30 @@ class MambaDecoupledEKF(nn.Module):
             q_pos = Q_cfg["POS"]
             q_siz = Q_cfg["SIZ"]
             q_ori = Q_cfg["ORI"]
-            
+
             R_cfg = self.base_noise_cfg["R"]
             mul = R_cfg.get("MEAS_MULTIPLIER", 1.0)
-            
+
             p_std = torch.tensor(R_cfg["POS_STD"], device=self.device, dtype=dtype) * mul
             s_std = torch.tensor(R_cfg["SIZ_STD"], device=self.device, dtype=dtype) * mul
             o_std = torch.tensor(R_cfg["ORI_STD"], device=self.device, dtype=dtype) * mul
-            
+            # Velocity measurement noise: det velocity is often zero (CenterPoint) —
+            # use a high std so the KF trusts velocity observations less than position.
+            v_std = torch.tensor(R_cfg.get("VEL_STD", [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]),
+                                 device=self.device, dtype=dtype) * mul
+
             if class_ids is None:
-                r_pos = p_std[0].expand(bsize, 3) ** 2
+                r_pos_xyz = p_std[0].expand(bsize, 3) ** 2          # [bsize, 3]
+                r_pos_v = v_std[0].expand(bsize, 2) ** 2             # [bsize, 2]
+                r_pos = torch.cat([r_pos_xyz, r_pos_v], dim=-1)      # [bsize, 5]
                 r_siz = s_std[0].expand(bsize, 3) ** 2
                 r_ori = o_std[0].expand(bsize, 1) ** 2
             else:
                 c_ids = torch.clamp(class_ids, 0, len(p_std) - 1)
-                r_pos = (p_std[c_ids] ** 2).unsqueeze(1).expand(bsize, 3)
+                c_ids_v = torch.clamp(class_ids, 0, len(v_std) - 1)
+                r_pos_xyz = (p_std[c_ids] ** 2).unsqueeze(1).expand(bsize, 3)
+                r_pos_v   = (v_std[c_ids_v] ** 2).unsqueeze(1).expand(bsize, 2)
+                r_pos = torch.cat([r_pos_xyz, r_pos_v], dim=-1)      # [bsize, 5]
                 r_siz = (s_std[c_ids] ** 2).unsqueeze(1).expand(bsize, 3)
                 r_ori = (o_std[c_ids] ** 2).unsqueeze(1).expand(bsize, 1)
 
@@ -1191,7 +1211,7 @@ class MambaDecoupledEKF(nn.Module):
         Run KF update using Mamba-predicted R matrices.
 
         Args:
-            z_pos     : [B, 3, 1]
+            z_pos     : [B, 5, 1]
             z_siz     : [B, 3, 1]
             z_ori     : [B, 1, 1]
             mamba_out : dict from predict_with_mamba

@@ -206,7 +206,9 @@ class StatePredictionLoss(nn.Module):
         self.w_siz = w_siz
         self.w_ori = w_ori
 
-        # H_pos: [3, 6] — selects [x, y, z] from 6-dim position state
+        # H_pos: [3, 6] — selects [x, y, z] from 6-dim state for NLL loss.
+        # The KF update uses a 5D observation [x,y,z,vx,vy], but the NLL loss
+        # only evaluates position prediction quality (velocity is auxiliary).
         self.register_buffer("H_pos", torch.zeros(3, 6))
         self.H_pos[0, 0] = 1.0
         self.H_pos[1, 1] = 1.0
@@ -236,13 +238,13 @@ class StatePredictionLoss(nn.Module):
             loss   : scalar tensor (differentiable)
             detail : dict with individual loss values for logging
         """
-        # Position: Kalman NLL
+        # Position: Kalman NLL (on xyz only — velocity is auxiliary for KF update)
         loss_pos = kalman_nll_loss(
             z_gt=gt_next_pos,
             x_pred=pos_x_pred,
             P_pred=pos_P_pred,
             H=self.H_pos,
-            R_pred=R_pos,
+            R_pred=R_pos[:, :3, :3],  # [B,3,3] position sub-block of [B,5,5] R_pos
         )
 
         # Size: Kalman NLL

@@ -454,11 +454,15 @@ class Base3DTracker:
         # ---- build observation tensors from matched detections ----
         z_pos_list, z_siz_list, z_ori_list = [], [], []
         for bbox in matched_bboxes:
-            z_pos_list.append([bbox.global_xyz[0], bbox.global_xyz[1], bbox.global_xyz[2]])
+            vel = bbox.global_velocity  # [vx, vy] from detection
+            z_pos_list.append([
+                bbox.global_xyz[0], bbox.global_xyz[1], bbox.global_xyz[2],
+                vel[0], vel[1],
+            ])
             z_siz_list.append(bbox.lwh)
             z_ori_list.append([bbox.global_yaw])
 
-        z_pos = torch.tensor(z_pos_list, device=dev, dtype=torch.float32).unsqueeze(-1)  # [B_m, 3, 1]
+        z_pos = torch.tensor(z_pos_list, device=dev, dtype=torch.float32).unsqueeze(-1)  # [B_m, 5, 1]
         z_siz = torch.tensor(z_siz_list, device=dev, dtype=torch.float32).unsqueeze(-1)  # [B_m, 3, 1]
         z_ori = torch.tensor(z_ori_list, device=dev, dtype=torch.float32).unsqueeze(-1)  # [B_m, 1, 1]
 
@@ -546,16 +550,20 @@ class Base3DTracker:
             ]
 
         # ---- detection split: ByteTrack two-stage matching paradigm ----
-        # High-score dets (≥0.4) → strict matching + can birth new tracks
-        # Low-score dets  (0.1–0.4) → relaxed matching only (no birth)
-        # Score < 0.1 → discarded
+        # High-score dets → strict matching + can birth new tracks
+        # Low-score dets  → relaxed matching only (no birth)
+        # Birth threshold is per-category (BIRTH_SCORE) to suppress false
+        # tracks from noisy detectors (esp. bicycle/motorcycle).
         high_det_indices: List[int] = []   # original indices in frame_info.bboxes
         low_det_indices: List[int] = []
         high_dets: List[BBox] = []
         low_dets: List[BBox] = []
+        birth_cfg = self.cfg["THRESHOLD"]["TRAJECTORY_THRE"].get("BIRTH_SCORE", {})
         for i, det in enumerate(frame_info.bboxes):
             score = det.det_score
-            if score >= 0.4:
+            cat_num = self.cfg["CATEGORY_MAP_TO_NUMBER"].get(det.category, 0)
+            birth_thre = birth_cfg.get(cat_num, 0.4)
+            if score >= birth_thre:
                 high_det_indices.append(i)
                 high_dets.append(det)
             elif score >= 0.1:

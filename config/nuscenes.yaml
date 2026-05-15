@@ -92,32 +92,31 @@ THRESHOLD:
     CACHE_BBOX_LENGTH: {0: 30, 1: 30, 2: 30, 3: 30, 4: 30, 5: 30, 6: 30}
 
     # Max consecutive coast (predict-only) frames before death.
-    # V2 uses CV model — all categories can coast ~1-2s equally well at 2Hz.
-    # Recommended: 15 for all (was 7-22 scattered). Lower = dies faster, fewer FP.
-    PREDICT_BBOX_LENGTH: {0: 15, 1: 15, 2: 15, 3: 15, 4: 15, 5: 15, 6: 15}
+    # Lower = dies faster during occlusion, fewer ID switches but may fragment.
+    PREDICT_BBOX_LENGTH: {0: 15, 1: 15, 2: 8, 3: 10, 4: 15, 5: 15, 6: 15}
 
     # Max unmatched frames before status → obscured (not output, but still matchable).
-    # Higher = more tolerant of missed detections, fewer ID switches.
-    # Recommended: 2 for car (most common), 1 for others.
     MAX_UNMATCH_LENGTH: {0: 2, 1: 1, 2: 1, 3: 1, 4: 2, 5: 1, 6: 1}
 
     # Min frames before a track is considered "confirmed" (status=1, output).
-    # 1 = confirmed on first match. Higher = stricter, fewer FP.
-    CONFIRMED_TRACK_LENGTH: {0: 1, 1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1}
+    # 3 for bicycle/motorcycle suppresses false tracks from noisy detections.
+    CONFIRMED_TRACK_LENGTH: {0: 1, 1: 1, 2: 3, 3: 3, 4: 1, 5: 1, 6: 1}
 
     # Max frames out-of-view before death (0 = disabled)
     DELET_OUT_VIEW_LENGTH: {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0}
 
     # Detection score threshold for a track to become confirmed.
-    # Recommended: 0.5 (was 0.7 — too strict for zero-velocity detectors)
     CONFIRMED_DET_SCORE: {0: 0.5, 1: 0.5, 2: 0.5, 3: 0.5, 4: 0.5, 5: 0.5, 6: 0.5}
 
+    # Detection score threshold to CREATE a new track (Strict Birth).
+    # Higher for noisy categories (bicycle, motorcycle) to suppress false tracks.
+    # CenterPoint produces many false bicycle detections at score 0.4-0.55.
+    BIRTH_SCORE: {0: 0.40, 1: 0.45, 2: 0.55, 3: 0.50, 4: 0.35, 5: 0.35, 6: 0.35}
+
     # Sentinel value for filter-predicted bboxes (excluded from output).
-    # -1 means never matches any real score → effectively disabled.
     IS_FILTER_PREDICT_BOX: {0: -1, 1: -1, 2: -1, 3: -1, 4: -1, 5: -1, 6: -1}
 
     # Matching cost threshold for track confirmation promotion.
-    # Lower = stricter matching required for confirmation.
     CONFIRMED_MATCHED_SCORE:  {0: 0.3, 1: 0.3, 2: 0.3, 3: 0.3, 4: 0.3, 5: 0.3, 6: 0.3} 
 
 
@@ -130,11 +129,15 @@ DEKF_BASE_NOISE:
     ORI: [0.1]                          # [yaw]
 
   # Base Measurement Noise Diagonals from actual dataset noise.log statistics (Standard deviations)
-  # R_POS (x,y,z), R_SIZ (l,w,h) , R_ORI (yaw) mapped by class ID. 
+  # R_POS (x,y,z), R_SIZ (l,w,h) , R_ORI (yaw) mapped by class ID.
   # Class ID map:
   # 0:car, 1:ped, 2:bicycle, 3:motorcycle, 4:bus, 5:trailer, 6:truck
   R:
     POS_STD: [0.51, 0.27, 0.55, 0.86, 1.26, 0.91, 0.64]
     SIZ_STD: [0.16, 0.05, 0.09, 0.13, 0.67, 1.05, 0.46]
     ORI_STD: [0.50, 0.91, 0.86, 0.96, 0.48, 0.53, 0.45]
+    # Velocity measurement noise (standard deviation, per category).
+    # Higher values = less trust in detection velocity (CenterPoint v=0 is often wrong).
+    # Bicycle/motorcycle/pedestrian get lower noise so KF infers velocity faster.
+    VEL_STD: [3.0, 1.5, 1.0, 1.5, 5.0, 5.0, 3.0]
     MEAS_MULTIPLIER: 0.7  # Temporal coherency smoothing factor
