@@ -23,8 +23,8 @@ MODEL:
   NUM_CLASSES: 10            # number of categories for size noise embeddings
   MIN_DIAG_Q: 0.1           # floor on Cholesky diagonal for position Q head
   MIN_DIAG_R: 0.1           # floor on Cholesky diagonal for position R head
-  MIN_DIAG_SIZ: 0.05        # floor on size noise diagonal (prevents NLL→-∞ collapse)
-  MIN_KAPPA: 0.1            # floor on kappa (prevents R_ori→∞, degenerate kappa→0)
+  MIN_DIAG_SIZ: 0.15        # floor on size noise diagonal (prevents NLL→-∞ collapse)
+  MIN_KAPPA: 0.5            # floor on kappa (prevents R_ori→∞, degenerate kappa→0)
 
 # ---- Training ----
 TRAINING:
@@ -35,7 +35,7 @@ TRAINING:
   MAMBA_LR: 5.0e-5          # lower LR for Mamba SSM backbone
   WEIGHT_DECAY: 1.0e-4
   WARMUP_EPOCHS: 3             # LR scheduler warmup
-  WARMUP_UNCERTAINTY_EPOCHS: 3 # detach Q/R/kappa, use L2 angle loss
+  WARMUP_UNCERTAINTY_EPOCHS: 8 # detach Q/R/kappa, use L2 angle loss
   GRAD_CLIP_NORM: 1.0
   LOG_EVERY: 50
   SAVE_EVERY: 10
@@ -53,9 +53,9 @@ TRAINING:
 # ---- Loss ----
 LOSS:
   W_POS: 3.0
-  W_SIZ: 2.5
-  W_ORI: 4.0            # Von Mises loss weight (reduced from 50; VM loss is ~0.1-1.0 vs old NLL ~-1.0)
+  W_SIZ: 1.0            # reduced: raw_r_siz init is very negative, don't amplify
+  W_ORI: 1.5            # Von Mises NLL range ~0.1-1.0, no need for 50x
   LAMBDA_CONTRAST: 0.5
   INFONCE_TEMPERATURE: 0.07
-  PHYSICS_SCALE: 20.0   # global multiplier for state losses vs contrastive
+  PHYSICS_SCALE: 5.0    # reduced from 20: let pos gradient survive against siz
 

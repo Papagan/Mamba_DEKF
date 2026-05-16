@@ -60,7 +60,7 @@ def von_mises_loss(
     pred = pred_yaw.squeeze(-1)       # [B]
     gt = gt_yaw.squeeze(-1)           # [B]
     k = kappa.squeeze(-1)             # [B]
-    k = torch.clamp(k, max=50.0)       # safety: prevent i0e overflow
+    k = torch.clamp(k, min=0.5, max=50.0)   # min prevents κ→0 degenerate shortcut
 
     diff = pred - gt
     cos_term = -k * torch.cos(diff)                        # [B]
@@ -139,13 +139,11 @@ def kalman_nll_loss(
         sol = torch.cholesky_solve(y, L)
     quad_form = torch.bmm(y.transpose(-1, -2), sol).squeeze(-1).squeeze(-1)  # [B]
 
-    # ---- logdet safety guard (belt-and-suspenders) ----
-    # min_diag in CholeskyHead already prevents R → 0. This penalty only
-    # fires when logdet(S) per observation-dimension falls below -5, which
-    # corresponds to mean eigenvalue < e^{-5} ≈ 0.007. In healthy operation
-    # with min_diag = 0.1, eigenvalues are ≥ 0.01, so this is a no-op.
+    # ---- logdet safety guard: fires when eigenvalue < e^{-2} ≈ 0.135.
+    # 0.5 coefficient matches the NLL 0.5 prefactor, providing symmetric
+    # gradient push-back against logdet → -∞ (size NLL collapse).
     logdet_per_dim = logdet / m
-    logdet_guard = 0.01 * F.relu(-logdet_per_dim - 5.0)  # [B]
+    logdet_guard = 0.5 * F.relu(-logdet_per_dim - 2.0)  # [B]
 
     # ---- per-sample NLL + guard, then mean over batch ----
     nll_per_sample = 0.5 * (logdet + quad_form) + logdet_guard
@@ -199,7 +197,7 @@ class StatePredictionLoss(nn.Module):
         self,
         w_pos: float = 1.0,
         w_siz: float = 0.5,
-        w_ori: float = 50.0,
+        w_ori: float = 1.0,
     ) -> None:
         super().__init__()
         self.w_pos = w_pos
@@ -372,7 +370,7 @@ class JointLoss(nn.Module):
         self,
         w_pos: float = 1.0,
         w_siz: float = 0.5,
-        w_ori: float = 50.0,
+        w_ori: float = 1.0,
         lambda_contrast: float = 0.1,
         temperature: float = 0.07,
         physics_scale: float = 50.0,

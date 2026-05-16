@@ -921,7 +921,7 @@ class TemporalMamba(nn.Module):
         nn.init.uniform_(self.head_kappa_ori.weight, -1e-4, 1e-4)
         nn.init.constant_(self.head_kappa_ori.bias, 0.0)
 
-        self.raw_q_ori = nn.Parameter(torch.full((1,), -4.0))
+        self.raw_q_ori = nn.Parameter(torch.full((1,), -1.0))
 
         # ---- Temporal Embedding head (for semantic association in Module C) ----
         self.embed_head = nn.Sequential(
@@ -1001,7 +1001,9 @@ class TemporalMamba(nn.Module):
         # ---- Orientation: Von Mises kappa + static Q, derived R ----
         # kappa: concentration parameter (higher = more confident)
         # min_kappa floor prevents kappa → 0 → R_ori → ∞ (degenerate solution)
+        # clamp provides double protection: floor at init + ceiling at forward
         kappa_ori = F.softplus(self.head_kappa_ori(h_last)) + self.min_kappa   # [B, 1]
+        kappa_ori = torch.clamp(kappa_ori, min=self.min_kappa, max=50.0)
 
         # R_ori = 1 / kappa (measurement noise derived from concentration)
         R_ori = (1.0 / kappa_ori).unsqueeze(-1)                       # [B, 1, 1]
