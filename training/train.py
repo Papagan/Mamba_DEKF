@@ -28,6 +28,7 @@ import torch
 # deprecation warning in PyTorch 2.1+. Harmless, suppressed here.
 warnings.filterwarnings("ignore", message=".*epoch parameter.*")
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
