@@ -23,6 +23,8 @@ MODEL:
   NUM_CLASSES: 10            # number of categories for size noise embeddings
   MIN_DIAG_Q: 0.1           # floor on Cholesky diagonal for position Q head
   MIN_DIAG_R: 0.1           # floor on Cholesky diagonal for position R head
+  MIN_DIAG_SIZ: 0.05        # floor on size noise diagonal (prevents NLL→-∞ collapse)
+  MIN_KAPPA: 0.1            # floor on kappa (prevents R_ori→∞, degenerate kappa→0)
 
 # ---- Training ----
 TRAINING:

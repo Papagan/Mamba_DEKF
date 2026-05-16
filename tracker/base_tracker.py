@@ -38,6 +38,8 @@ _DEFAULT_MAMBA_CFG = {
     "MAX_BATCH_SIZE": 256,   # pre-allocated batch size
     "MIN_DIAG_Q": 0.1,       # Q head Cholesky floor
     "MIN_DIAG_R": 0.1,       # R head Cholesky floor
+    "MIN_DIAG_SIZ": 0.05,   # size noise floor (prevents NLL→-∞)
+    "MIN_KAPPA": 0.1,        # kappa floor (prevents R_ori→∞)
     "NUM_CLASSES": 10,        # number of object categories for size embeddings
 }
 
@@ -80,6 +82,8 @@ class Base3DTracker:
             min_diag_q=mamba_cfg.get("MIN_DIAG_Q", 0.1),
             min_diag_r=mamba_cfg.get("MIN_DIAG_R", 0.1),
             num_classes=mamba_cfg.get("NUM_CLASSES", 10),
+            min_diag_siz=mamba_cfg.get("MIN_DIAG_SIZ", 0.05),
+            min_kappa=mamba_cfg.get("MIN_KAPPA", 0.1),
             device=self.device,
             base_noise_cfg=cfg.get("DEKF_BASE_NOISE", None),
         ).to(self.device)

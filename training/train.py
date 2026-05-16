@@ -377,6 +377,8 @@ def main():
         min_diag_q=model_cfg.get("MIN_DIAG_Q", 0.1),
         min_diag_r=model_cfg.get("MIN_DIAG_R", 0.1),
         num_classes=model_cfg.get("NUM_CLASSES", 10),
+        min_diag_siz=model_cfg.get("MIN_DIAG_SIZ", 0.05),
+        min_kappa=model_cfg.get("MIN_KAPPA", 0.1),
     ).to(device)
 
     n_params = sum(p.numel() for p in mamba.parameters() if p.requires_grad)

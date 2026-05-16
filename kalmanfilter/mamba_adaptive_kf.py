@@ -821,6 +821,8 @@ class TemporalMamba(nn.Module):
         min_diag_q: float = 0.1,
         min_diag_r: float = 0.1,
         num_classes: int = 10,
+        min_diag_siz: float = 0.05,
+        min_kappa: float = 0.1,
     ) -> None:
         """
         Args:
@@ -833,10 +835,14 @@ class TemporalMamba(nn.Module):
             min_diag_q     : Floor on Cholesky diagonal for Q heads (process noise).
             min_diag_r     : Floor on Cholesky diagonal for R heads (measurement noise).
             num_classes    : Number of object categories for size embeddings.
+            min_diag_siz   : Floor on size noise diagonal (prevents NLL→-∞ collapse).
+            min_kappa      : Floor on kappa (prevents R_ori→∞).
         """
         super().__init__()
         self.d_model = d_model
         self.embed_dim = embed_dim
+        self.min_diag_siz = min_diag_siz
+        self.min_kappa = min_kappa
 
         # input projection: 13 → d_model
         self.input_proj = nn.Linear(self.INPUT_DIM, d_model)
@@ -987,14 +993,15 @@ class TemporalMamba(nn.Module):
         # Pedestrians (~0.06m noise) vs trailers (~1.93m noise) differ by 30×.
         if class_ids is None:
             class_ids = torch.zeros(B, dtype=torch.long, device=dev)
-        q_siz_diag = F.softplus(self.raw_q_siz(class_ids)) + 1e-4    # [B, 3]
-        r_siz_diag = F.softplus(self.raw_r_siz(class_ids)) + 1e-4    # [B, 3]
+        q_siz_diag = F.softplus(self.raw_q_siz(class_ids)) + self.min_diag_siz  # [B, 3]
+        r_siz_diag = F.softplus(self.raw_r_siz(class_ids)) + self.min_diag_siz  # [B, 3]
         Q_siz = torch.diag_embed(q_siz_diag)                           # [B, 3, 3]
         R_siz = torch.diag_embed(r_siz_diag)                           # [B, 3, 3]
 
         # ---- Orientation: Von Mises kappa + static Q, derived R ----
         # kappa: concentration parameter (higher = more confident)
-        kappa_ori = F.softplus(self.head_kappa_ori(h_last)) + 1e-3   # [B, 1]
+        # min_kappa floor prevents kappa → 0 → R_ori → ∞ (degenerate solution)
+        kappa_ori = F.softplus(self.head_kappa_ori(h_last)) + self.min_kappa   # [B, 1]
 
         # R_ori = 1 / kappa (measurement noise derived from concentration)
         R_ori = (1.0 / kappa_ori).unsqueeze(-1)                       # [B, 1, 1]
@@ -1041,6 +1048,8 @@ class MambaDecoupledEKF(nn.Module):
         min_diag_q: float = 0.1,
         min_diag_r: float = 0.1,
         num_classes: int = 10,
+        min_diag_siz: float = 0.05,
+        min_kappa: float = 0.1,
         device: torch.device = torch.device("cpu"),
         base_noise_cfg: dict = None,
     ) -> None:
@@ -1055,6 +1064,8 @@ class MambaDecoupledEKF(nn.Module):
             min_diag_q=min_diag_q,
             min_diag_r=min_diag_r,
             num_classes=num_classes,
+            min_diag_siz=min_diag_siz,
+            min_kappa=min_kappa,
         )
         self.kf = DecoupledAdaptiveKF(batch_size, device)
         self.base_noise_cfg = base_noise_cfg
