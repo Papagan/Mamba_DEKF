@@ -59,6 +59,8 @@ def training_step(
     loss_fn: JointLoss,
     device: torch.device,
     noise_cfg: dict = None,
+    epoch: int = 0,
+    warmup_epochs: int = 0,
 ) -> tuple:
     """
     Multi-step KF rollout training with noisy teacher forcing.
@@ -67,8 +69,13 @@ def training_step(
     The KF is initialised from a NOISY GT state (simulating tracking
     uncertainty), then runs K predict-update steps. Noisy GT measurements
     are fed to KF.update (teacher forcing), but the NLL loss at each step
-    compares predictions to CLEAN GT. The noise prevents collapse to
-    trivial solutions (min-diag Q, κ→∞).
+    compares predictions to CLEAN GT.
+
+    Confidence warmup (epoch < warmup_epochs):
+      Q/R/kappa are detached → constant noise → gradients only flow through
+      state predictions (x_pred, P_pred), forcing Mamba backbone to learn
+      accurate feature representations before the uncertainty heads are
+      released. Orientation uses angle_loss (1-cos) instead of Von Mises NLL.
 
     Returns:
         loss   : scalar tensor
@@ -148,6 +155,11 @@ def training_step(
     # trusts velocity less than position (CenterPoint velocity is often zero).
     meas_noise_vel = noise_scale_pos * meas_mult * 2.0  # [B, 1, 1]
 
+    # ---- Confidence warmup: detach uncertainty heads for first N epochs ----
+    # Forces Mamba backbone to learn accurate feature representations before
+    # the uncertainty heads can take shortcuts (κ→0, R→0, logdet→-∞).
+    in_warmup = epoch < warmup_epochs
+
     # ---- Step 3: K-step KF rollout with teacher forcing ----
     Q_pos = mamba_out["Q_pos"]
     Q_siz = mamba_out["Q_siz"]
@@ -155,6 +167,16 @@ def training_step(
     R_pos = mamba_out["R_pos"]
     R_siz = mamba_out["R_siz"]
     R_ori = mamba_out["R_ori"]
+    kappa_ori = mamba_out["kappa_ori"]
+
+    if in_warmup:
+        Q_pos = Q_pos.detach()
+        Q_siz = Q_siz.detach()
+        Q_ori = Q_ori.detach()
+        R_pos = R_pos.detach()
+        R_siz = R_siz.detach()
+        R_ori = R_ori.detach()
+        kappa_ori = kappa_ori.detach()
 
     total_state_loss = 0.0
     total_contrast_loss = 0.0
@@ -176,7 +198,8 @@ def training_step(
             mamba_out["embedding"] if k == 0 else None,
             instance_tokens if k == 0 else None,
             R_pos=R_pos, R_siz=R_siz, R_ori=R_ori,
-            kappa_ori=mamba_out["kappa_ori"],
+            kappa_ori=kappa_ori,
+            in_warmup=in_warmup,
         )
 
         total_state_loss += detail_k["loss_state"]
@@ -221,10 +244,10 @@ def training_step(
         loss_fn.lambda_contrast * detail["loss_contrastive"]
     )
 
-    # Weak κ² penalty prevents unbounded concentration growth.
-    # 1e-5 is small enough to not affect the primary learning signal
-    # but large enough to stop κ from reaching 2000+.
-    kappa_reg = 1e-5 * (mamba_out["kappa_ori"] ** 2).mean()
+    # κ overconfidence penalty: only fires when κ > 20 (R_ori < 0.05),
+    # i.e. the model is overconfident about orientation.  During normal
+    # operation with min_kappa=0.1, κ stays in [0.1, ~5] and this is a no-op.
+    kappa_reg = 1e-3 * F.relu(mamba_out["kappa_ori"] - 20.0).mean()
     detail["loss_kappa_reg"] = kappa_reg.item()
 
     # ---- Step 4: Q/R/kappa variance monitor ----
@@ -263,7 +286,8 @@ def validate(
     n_batches = 0
 
     for batch in val_loader:
-        _, detail = training_step(mamba, batch, loss_fn, device, noise_cfg)
+        _, detail = training_step(mamba, batch, loss_fn, device, noise_cfg,
+                                  epoch=999, warmup_epochs=0)  # never in warmup
         for k, v in detail.items():
             totals[k] = totals.get(k, 0.0) + v
         n_batches += 1
@@ -475,11 +499,14 @@ def main():
         nan_count = 0
         t0 = time.time()
         noise_cfg = train_cfg.get("NOISE_MAP", None)
+        warmup_epochs = train_cfg.get("WARMUP_UNCERTAINTY_EPOCHS", 0)
 
         for batch_idx, batch in enumerate(train_loader):
             optimizer.zero_grad()
 
-            loss, detail = training_step(mamba, batch, loss_fn, device, noise_cfg)
+            loss, detail = training_step(
+                mamba, batch, loss_fn, device, noise_cfg,
+                epoch=epoch, warmup_epochs=warmup_epochs)
 
             # Check for NaN / Inf loss before backward
             if torch.isnan(loss) or torch.isinf(loss):

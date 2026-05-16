@@ -34,7 +34,8 @@ TRAINING:
   LR: 1.0e-3                # base LR for projection/head layers
   MAMBA_LR: 5.0e-5          # lower LR for Mamba SSM backbone
   WEIGHT_DECAY: 1.0e-4
-  WARMUP_EPOCHS: 3
+  WARMUP_EPOCHS: 3             # LR scheduler warmup
+  WARMUP_UNCERTAINTY_EPOCHS: 3 # detach Q/R/kappa, use L2 angle loss
   GRAD_CLIP_NORM: 1.0
   LOG_EVERY: 50
   SAVE_EVERY: 10

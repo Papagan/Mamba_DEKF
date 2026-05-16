@@ -232,6 +232,7 @@ class StatePredictionLoss(nn.Module):
         R_siz: torch.Tensor,         # [B, 3, 3]
         R_ori: torch.Tensor,         # [B, 1, 1]  (unused, kept for API compat)
         kappa_ori: torch.Tensor = None,  # [B, 1] — Von Mises concentration
+        in_warmup: bool = False,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
         Returns:
@@ -256,13 +257,19 @@ class StatePredictionLoss(nn.Module):
             R_pred=R_siz,
         )
 
-        # Orientation: Von Mises NLL (no topological tear at -pi/pi)
-        # pred_yaw = ori_x_pred[:, 0, 0] extracts theta from [theta, omega]
-        loss_ori = von_mises_loss(
-            pred_yaw=ori_x_pred[:, 0, 0],
-            gt_yaw=gt_next_ori,
-            kappa=kappa_ori,
-        )
+        # Orientation: during warmup use angle_loss (bounded, no κ shortcut);
+        # after warmup use Von Mises NLL with adaptive κ.
+        if in_warmup:
+            loss_ori = angle_loss(
+                pred_yaw=ori_x_pred[:, 0, 0],
+                gt_yaw=gt_next_ori.squeeze(-1),
+            )
+        else:
+            loss_ori = von_mises_loss(
+                pred_yaw=ori_x_pred[:, 0, 0],
+                gt_yaw=gt_next_ori,
+                kappa=kappa_ori,
+            )
 
         loss = self.w_pos * loss_pos + self.w_siz * loss_siz + self.w_ori * loss_ori
 
@@ -393,6 +400,7 @@ class JointLoss(nn.Module):
         R_siz: torch.Tensor,          # [B, 3, 3]
         R_ori: torch.Tensor,          # [B, 1, 1]
         kappa_ori: torch.Tensor = None,  # [B, 1]
+        in_warmup: bool = False,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
         Returns:
@@ -406,6 +414,7 @@ class JointLoss(nn.Module):
             gt_next_pos, gt_next_siz, gt_next_ori,
             R_pos, R_siz, R_ori,
             kappa_ori=kappa_ori,
+            in_warmup=in_warmup,
         )
 
         # Contrastive loss only on step 0 (embeddings not None).
