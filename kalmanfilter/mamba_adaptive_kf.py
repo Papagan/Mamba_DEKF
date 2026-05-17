@@ -919,15 +919,26 @@ class TemporalMamba(nn.Module):
         # ---- Orientation: Von Mises kappa head + static process noise ----
         self.head_kappa_ori = nn.Linear(d_model, 1)
         nn.init.uniform_(self.head_kappa_ori.weight, -1e-4, 1e-4)
-        nn.init.constant_(self.head_kappa_ori.bias, 0.0)
+        nn.init.constant_(self.head_kappa_ori.bias, -2.0)  # κ≈0.5 after softplus(-2)+0.5
 
-        self.raw_q_ori = nn.Parameter(torch.full((1,), -1.0))
+        self.raw_q_ori = nn.Parameter(torch.full((1,), -1.5))
 
         # ---- Temporal Embedding head (for semantic association in Module C) ----
         self.embed_head = nn.Sequential(
             nn.Linear(d_model, embed_dim),
             nn.LayerNorm(embed_dim),
         )
+
+        # ---- State delta head: predict initial-state correction [B, 6] ----
+        # Gives Mamba a direct gradient path through loss_pos, not only through
+        # R_pos via the KF update.  Output: [dx, dy, dz, dvx, dvy, dvz].
+        self.head_delta_pos = nn.Sequential(
+            nn.Linear(d_model, 32),
+            nn.SiLU(),
+            nn.Linear(32, 6),
+        )
+        nn.init.uniform_(self.head_delta_pos[-1].weight, -1e-3, 1e-3)
+        nn.init.constant_(self.head_delta_pos[-1].bias, 0.0)
 
     def forward(
         self,
@@ -1002,8 +1013,9 @@ class TemporalMamba(nn.Module):
         # kappa: concentration parameter (higher = more confident)
         # min_kappa floor prevents kappa → 0 → R_ori → ∞ (degenerate solution)
         # clamp provides double protection: floor at init + ceiling at forward
-        kappa_ori = F.softplus(self.head_kappa_ori(h_last)) + self.min_kappa   # [B, 1]
-        kappa_ori = torch.clamp(kappa_ori, min=self.min_kappa, max=50.0)
+        kappa_raw = self.head_kappa_ori(h_last)                                 # [B, 1]
+        kappa_ori = F.softplus(kappa_raw) + self.min_kappa                      # [B, 1]
+        kappa_ori = torch.clamp(kappa_ori, min=self.min_kappa, max=30.0)
 
         # R_ori = 1 / kappa (measurement noise derived from concentration)
         R_ori = (1.0 / kappa_ori).unsqueeze(-1)                       # [B, 1, 1]
@@ -1016,11 +1028,14 @@ class TemporalMamba(nn.Module):
         # ---- Temporal Embedding for semantic association ----
         embedding = self.embed_head(h_last)  # [B, embed_dim]
 
+        delta_pos = self.head_delta_pos(h_last)   # [B, 6]
+
         return {
             "Q_pos": Q_pos, "Q_siz": Q_siz, "Q_ori": Q_ori,
             "R_pos": R_pos, "R_siz": R_siz, "R_ori": R_ori,
             "kappa_ori": kappa_ori,
             "embedding": embedding,
+            "delta_pos": delta_pos,               # [B, 6] — initial-state correction
         }
 
 

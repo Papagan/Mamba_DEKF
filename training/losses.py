@@ -60,7 +60,7 @@ def von_mises_loss(
     pred = pred_yaw.squeeze(-1)       # [B]
     gt = gt_yaw.squeeze(-1)           # [B]
     k = kappa.squeeze(-1)             # [B]
-    k = torch.clamp(k, min=0.5, max=50.0)   # min prevents κ→0 degenerate shortcut
+    k = torch.clamp(k, min=0.3, max=30.0)   # tighter: prevent κ→0 shortcut + i0e limit
 
     diff = pred - gt
     cos_term = -k * torch.cos(diff)                        # [B]
@@ -143,7 +143,7 @@ def kalman_nll_loss(
     # 0.5 coefficient matches the NLL 0.5 prefactor, providing symmetric
     # gradient push-back against logdet → -∞ (size NLL collapse).
     logdet_per_dim = logdet / m
-    logdet_guard = 0.5 * F.relu(-logdet_per_dim - 2.0)  # [B]
+    logdet_guard = 1.0 * F.relu(-logdet_per_dim - 1.5)  # [B]
 
     # ---- per-sample NLL + guard, then mean over batch ----
     nll_per_sample = 0.5 * (logdet + quad_form) + logdet_guard
@@ -426,7 +426,12 @@ class JointLoss(nn.Module):
             loss_contrast = torch.tensor(0.0, device=pos_x_pred.device, requires_grad=True)
             detail_contrast = {"loss_contrastive": 0.0, "n_valid_anchors": 0}
 
-        loss_total = self.physics_scale * loss_state + self.lambda_contrast * loss_contrast
+        # κ variance bonus: reward batch-level κ diversity to prevent
+        # std=0 frozen state where all kappa collapse to min_kappa.
+        kappa_var_reg = 0.0
+        if kappa_ori is not None:
+            kappa_var_reg = -0.05 * kappa_ori.var()   # neg = maximise variance
+        loss_total = self.physics_scale * loss_state + self.lambda_contrast * loss_contrast + kappa_var_reg
 
         detail = {
             **detail_state,

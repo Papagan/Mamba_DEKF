@@ -127,11 +127,15 @@ def training_step(
     noise_scale_siz = siz_std_map[safe_class_ids].view(B, 1, 1)
     noise_scale_ori = ori_std_map[safe_class_ids].view(B, 1, 1)
 
-    pos_x0 = gt_pos.unsqueeze(-1)                                    # [B, 6, 1]
+    # delta_pos gives Mamba a direct gradient path through loss_pos,
+    # not only through R_pos via the KF update.
+    delta_pos = mamba_out["delta_pos"].unsqueeze(-1)                  # [B, 6, 1]
+
+    pos_x0 = gt_pos.unsqueeze(-1) + delta_pos                        # [B, 6, 1]
     siz_x0 = gt_siz.unsqueeze(-1)                                    # [B, 3, 1]
     ori_x0 = gt_ori.unsqueeze(-1)                                    # [B, 2, 1]
 
-    # Add dynamically mapped category noise to position state ([x,y,z] only)
+    # Category noise (added on top of delta, as extra perturbation)
     pos_x0 = pos_x0 + torch.randn_like(pos_x0) * noise_scale_pos * torch.tensor(
         [1.0, 1.0, 1.0, 0.0, 0.0, 0.0], device=device).view(1, 6, 1)
     siz_x0 = siz_x0 + torch.randn_like(siz_x0) * noise_scale_siz
@@ -217,6 +221,12 @@ def training_step(
                 pass
             else:
                 detail_accum[key] = detail_accum.get(key, 0.0) + val
+
+        # Monitor delta_pos norm (per-step, tracked inside rollout).
+        # Should start small (~0) and grow as Mamba learns to correct
+        # initial state.  Zero = loss_pos gradients not reaching delta head.
+        detail_accum["delta_pos_norm"] = detail_accum.get("delta_pos_norm", 0.0) + \
+            mamba_out["delta_pos"].norm(dim=-1).mean().item()
 
         # Noisy teacher forcing with category-aware measurement noise
         # Position observation now 5D: [x, y, z, vx, vy]. Velocity is observed
@@ -414,10 +424,10 @@ def main():
     loss_fn = JointLoss(
         w_pos=loss_cfg.get("W_POS", 1.0),
         w_siz=loss_cfg.get("W_SIZ", 0.5),
-        w_ori=loss_cfg.get("W_ORI", 50.0),
+        w_ori=loss_cfg.get("W_ORI", 1.0),
         lambda_contrast=loss_cfg.get("LAMBDA_CONTRAST", 0.1),
         temperature=loss_cfg.get("INFONCE_TEMPERATURE", 0.07),
-        physics_scale=loss_cfg.get("PHYSICS_SCALE", 50.0),
+        physics_scale=loss_cfg.get("PHYSICS_SCALE", 5.0),
     ).to(device)
 
     # ---- Optimizer (separated LR groups) ----
