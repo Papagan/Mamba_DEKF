@@ -1,5 +1,9 @@
 # Mamba-DEKF Training Log (cleaned — 21 epoch summaries)
 # Source: /home/alvin/demo/Mamba-DEKF/checkpoints/mamba_dekf/train.log
+# Cleaned: 2026-05-17 19:09:02
+#
+# Mamba-DEKF Training Log (cleaned — 21 epoch summaries)
+# Source: /home/alvin/demo/Mamba-DEKF/checkpoints/mamba_dekf/train.log
 # Cleaned: 2026-05-17 11:26:11
 #
 10:32:23 [INFO] Logging to checkpoints/mamba_dekf/train.log
