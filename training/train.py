@@ -129,7 +129,10 @@ def training_step(
 
     # delta_pos gives Mamba a direct gradient path through loss_pos,
     # not only through R_pos via the KF update.
+    # Detached during warmup so Mamba backbone learns features first.
     delta_pos = mamba_out["delta_pos"].unsqueeze(-1)                  # [B, 6, 1]
+    if epoch < warmup_epochs:
+        delta_pos = delta_pos.detach()
 
     pos_x0 = gt_pos.unsqueeze(-1) + delta_pos                        # [B, 6, 1]
     siz_x0 = gt_siz.unsqueeze(-1)                                    # [B, 3, 1]
@@ -188,6 +191,10 @@ def training_step(
     detail_accum = {}
     detail_contrastive = {"loss_contrastive": 0.0, "n_valid_anchors": 0}
 
+    # Accumulate loss tensors across rollout steps for proper gradient flow.
+    # Previous code used .item() floats in real_loss — gradients were dead.
+    loss_tensor = torch.tensor(0.0, device=device)
+
     for k in range(K):
         # Per-sample delta_t preserves individual object dynamics
         dt_k = delta_ts_future[:, k]                          # [B]
@@ -207,6 +214,8 @@ def training_step(
             in_warmup=in_warmup,
         )
 
+        loss_tensor = loss_tensor + loss_k   # accumulate tensor (gradients preserved)
+
         total_state_loss += detail_k["loss_state"]
         if k == 0:
             total_contrast_loss = detail_k["loss_contrastive"]
@@ -223,14 +232,10 @@ def training_step(
                 detail_accum[key] = detail_accum.get(key, 0.0) + val
 
         # Monitor delta_pos norm (per-step, tracked inside rollout).
-        # Should start small (~0) and grow as Mamba learns to correct
-        # initial state.  Zero = loss_pos gradients not reaching delta head.
         detail_accum["delta_pos_norm"] = detail_accum.get("delta_pos_norm", 0.0) + \
             mamba_out["delta_pos"].norm(dim=-1).mean().item()
 
         # Noisy teacher forcing with category-aware measurement noise
-        # Position observation now 5D: [x, y, z, vx, vy]. Velocity is observed
-        # directly to eliminate the KF velocity-inference lag.
         gt_vel_xy = gt_pos[:, 3:5]  # [B, 2] — GT velocity
         z_pos_k = torch.cat([
             gt_future_pos[:, k, :]                      # [B, 3]
@@ -245,21 +250,21 @@ def training_step(
         kf.update(z_pos_k, z_siz_k, z_ori_k,
                   R_pos=R_pos, R_siz=R_siz, R_ori=R_ori)
 
-    # State losses averaged across rollout; contrastive kept raw
+    # ---- Logging detail (uses .item() floats, no gradient impact) ----
     detail = {k: v / K for k, v in detail_accum.items()}
     detail["loss_contrastive"] = detail_contrastive["loss_contrastive"]
     detail["n_valid_anchors"] = detail_contrastive["n_valid_anchors"]
-    avg_state_loss = detail["loss_state"]
     detail["loss_total"] = (
-        loss_fn.physics_scale * avg_state_loss +
+        loss_fn.physics_scale * detail["loss_state"] +
         loss_fn.lambda_contrast * detail["loss_contrastive"]
     )
 
-    # κ overconfidence penalty: only fires when κ > 20 (R_ori < 0.05),
-    # i.e. the model is overconfident about orientation.  During normal
-    # operation with min_kappa=0.1, κ stays in [0.1, ~5] and this is a no-op.
+    # κ overconfidence penalty: only fires when κ > 20.
     kappa_reg = 1e-3 * F.relu(mamba_out["kappa_ori"] - 20.0).mean()
     detail["loss_kappa_reg"] = kappa_reg.item()
+
+    # Δpos L2 penalty: prevents delta_pos from dominating after warmup.
+    delta_pos_reg = 0.1 * mamba_out["delta_pos"].pow(2).mean()
 
     # ---- Step 4: Q/R/kappa variance monitor ----
     with torch.no_grad():
@@ -269,13 +274,11 @@ def training_step(
         ]:
             diag = mat.diagonal(dim1=-2, dim2=-1)
             detail[f"std_{name}"] = diag.std(dim=0).mean().item()
-        # Orientation: kappa std (R_ori = 1/kappa, Q_ori is static)
         detail["std_kappa"] = mamba_out["kappa_ori"].std(dim=0).mean().item()
         detail["mean_kappa"] = mamba_out["kappa_ori"].mean().item()
 
-    real_loss = (loss_fn.physics_scale * avg_state_loss
-                 + loss_fn.lambda_contrast * total_contrast_loss
-                 + kappa_reg)
+    # ---- Backward loss: built from tensors (gradients flow) ----
+    real_loss = loss_tensor / K + kappa_reg + delta_pos_reg
     return real_loss, detail
 
 
