@@ -60,7 +60,7 @@ def von_mises_loss(
     pred = pred_yaw.squeeze(-1)       # [B]
     gt = gt_yaw.squeeze(-1)           # [B]
     k = kappa.squeeze(-1)             # [B]
-    k = torch.clamp(k, min=0.3, max=30.0)   # tighter: prevent κ→0 shortcut + i0e limit
+    k = torch.clamp(k, min=0.3, max=5.0)    # align with TemporalMamba forward clamp ceiling
 
     diff = pred - gt
     cos_term = -k * torch.cos(diff)                        # [B]
@@ -426,12 +426,7 @@ class JointLoss(nn.Module):
             loss_contrast = torch.tensor(0.0, device=pos_x_pred.device, requires_grad=True)
             detail_contrast = {"loss_contrastive": 0.0, "n_valid_anchors": 0}
 
-        # κ variance bonus: reward batch-level κ diversity to prevent
-        # std=0 frozen state where all kappa collapse to min_kappa.
-        kappa_var_reg = 0.0
-        if kappa_ori is not None:
-            kappa_var_reg = -0.05 * kappa_ori.var()   # neg = maximise variance
-        loss_total = self.physics_scale * loss_state + self.lambda_contrast * loss_contrast + kappa_var_reg
+        loss_total = self.physics_scale * loss_state + self.lambda_contrast * loss_contrast
 
         detail = {
             **detail_state,

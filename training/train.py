@@ -263,6 +263,7 @@ def training_step(
 
     # Δpos L2 penalty: mild regularisation to keep delta_pos bounded.
     delta_pos_reg = 0.01 * mamba_out["delta_pos"].pow(2).mean()
+    detail["loss_delta_pos_reg"] = delta_pos_reg.item()
 
     # ---- Step 4: Q/R/kappa variance monitor ----
     with torch.no_grad():
@@ -589,7 +590,8 @@ def main():
             f"val_pos={avg_val.get('loss_pos', 0):.4f} | "
             f"k_m={avg_train.get('mean_kappa', 0):.2f} "
             f"k_s={avg_train.get('std_kappa', 0):.2f} "
-            f"k_reg={avg_train.get('loss_kappa_reg', 0):.4f} | "
+            f"k_reg={avg_train.get('loss_kappa_reg', 0):.4f} "
+            f"dp_reg={avg_train.get('loss_delta_pos_reg', 0):.4f} | "
             f"NaN={nan_count}"
         )
 
@@ -602,8 +604,15 @@ def main():
         writer.add_scalar("train/loss_ori", avg_train.get("loss_ori", 0), step)
         writer.add_scalar("train/loss_contrastive", avg_train.get("loss_contrastive", 0), step)
         writer.add_scalar("train/loss_kappa_reg", avg_train.get("loss_kappa_reg", 0), step)
-        writer.add_scalar("val/loss_total", avg_val.get("loss_total", 0), step)
+        writer.add_scalar("train/loss_delta_pos_reg", avg_train.get("loss_delta_pos_reg", 0), step)
+        writer.add_scalar("val/loss_real", avg_val.get("loss_real", avg_val.get("loss_total", 0)), step)
+        writer.add_scalar("val/loss_raw", avg_val.get("loss_total", 0), step)
         writer.add_scalar("val/loss_pos", avg_val.get("loss_pos", 0), step)
+        writer.add_scalar("val/loss_siz", avg_val.get("loss_siz", 0), step)
+        writer.add_scalar("val/loss_ori", avg_val.get("loss_ori", 0), step)
+        writer.add_scalar("val/loss_contrastive", avg_val.get("loss_contrastive", 0), step)
+        writer.add_scalar("val/loss_kappa_reg", avg_val.get("loss_kappa_reg", 0), step)
+        writer.add_scalar("val/loss_delta_pos_reg", avg_val.get("loss_delta_pos_reg", 0), step)
         writer.add_scalar("train/epoch_time", dt_epoch, step)
         writer.add_scalar("train/nan_count", nan_count, step)
         # Q/R diagonal std — should stay > 0; zero = constant output (degenerate)
