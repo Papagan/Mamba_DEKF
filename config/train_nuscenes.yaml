@@ -24,7 +24,7 @@ MODEL:
   MIN_DIAG_Q: 0.1           # floor on Cholesky diagonal for position Q head
   MIN_DIAG_R: 0.1           # floor on Cholesky diagonal for position R head
   MIN_DIAG_SIZ: 0.15        # floor on size noise diagonal (prevents NLL→-∞ collapse)
-  MIN_KAPPA: 0.3            # floor on kappa (prevents R_ori→∞, degenerate kappa→0)
+  MIN_KAPPA: 0.5            # floor on kappa (prevents R_ori→∞, degenerate kappa→0)
 
 # ---- Training ----
 TRAINING:

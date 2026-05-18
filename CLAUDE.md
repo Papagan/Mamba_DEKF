@@ -49,8 +49,9 @@ OrientationFilter: CV model, state [θ,ω]              (2D),  obs [θ]         
 
 ### κ Overconfidence Penalty
 
-- `kappa_reg = 1e-3 * ReLU(κ - 20.0).mean()` → only fires when κ>20 (R_ori<0.05)
-- With min_kappa=0.1, normal κ ∈ [0.1, ~5] → penalty is a no-op
+- `kappa_reg = 5e-3 * ReLU(κ - 5.0).mean()` → fires when κ>5 (R_ori<0.2)
+- kappa clamped to max=5.0 in forward; penalty threshold matches clamp ceiling
+- With min_kappa=0.5, normal κ ∈ [0.5, ~5] → penalty activates above ceiling
 
 ## Training Config Key
 

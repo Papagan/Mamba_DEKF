@@ -1,0 +1,48 @@
+# Mamba-DEKF Training Log (cleaned — 29 epoch summaries)
+# Source: /home/alvin/demo/Mamba-DEKF/checkpoints/mamba_dekf/train.log
+# Cleaned: 2026-05-18 09:16:57
+#
+19:13:27 [INFO] Logging to checkpoints/mamba_dekf/train.log
+19:13:27 [INFO] Device: cuda
+19:13:51 [INFO] Logging to checkpoints/mamba_dekf/train.log
+19:13:51 [INFO] Device: cuda
+19:14:05 [INFO] Train: 679050 samples, 5305 batches (K=3)
+19:14:05 [INFO] Val:   131343 samples, 1027 batches (K=3)
+19:14:05 [INFO] TemporalMamba: 91,432 trainable parameters
+09:09:49 [INFO] Logging to checkpoints/mamba_dekf/train.log
+09:09:49 [INFO] Device: cuda
+09:15:05 [INFO] Logging to checkpoints/mamba_dekf/train.log
+09:15:05 [INFO] Device: cuda
+09:15:18 [INFO] Train: 679050 samples, 5305 batches (K=3)
+09:15:18 [INFO] Val:   131343 samples, 1027 batches (K=3)
+09:15:18 [INFO] TemporalMamba: 91,432 trainable parameters
+
+19:16:39 [INFO] Epoch 1/100 (134.2s) | train_loss=18.7922 pos=1.5311 siz=-1.0093 ori=0.0930 contrast=0.5852 | val_loss=15.6421 val_pos=1.5350 | kappa_m=0.427 kappa_s=0.000 | NaN=0
+19:19:08 [INFO] Epoch 2/100 (130.6s) | train_loss=18.7310 pos=1.5312 siz=-1.0096 ori=0.0928 contrast=0.3806 | val_loss=15.5874 val_pos=1.5351 | kappa_m=0.427 kappa_s=0.000 | NaN=0
+19:21:39 [INFO] Epoch 3/100 (131.6s) | train_loss=18.7196 pos=1.5314 siz=-1.0092 ori=0.0929 contrast=0.3253 | val_loss=15.5720 val_pos=1.5347 | kappa_m=0.427 kappa_s=0.000 | NaN=0
+19:24:10 [INFO] Epoch 4/100 (131.5s) | train_loss=18.7087 pos=1.5314 siz=-1.0093 ori=0.0928 contrast=0.2968 | val_loss=15.5663 val_pos=1.5350 | kappa_m=0.427 kappa_s=0.000 | NaN=0
+19:26:39 [INFO] Epoch 5/100 (130.0s) | train_loss=18.6868 pos=1.5312 siz=-1.0093 ori=0.0926 contrast=0.2374 | val_loss=15.5580 val_pos=1.5349 | kappa_m=0.427 kappa_s=0.000 | NaN=0
+19:29:08 [INFO] Epoch 6/100 (130.4s) | train_loss=18.6812 pos=1.5312 siz=-1.0096 ori=0.0928 contrast=0.2187 | val_loss=15.5435 val_pos=1.5347 | kappa_m=0.427 kappa_s=0.000 | NaN=0
+19:31:36 [INFO] Epoch 7/100 (129.6s) | train_loss=18.6656 pos=1.5311 siz=-1.0098 ori=0.0926 contrast=0.1759 | val_loss=15.5392 val_pos=1.5349 | kappa_m=0.428 kappa_s=0.000 | NaN=0
+19:34:06 [INFO] Epoch 8/100 (130.9s) | train_loss=18.6667 pos=1.5312 siz=-1.0094 ori=0.0926 contrast=0.1740 | val_loss=15.5237 val_pos=1.5346 | kappa_m=0.428 kappa_s=0.000 | NaN=0
+19:39:39 [INFO] Epoch 9/100 (315.0s) | train_loss=-9.9642 pos=0.1639 siz=-1.1932 ori=-0.8725 contrast=0.2882 | val_loss=-9.4794 val_pos=0.1740 | kappa_m=13.733 kappa_s=11.471 | NaN=0
+19:45:12 [INFO] Epoch 10/100 (314.9s) | train_loss=-9.9937 pos=0.1492 siz=-1.2621 ori=-0.8008 contrast=0.2836 | val_loss=-9.8610 val_pos=0.1685 | kappa_m=14.644 kappa_s=13.539 | NaN=0
+19:50:44 [INFO] Epoch 11/100 (314.5s) | train_loss=-10.1821 pos=0.1457 siz=-1.2658 ori=-0.8164 contrast=0.2801 | val_loss=-9.7581 val_pos=0.1660 | kappa_m=14.348 kappa_s=13.479 | NaN=0
+19:56:15 [INFO] Epoch 12/100 (312.5s) | train_loss=-10.2112 pos=0.1442 siz=-1.2659 ori=-0.8173 contrast=0.2831 | val_loss=-10.2138 val_pos=0.1603 | kappa_m=14.366 kappa_s=13.479 | NaN=0
+20:01:52 [INFO] Epoch 13/100 (318.5s) | train_loss=-10.3623 pos=0.1425 siz=-1.2662 ori=-0.8325 contrast=0.2524 | val_loss=-10.2001 val_pos=0.1638 | kappa_m=14.072 kappa_s=13.383 | NaN=0
+20:07:26 [INFO] Epoch 14/100 (316.5s) | train_loss=-10.4608 pos=0.1418 siz=-1.2661 ori=-0.8444 contrast=0.2522 | val_loss=-10.1325 val_pos=0.1596 | kappa_m=13.872 kappa_s=13.329 | NaN=0
+20:12:58 [INFO] Epoch 15/100 (315.0s) | train_loss=-10.4532 pos=0.1404 siz=-1.2665 ori=-0.8394 contrast=0.2274 | val_loss=-10.7832 val_pos=0.1608 | kappa_m=13.957 kappa_s=13.364 | NaN=0
+20:18:29 [INFO] Epoch 16/100 (311.6s) | train_loss=-10.5581 pos=0.1397 siz=-1.2663 ori=-0.8522 contrast=0.2311 | val_loss=-10.2308 val_pos=0.1592 | kappa_m=13.680 kappa_s=13.263 | NaN=0
+20:24:01 [INFO] Epoch 17/100 (314.3s) | train_loss=-10.4434 pos=0.1403 siz=-1.2662 ori=-0.8382 contrast=0.2316 | val_loss=-10.1783 val_pos=0.1593 | kappa_m=13.999 kappa_s=13.379 | NaN=0
+20:29:31 [INFO] Epoch 18/100 (312.5s) | train_loss=-10.4501 pos=0.1391 siz=-1.2663 ori=-0.8367 contrast=0.2359 | val_loss=-9.9802 val_pos=0.1582 | kappa_m=14.001 kappa_s=13.362 | NaN=0
+20:35:03 [INFO] Epoch 19/100 (314.7s) | train_loss=-10.5458 pos=0.1401 siz=-1.2662 ori=-0.8503 contrast=0.2045 | val_loss=-9.9529 val_pos=0.1556 | kappa_m=13.726 kappa_s=13.263 | NaN=0
+20:40:36 [INFO] Epoch 20/100 (314.6s) | train_loss=-10.5844 pos=0.1392 siz=-1.2665 ori=-0.8544 contrast=0.2261 | val_loss=-10.0941 val_pos=0.1558 | kappa_m=13.679 kappa_s=13.229 | NaN=0
+20:46:06 [INFO] Epoch 21/100 (310.9s) | train_loss=-10.5934 pos=0.1389 siz=-1.2662 ori=-0.8541 contrast=0.2003 | val_loss=-10.2838 val_pos=0.1576 | kappa_m=13.647 kappa_s=13.237 | NaN=0
+20:51:40 [INFO] Epoch 22/100 (316.2s) | train_loss=-10.6300 pos=0.1374 siz=-1.2665 ori=-0.8563 contrast=0.2129 | val_loss=-10.1005 val_pos=0.1559 | kappa_m=13.629 kappa_s=13.217 | NaN=0
+20:57:13 [INFO] Epoch 23/100 (315.4s) | train_loss=-10.8078 pos=0.1382 siz=-1.2659 ori=-0.8819 contrast=0.2103 | val_loss=-10.8935 val_pos=0.1568 | kappa_m=13.186 kappa_s=13.028 | NaN=0
+21:02:44 [INFO] Epoch 24/100 (312.7s) | train_loss=-10.7258 pos=0.1374 siz=-1.2662 ori=-0.8688 contrast=0.2010 | val_loss=-10.0556 val_pos=0.1548 | kappa_m=13.394 kappa_s=13.147 | NaN=0
+21:08:15 [INFO] Epoch 25/100 (313.2s) | train_loss=-10.8808 pos=0.1369 siz=-1.2661 ori=-0.8876 contrast=0.1787 | val_loss=-10.2717 val_pos=0.1559 | kappa_m=13.107 kappa_s=13.030 | NaN=0
+21:13:45 [INFO] Epoch 26/100 (312.1s) | train_loss=-10.8602 pos=0.1362 siz=-1.2662 ori=-0.8831 contrast=0.1698 | val_loss=-10.3848 val_pos=0.1580 | kappa_m=13.218 kappa_s=13.089 | NaN=0
+21:19:19 [INFO] Epoch 27/100 (316.1s) | train_loss=-10.8497 pos=0.1377 siz=-1.2660 ori=-0.8853 contrast=0.1822 | val_loss=-10.3916 val_pos=0.1581 | kappa_m=13.100 kappa_s=13.008 | NaN=0
+21:24:53 [INFO] Epoch 28/100 (315.4s) | train_loss=-10.9972 pos=0.1355 siz=-1.2663 ori=-0.9004 contrast=0.1834 | val_loss=-10.4645 val_pos=0.1560 | kappa_m=12.871 kappa_s=12.893 | NaN=0
+21:30:27 [INFO] Epoch 29/100 (315.6s) | train_loss=-11.1966 pos=0.1380 siz=-1.2659 ori=-0.9312 contrast=0.1573 | val_loss=-11.2490 val_pos=0.1581 | kappa_m=12.363 kappa_s=12.699 | NaN=0

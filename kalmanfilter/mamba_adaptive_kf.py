@@ -1015,7 +1015,7 @@ class TemporalMamba(nn.Module):
         # clamp provides double protection: floor at init + ceiling at forward
         kappa_raw = self.head_kappa_ori(h_last)                                 # [B, 1]
         kappa_ori = F.softplus(kappa_raw) + self.min_kappa                      # [B, 1]
-        kappa_ori = torch.clamp(kappa_ori, min=self.min_kappa, max=30.0)
+        kappa_ori = torch.clamp(kappa_ori, min=self.min_kappa, max=5.0)
 
         # R_ori = 1 / kappa (measurement noise derived from concentration)
         R_ori = (1.0 / kappa_ori).unsqueeze(-1)                       # [B, 1, 1]

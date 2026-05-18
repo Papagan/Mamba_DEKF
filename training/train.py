@@ -192,9 +192,6 @@ def training_step(
     detail_contrastive = {"loss_contrastive": 0.0, "n_valid_anchors": 0}
 
     # Accumulate loss tensors across rollout steps for proper gradient flow.
-    # Previous code used .item() floats in real_loss — gradients were dead.
-    loss_tensor = torch.tensor(0.0, device=device)
-
     for k in range(K):
         # Per-sample delta_t preserves individual object dynamics
         dt_k = delta_ts_future[:, k]                          # [B]
@@ -214,11 +211,12 @@ def training_step(
             in_warmup=in_warmup,
         )
 
-        loss_tensor = loss_tensor + loss_k   # accumulate tensor (gradients preserved)
-
-        total_state_loss += detail_k["loss_state"]
+        total_state_loss += detail_k["loss_state"]   # for logging only
         if k == 0:
+            total_loss_tensor = loss_k               # preserve full compute graph
             total_contrast_loss = detail_k["loss_contrastive"]
+        else:
+            total_loss_tensor = total_loss_tensor + loss_k
         for key, val in detail_k.items():
             if key == "loss_contrastive":
                 detail_contrastive["loss_contrastive"] = max(
@@ -259,12 +257,12 @@ def training_step(
         loss_fn.lambda_contrast * detail["loss_contrastive"]
     )
 
-    # κ overconfidence penalty: only fires when κ > 20.
-    kappa_reg = 1e-3 * F.relu(mamba_out["kappa_ori"] - 20.0).mean()
+    # κ overconfidence penalty: fires when κ > 10 (typical healthy κ ∈ [1, 8]).
+    kappa_reg = 5e-3 * F.relu(mamba_out["kappa_ori"] - 5.0).mean()
     detail["loss_kappa_reg"] = kappa_reg.item()
 
-    # Δpos L2 penalty: prevents delta_pos from dominating after warmup.
-    delta_pos_reg = 0.1 * mamba_out["delta_pos"].pow(2).mean()
+    # Δpos L2 penalty: mild regularisation to keep delta_pos bounded.
+    delta_pos_reg = 0.01 * mamba_out["delta_pos"].pow(2).mean()
 
     # ---- Step 4: Q/R/kappa variance monitor ----
     with torch.no_grad():
@@ -277,8 +275,10 @@ def training_step(
         detail["std_kappa"] = mamba_out["kappa_ori"].std(dim=0).mean().item()
         detail["mean_kappa"] = mamba_out["kappa_ori"].mean().item()
 
-    # ---- Backward loss: built from tensors (gradients flow) ----
-    real_loss = loss_tensor / K + kappa_reg + delta_pos_reg
+    # ---- Backward loss: total_loss_tensor already contains
+    #      physics_scale × state_NLL + lambda × contrast + kappa_var_reg
+    real_loss = total_loss_tensor / K + kappa_reg + delta_pos_reg
+    detail["loss_real"] = real_loss.item()
     return real_loss, detail
 
 
@@ -579,25 +579,29 @@ def main():
 
         logger.info(
             f"Epoch {epoch+1}/{epochs} ({dt_epoch:.1f}s) | "
-            f"train_loss={avg_train.get('loss_total', 0):.4f} "
+            f"loss={avg_train.get('loss_real', 0):.4f} "
+            f"(raw={avg_train.get('loss_total', 0):.4f}) "
             f"pos={avg_train.get('loss_pos', 0):.4f} "
             f"siz={avg_train.get('loss_siz', 0):.4f} "
             f"ori={avg_train.get('loss_ori', 0):.4f} "
             f"contrast={avg_train.get('loss_contrastive', 0):.4f} | "
-            f"val_loss={avg_val.get('loss_total', 0):.4f} "
+            f"val={avg_val.get('loss_real', avg_val.get('loss_total', 0)):.4f} "
             f"val_pos={avg_val.get('loss_pos', 0):.4f} | "
-            f"kappa_m={avg_train.get('mean_kappa', 0):.3f} "
-            f"kappa_s={avg_train.get('std_kappa', 0):.3f} | "
+            f"k_m={avg_train.get('mean_kappa', 0):.2f} "
+            f"k_s={avg_train.get('std_kappa', 0):.2f} "
+            f"k_reg={avg_train.get('loss_kappa_reg', 0):.4f} | "
             f"NaN={nan_count}"
         )
 
         # ---- TensorBoard per-epoch scalars ----
         step = epoch
-        writer.add_scalar("train/loss_total", avg_train.get("loss_total", 0), step)
+        writer.add_scalar("train/loss_real", avg_train.get("loss_real", 0), step)
+        writer.add_scalar("train/loss_raw", avg_train.get("loss_total", 0), step)
         writer.add_scalar("train/loss_pos", avg_train.get("loss_pos", 0), step)
         writer.add_scalar("train/loss_siz", avg_train.get("loss_siz", 0), step)
         writer.add_scalar("train/loss_ori", avg_train.get("loss_ori", 0), step)
         writer.add_scalar("train/loss_contrastive", avg_train.get("loss_contrastive", 0), step)
+        writer.add_scalar("train/loss_kappa_reg", avg_train.get("loss_kappa_reg", 0), step)
         writer.add_scalar("val/loss_total", avg_val.get("loss_total", 0), step)
         writer.add_scalar("val/loss_pos", avg_val.get("loss_pos", 0), step)
         writer.add_scalar("train/epoch_time", dt_epoch, step)
@@ -607,7 +611,7 @@ def main():
             writer.add_scalar(f"train/{key}", avg_train.get(key, 0), step)
 
         # ---- Checkpoint ----
-        val_total = avg_val.get("loss_total", float("inf"))
+        val_total = avg_val.get("loss_real", avg_val.get("loss_total", float("inf")))
 
         if (epoch + 1) % save_every == 0 or val_total < best_val_loss:
             ckpt_path = os.path.join(save_dir, f"checkpoint_epoch{epoch+1}.pt")
