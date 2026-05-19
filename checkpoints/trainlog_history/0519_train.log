@@ -1,0 +1,58 @@
+# Mamba-DEKF Training Log (cleaned — 48 epoch summaries)
+# Source: /home/alvin/demo/Mamba-DEKF/checkpoints/trainlog_history/0519_train.log
+# Cleaned: 2026-05-19 14:25:29
+#
+10:12:15 [INFO] Logging to checkpoints/mamba_dekf/train.log
+10:12:15 [INFO] Device: cuda
+10:12:28 [INFO] Train: 679050 samples, 5305 batches (K=3)
+10:12:28 [INFO] Val:   131343 samples, 1027 batches (K=3)
+10:12:28 [INFO] TemporalMamba: 91,432 trainable parameters
+
+10:15:00 [INFO] Epoch 1/100 (132.3s) | loss=33.9339 (raw=34.0469) pos=1.5313 siz=-1.0092 ori=0.0854 contrast=0.5653 | val=29.8523 val_pos=1.5349 | k_m=0.63 k_s=0.00 k_reg=0.0000 dp_reg=0.0000 | NaN=0
+10:17:28 [INFO] Epoch 2/100 (130.3s) | loss=33.9177 (raw=33.9954) pos=1.5313 siz=-1.0093 ori=0.0856 contrast=0.3884 | val=29.8412 val_pos=1.5351 | k_m=0.63 k_s=0.00 k_reg=0.0000 dp_reg=0.0000 | NaN=0
+10:19:55 [INFO] Epoch 3/100 (129.9s) | loss=33.9021 (raw=33.9665) pos=1.5310 siz=-1.0096 ori=0.0856 contrast=0.3223 | val=29.8300 val_pos=1.5351 | k_m=0.63 k_s=0.00 k_reg=0.0000 dp_reg=0.0000 | NaN=0
+10:22:23 [INFO] Epoch 4/100 (130.9s) | loss=33.9020 (raw=33.9620) pos=1.5311 siz=-1.0094 ori=0.0855 contrast=0.3001 | val=29.8218 val_pos=1.5347 | k_m=0.63 k_s=0.00 k_reg=0.0000 dp_reg=0.0000 | NaN=0
+10:24:53 [INFO] Epoch 5/100 (131.3s) | loss=33.9035 (raw=33.9610) pos=1.5313 siz=-1.0098 ori=0.0856 contrast=0.2877 | val=29.8326 val_pos=1.5351 | k_m=0.63 k_s=0.00 k_reg=0.0000 dp_reg=0.0000 | NaN=0
+10:30:23 [INFO] Epoch 6/100 (312.4s) | loss=-12.0164 (raw=-11.9584) pos=0.1636 siz=-1.1942 ori=-1.3552 contrast=0.2900 | val=-12.0550 val_pos=0.1748 | k_m=4.97 k_s=0.04 k_reg=0.0000 dp_reg=0.0000 | NaN=0
+10:35:48 [INFO] Epoch 7/100 (305.9s) | loss=-12.8026 (raw=-12.7513) pos=0.1480 siz=-1.2633 ori=-1.3616 contrast=0.2574 | val=-12.3614 val_pos=0.1645 | k_m=4.98 k_s=0.14 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+10:41:17 [INFO] Epoch 8/100 (311.1s) | loss=-12.9399 (raw=-12.8883) pos=0.1434 siz=-1.2661 ori=-1.3631 contrast=0.2640 | val=-12.4171 val_pos=0.1620 | k_m=4.97 k_s=0.19 k_reg=0.0000 dp_reg=0.0012 | NaN=0
+10:46:44 [INFO] Epoch 9/100 (309.1s) | loss=-12.9998 (raw=-12.9505) pos=0.1407 siz=-1.2661 ori=-1.3622 contrast=0.2584 | val=-12.4334 val_pos=0.1611 | k_m=4.97 k_s=0.20 k_reg=0.0000 dp_reg=0.0024 | NaN=0
+10:52:14 [INFO] Epoch 10/100 (312.7s) | loss=-13.0254 (raw=-12.9815) pos=0.1395 siz=-1.2659 ori=-1.3613 contrast=0.2346 | val=-12.5558 val_pos=0.1566 | k_m=4.97 k_s=0.20 k_reg=0.0000 dp_reg=0.0030 | NaN=0
+10:57:39 [INFO] Epoch 11/100 (307.0s) | loss=-13.0711 (raw=-13.0314) pos=0.1381 siz=-1.2665 ori=-1.3621 contrast=0.2161 | val=-12.5068 val_pos=0.1583 | k_m=4.97 k_s=0.21 k_reg=0.0000 dp_reg=0.0036 | NaN=0
+11:03:07 [INFO] Epoch 12/100 (309.3s) | loss=-13.0640 (raw=-13.0229) pos=0.1381 siz=-1.2661 ori=-1.3616 contrast=0.2250 | val=-12.5594 val_pos=0.1564 | k_m=4.97 k_s=0.21 k_reg=0.0000 dp_reg=0.0039 | NaN=0
+11:08:36 [INFO] Epoch 13/100 (309.0s) | loss=-13.0934 (raw=-13.0569) pos=0.1369 siz=-1.2660 ori=-1.3616 contrast=0.2041 | val=-12.5753 val_pos=0.1554 | k_m=4.97 k_s=0.22 k_reg=0.0000 dp_reg=0.0043 | NaN=0
+11:14:05 [INFO] Epoch 14/100 (309.5s) | loss=-13.1276 (raw=-13.0902) pos=0.1357 siz=-1.2660 ori=-1.3622 contrast=0.2089 | val=-12.6531 val_pos=0.1530 | k_m=4.97 k_s=0.22 k_reg=0.0000 dp_reg=0.0044 | NaN=0
+11:19:31 [INFO] Epoch 15/100 (307.8s) | loss=-13.1584 (raw=-13.1247) pos=0.1347 siz=-1.2661 ori=-1.3626 contrast=0.1910 | val=-12.6328 val_pos=0.1536 | k_m=4.97 k_s=0.22 k_reg=0.0000 dp_reg=0.0045 | NaN=0
+11:25:03 [INFO] Epoch 16/100 (309.5s) | loss=-13.1377 (raw=-13.1031) pos=0.1355 siz=-1.2660 ori=-1.3625 contrast=0.1955 | val=-12.5612 val_pos=0.1570 | k_m=4.97 k_s=0.22 k_reg=0.0000 dp_reg=0.0045 | NaN=0
+11:30:35 [INFO] Epoch 17/100 (313.0s) | loss=-13.1469 (raw=-13.1147) pos=0.1353 siz=-1.2663 ori=-1.3628 contrast=0.1846 | val=-12.6197 val_pos=0.1535 | k_m=4.97 k_s=0.22 k_reg=0.0000 dp_reg=0.0048 | NaN=0
+11:36:05 [INFO] Epoch 18/100 (310.8s) | loss=-13.1502 (raw=-13.1196) pos=0.1353 siz=-1.2662 ori=-1.3632 contrast=0.1778 | val=-12.6998 val_pos=0.1511 | k_m=4.97 k_s=0.22 k_reg=0.0000 dp_reg=0.0049 | NaN=0
+11:41:38 [INFO] Epoch 19/100 (313.2s) | loss=-13.1776 (raw=-13.1468) pos=0.1339 siz=-1.2662 ori=-1.3623 contrast=0.1783 | val=-12.6090 val_pos=0.1551 | k_m=4.97 k_s=0.22 k_reg=0.0000 dp_reg=0.0049 | NaN=0
+11:47:07 [INFO] Epoch 20/100 (310.8s) | loss=-13.1996 (raw=-13.1695) pos=0.1332 siz=-1.2664 ori=-1.3627 contrast=0.1761 | val=-12.6738 val_pos=0.1522 | k_m=4.97 k_s=0.22 k_reg=0.0000 dp_reg=0.0051 | NaN=0
+11:52:35 [INFO] Epoch 21/100 (309.7s) | loss=-13.1670 (raw=-13.1378) pos=0.1342 siz=-1.2662 ori=-1.3617 contrast=0.1721 | val=-12.6340 val_pos=0.1537 | k_m=4.97 k_s=0.23 k_reg=0.0000 dp_reg=0.0052 | NaN=0
+11:58:11 [INFO] Epoch 22/100 (317.4s) | loss=-13.1601 (raw=-13.1296) pos=0.1345 siz=-1.2659 ori=-1.3622 contrast=0.1781 | val=-12.6894 val_pos=0.1514 | k_m=4.97 k_s=0.22 k_reg=0.0000 dp_reg=0.0051 | NaN=0
+12:03:43 [INFO] Epoch 23/100 (312.6s) | loss=-13.1822 (raw=-13.1525) pos=0.1337 siz=-1.2661 ori=-1.3623 contrast=0.1744 | val=-12.6767 val_pos=0.1523 | k_m=4.97 k_s=0.22 k_reg=0.0000 dp_reg=0.0052 | NaN=0
+12:09:18 [INFO] Epoch 24/100 (315.4s) | loss=-13.1962 (raw=-13.1712) pos=0.1334 siz=-1.2662 ori=-1.3627 contrast=0.1517 | val=-12.6498 val_pos=0.1533 | k_m=4.97 k_s=0.22 k_reg=0.0000 dp_reg=0.0053 | NaN=0
+12:14:52 [INFO] Epoch 25/100 (314.5s) | loss=-13.1485 (raw=-13.1193) pos=0.1352 siz=-1.2662 ori=-1.3626 contrast=0.1725 | val=-12.7626 val_pos=0.1484 | k_m=4.97 k_s=0.22 k_reg=0.0000 dp_reg=0.0053 | NaN=0
+12:20:08 [INFO] Epoch 26/100 (297.8s) | loss=-13.2508 (raw=-13.2240) pos=0.1312 siz=-1.2664 ori=-1.3627 contrast=0.1618 | val=-12.6721 val_pos=0.1527 | k_m=4.97 k_s=0.22 k_reg=0.0000 dp_reg=0.0055 | NaN=0
+12:25:35 [INFO] Epoch 27/100 (309.1s) | loss=-13.1905 (raw=-13.1627) pos=0.1333 siz=-1.2661 ori=-1.3619 contrast=0.1665 | val=-12.6457 val_pos=0.1529 | k_m=4.97 k_s=0.22 k_reg=0.0000 dp_reg=0.0055 | NaN=0
+12:31:05 [INFO] Epoch 28/100 (311.4s) | loss=-13.2252 (raw=-13.1979) pos=0.1321 siz=-1.2662 ori=-1.3624 contrast=0.1640 | val=-12.6416 val_pos=0.1540 | k_m=4.97 k_s=0.22 k_reg=0.0000 dp_reg=0.0055 | NaN=0
+12:36:36 [INFO] Epoch 29/100 (312.6s) | loss=-13.2391 (raw=-13.2108) pos=0.1317 siz=-1.2665 ori=-1.3627 contrast=0.1692 | val=-12.6800 val_pos=0.1524 | k_m=4.97 k_s=0.22 k_reg=0.0000 dp_reg=0.0055 | NaN=0
+12:42:02 [INFO] Epoch 30/100 (308.1s) | loss=-13.2133 (raw=-13.1881) pos=0.1326 siz=-1.2661 ori=-1.3624 contrast=0.1539 | val=-12.7150 val_pos=0.1504 | k_m=4.97 k_s=0.22 k_reg=0.0000 dp_reg=0.0056 | NaN=0
+12:47:31 [INFO] Epoch 31/100 (310.8s) | loss=-13.2091 (raw=-13.1846) pos=0.1328 siz=-1.2664 ori=-1.3624 contrast=0.1508 | val=-12.6367 val_pos=0.1539 | k_m=4.97 k_s=0.22 k_reg=0.0000 dp_reg=0.0057 | NaN=0
+12:53:04 [INFO] Epoch 32/100 (313.7s) | loss=-13.2500 (raw=-13.2261) pos=0.1312 siz=-1.2663 ori=-1.3626 contrast=0.1483 | val=-12.6264 val_pos=0.1544 | k_m=4.96 k_s=0.23 k_reg=0.0000 dp_reg=0.0057 | NaN=0
+12:58:38 [INFO] Epoch 33/100 (315.0s) | loss=-13.2406 (raw=-13.2167) pos=0.1317 siz=-1.2659 ori=-1.3632 contrast=0.1478 | val=-12.7438 val_pos=0.1494 | k_m=4.96 k_s=0.23 k_reg=0.0000 dp_reg=0.0056 | NaN=0
+13:04:09 [INFO] Epoch 34/100 (312.6s) | loss=-13.2614 (raw=-13.2385) pos=0.1309 siz=-1.2660 ori=-1.3631 contrast=0.1431 | val=-12.6407 val_pos=0.1537 | k_m=4.96 k_s=0.24 k_reg=0.0000 dp_reg=0.0057 | NaN=0
+13:09:42 [INFO] Epoch 35/100 (314.0s) | loss=-13.2555 (raw=-13.2346) pos=0.1311 siz=-1.2664 ori=-1.3628 contrast=0.1328 | val=-12.7151 val_pos=0.1505 | k_m=4.96 k_s=0.24 k_reg=0.0000 dp_reg=0.0057 | NaN=0
+13:15:11 [INFO] Epoch 36/100 (311.1s) | loss=-13.2585 (raw=-13.2362) pos=0.1310 siz=-1.2661 ori=-1.3632 contrast=0.1401 | val=-12.7506 val_pos=0.1492 | k_m=4.96 k_s=0.24 k_reg=0.0000 dp_reg=0.0058 | NaN=0
+13:20:39 [INFO] Epoch 37/100 (309.5s) | loss=-13.2726 (raw=-13.2491) pos=0.1305 siz=-1.2662 ori=-1.3632 contrast=0.1467 | val=-12.7639 val_pos=0.1486 | k_m=4.96 k_s=0.24 k_reg=0.0000 dp_reg=0.0058 | NaN=0
+13:26:09 [INFO] Epoch 38/100 (311.8s) | loss=-13.2425 (raw=-13.2177) pos=0.1316 siz=-1.2659 ori=-1.3631 contrast=0.1531 | val=-12.7152 val_pos=0.1506 | k_m=4.96 k_s=0.24 k_reg=0.0000 dp_reg=0.0058 | NaN=0
+13:31:41 [INFO] Epoch 39/100 (313.1s) | loss=-13.2692 (raw=-13.2484) pos=0.1307 siz=-1.2662 ori=-1.3633 contrast=0.1327 | val=-12.6636 val_pos=0.1527 | k_m=4.96 k_s=0.24 k_reg=0.0000 dp_reg=0.0057 | NaN=0
+13:37:18 [INFO] Epoch 40/100 (316.8s) | loss=-13.2584 (raw=-13.2374) pos=0.1310 siz=-1.2664 ori=-1.3628 contrast=0.1346 | val=-12.7160 val_pos=0.1507 | k_m=4.96 k_s=0.24 k_reg=0.0000 dp_reg=0.0059 | NaN=0
+13:42:55 [INFO] Epoch 41/100 (316.8s) | loss=-13.2841 (raw=-13.2640) pos=0.1303 siz=-1.2666 ori=-1.3638 contrast=0.1294 | val=-12.7130 val_pos=0.1513 | k_m=4.96 k_s=0.24 k_reg=0.0000 dp_reg=0.0058 | NaN=0
+13:48:28 [INFO] Epoch 42/100 (314.0s) | loss=-13.3079 (raw=-13.2867) pos=0.1292 siz=-1.2664 ori=-1.3633 contrast=0.1359 | val=-12.7788 val_pos=0.1479 | k_m=4.96 k_s=0.24 k_reg=0.0000 dp_reg=0.0060 | NaN=0
+13:54:02 [INFO] Epoch 43/100 (314.6s) | loss=-13.2684 (raw=-13.2487) pos=0.1306 siz=-1.2665 ori=-1.3626 contrast=0.1287 | val=-12.7332 val_pos=0.1503 | k_m=4.96 k_s=0.24 k_reg=0.0000 dp_reg=0.0061 | NaN=0
+13:59:35 [INFO] Epoch 44/100 (315.2s) | loss=-13.3006 (raw=-13.2806) pos=0.1295 siz=-1.2660 ori=-1.3636 contrast=0.1309 | val=-12.7371 val_pos=0.1503 | k_m=4.96 k_s=0.24 k_reg=0.0000 dp_reg=0.0061 | NaN=0
+14:05:04 [INFO] Epoch 45/100 (310.7s) | loss=-13.2888 (raw=-13.2695) pos=0.1300 siz=-1.2662 ori=-1.3636 contrast=0.1269 | val=-12.7435 val_pos=0.1495 | k_m=4.96 k_s=0.24 k_reg=0.0000 dp_reg=0.0060 | NaN=0
+14:10:37 [INFO] Epoch 46/100 (313.5s) | loss=-13.2624 (raw=-13.2421) pos=0.1310 siz=-1.2665 ori=-1.3633 contrast=0.1315 | val=-12.8155 val_pos=0.1464 | k_m=4.96 k_s=0.24 k_reg=0.0000 dp_reg=0.0060 | NaN=0
+14:16:11 [INFO] Epoch 47/100 (314.2s) | loss=-13.3143 (raw=-13.2957) pos=0.1289 siz=-1.2664 ori=-1.3631 contrast=0.1234 | val=-12.7798 val_pos=0.1484 | k_m=4.96 k_s=0.24 k_reg=0.0000 dp_reg=0.0061 | NaN=0
+14:21:46 [INFO] Epoch 48/100 (315.2s) | loss=-13.2946 (raw=-13.2750) pos=0.1298 siz=-1.2660 ori=-1.3638 contrast=0.1290 | val=-12.7152 val_pos=0.1505 | k_m=4.96 k_s=0.24 k_reg=0.0000 dp_reg=0.0062 | NaN=0

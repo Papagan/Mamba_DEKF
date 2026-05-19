@@ -21,20 +21,20 @@ DATA:
 #
 # To switch: uncomment the desired block and comment the other.
 MODEL:
-  # ---- Baseline (active) ----
-  D_MODEL: 64
-  D_STATE: 16
-  D_CONV: 4
-  EXPAND: 2
-  N_MAMBA_LAYERS: 3
-  EMBED_DIM: 32
-  # ---- Scheme A: conservative scale-up ----
+  # ---- Baseline (3 layers, ~91K params) ----
   # D_MODEL: 64
   # D_STATE: 16
   # D_CONV: 4
   # EXPAND: 2
-  # N_MAMBA_LAYERS: 5
+  # N_MAMBA_LAYERS: 3
   # EMBED_DIM: 32
+  # ---- Scheme A: conservative scale-up (5 layers, ~120K params, active) ----
+  D_MODEL: 64
+  D_STATE: 16
+  D_CONV: 4
+  EXPAND: 2
+  N_MAMBA_LAYERS: 5
+  EMBED_DIM: 32
   # ---- Scheme B: aggressive scale-up (higher MAMBA_LR risk → reduce to 2e-5) ----
   # D_MODEL: 96
   # D_STATE: 24
@@ -55,7 +55,7 @@ TRAINING:
   NUM_WORKERS: 4
   EPOCHS: 100
   LR: 1.0e-3                # base LR for projection/head layers
-  MAMBA_LR: 5.0e-5          # lower LR for Mamba SSM backbone
+  MAMBA_LR: 3.0e-5          # lower LR for Mamba SSM backbone (3e-5 for 5 layers)
   WEIGHT_DECAY: 1.0e-4
   WARMUP_EPOCHS: 3             # LR scheduler warmup
   WARMUP_UNCERTAINTY_EPOCHS: 5 # detach Q/R/kappa, use L2 angle loss
