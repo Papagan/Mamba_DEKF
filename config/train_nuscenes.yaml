@@ -12,13 +12,36 @@ DATA:
   CATEGORY_FILTER: null   # null = all categories; or ["car", "pedestrian"]
 
 # ---- Model (TemporalMamba) ----
+# Scale-up schemes (A=conservative, B=aggressive). Both keep input features same,
+# only Mamba backbone scales. MAMBA_LR must be adjusted inversely with depth.
+#
+# Current:   3 layers,  D_MODEL=64,  ~91K params,  MAMBA_LR=5e-5  (baseline)
+# Scheme A:  5 layers,  D_MODEL=64,  ~120K params, MAMBA_LR=3e-5  (recommended)
+# Scheme B:  6 layers,  D_MODEL=96,  ~250K params, MAMBA_LR=2e-5  (heavy, 2x memory)
+#
+# To switch: uncomment the desired block and comment the other.
 MODEL:
+  # ---- Baseline (active) ----
   D_MODEL: 64
   D_STATE: 16
   D_CONV: 4
   EXPAND: 2
   N_MAMBA_LAYERS: 3
   EMBED_DIM: 32
+  # ---- Scheme A: conservative scale-up ----
+  # D_MODEL: 64
+  # D_STATE: 16
+  # D_CONV: 4
+  # EXPAND: 2
+  # N_MAMBA_LAYERS: 5
+  # EMBED_DIM: 32
+  # ---- Scheme B: aggressive scale-up (higher MAMBA_LR risk → reduce to 2e-5) ----
+  # D_MODEL: 96
+  # D_STATE: 24
+  # D_CONV: 4
+  # EXPAND: 2
+  # N_MAMBA_LAYERS: 6
+  # EMBED_DIM: 64
   HISTORY_LEN: 4            # reduced from 10; 5+5=10 frame minimum per sample
   NUM_CLASSES: 10            # number of categories for size noise embeddings
   MIN_DIAG_Q: 0.1           # floor on Cholesky diagonal for position Q head
@@ -55,6 +78,8 @@ LOSS:
   W_POS: 5.0
   W_SIZ: 1.0            # reduced: raw_r_siz init is very negative, don't amplify
   W_ORI: 1.5            # Von Mises NLL range ~0.1-1.0, no need for 50x
+  W_VEL: 0.3            # velocity NLL weight (≤ W_POS; constant-vel GT is approximate)
+  VEL_WARMUP_EPOCHS: 3  # delay vel NLL for first N epochs after uncertainty-unseal
   LAMBDA_CONTRAST: 0.3
   INFONCE_TEMPERATURE: 0.07
   PHYSICS_SCALE: 5.0    # reduced from 20: let pos gradient survive against siz

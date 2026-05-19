@@ -1094,10 +1094,13 @@ class MambaDecoupledEKF(nn.Module):
         Produce baseline static decoupling Q/R tensors for Fallback/IMM mode based on DEKF_BASE_NOISE config.
         R_pos is [B,5,5] for [x,y,z,vx,vy] observations — velocity is observed directly to eliminate
         inference lag for agile objects.
+
+        When class_ids are provided and POS_PER_CAT exists in config, per-category Q values
+        are selected from MCTrack-sourced priors (mapped from 4D CV → 6D [x,y,z,vx,vy,vz]).
         """
         if self.base_noise_cfg is None:
             # Fallback exact defaults
-            q_pos = [0.1, 0.1, 0.1, 1.5, 1.5, 1.5]
+            q_pos = [0.5, 0.5, 0.5, 1.5, 1.5, 1.5]
             q_siz = [0.05, 0.05, 0.05]
             q_ori = [0.1]
 
@@ -1106,7 +1109,6 @@ class MambaDecoupledEKF(nn.Module):
             r_ori = torch.full((bsize, 1,), 0.2, device=self.device, dtype=dtype)
         else:
             Q_cfg = self.base_noise_cfg["Q"]
-            q_pos = Q_cfg["POS"]
             q_siz = Q_cfg["SIZ"]
             q_ori = Q_cfg["ORI"]
 
@@ -1121,6 +1123,20 @@ class MambaDecoupledEKF(nn.Module):
             v_std = torch.tensor(R_cfg.get("VEL_STD", [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]),
                                  device=self.device, dtype=dtype) * mul
 
+            # ---- Per-category process noise Q ----
+            # Build from POS_PER_CAT dict (MCTrack-sourced), fallback to shared POS
+            pos_per_cat = Q_cfg.get("POS_PER_CAT", None)
+            if class_ids is not None and pos_per_cat is not None:
+                c_ids = torch.clamp(class_ids, 0, max(pos_per_cat.keys()))
+                q_map_list = [pos_per_cat.get(i, Q_cfg["POS"]) for i in range(max(pos_per_cat.keys()) + 1)]
+                q_pos_map = torch.tensor(q_map_list, device=self.device, dtype=dtype)  # [n_cat, 6]
+                q_pos_diag = q_pos_map[c_ids]                                          # [B, 6]
+                Q_pos_base = torch.diag_embed(q_pos_diag)                              # [B, 6, 6]
+            else:
+                q_pos_diag = torch.tensor(Q_cfg["POS"], device=self.device, dtype=dtype)
+                Q_pos_base = torch.diag(q_pos_diag).unsqueeze(0).expand(bsize, -1, -1)
+
+            # ---- Measurement noise R (always per-category via POS_STD/VEL_STD) ----
             if class_ids is None:
                 r_pos_xyz = p_std[0].expand(bsize, 3) ** 2          # [bsize, 3]
                 r_pos_v = v_std[0].expand(bsize, 2) ** 2             # [bsize, 2]
@@ -1136,13 +1152,9 @@ class MambaDecoupledEKF(nn.Module):
                 r_siz = (s_std[c_ids] ** 2).unsqueeze(1).expand(bsize, 3)
                 r_ori = (o_std[c_ids] ** 2).unsqueeze(1).expand(bsize, 1)
 
-        # Process Noise Q (Constant)
-        q_pos_diag = torch.tensor(q_pos, device=self.device, dtype=dtype)
-        Q_pos_base = torch.diag(q_pos_diag).unsqueeze(0).expand(bsize, -1, -1)
-        
         q_siz_diag = torch.tensor(q_siz, device=self.device, dtype=dtype)
         Q_siz_base = torch.diag(q_siz_diag).unsqueeze(0).expand(bsize, -1, -1)
-        
+
         # Ori process noise
         q_ori_full = torch.tensor([q_ori[0], 0.5], device=self.device, dtype=dtype)
         Q_ori_base = torch.diag(q_ori_full).unsqueeze(0).expand(bsize, -1, -1)
@@ -1197,26 +1209,38 @@ class MambaDecoupledEKF(nn.Module):
             bsize = track_history.size(0)
             dtype = track_history.dtype
             Q_p, R_p, Q_s, R_s, Q_o, R_o = self._get_base_noise(bsize, dtype, class_ids)
-            
-            def fuse_covariance(Q_m: Tensor, Q_b: Tensor, strict_ratio: float = 2.0) -> Tensor:
-                # trace shape: [B, 1, 1]
+
+            # Per-category strict_ratio: categories with agile motion (bicycle/motorcycle)
+            # use a lower ratio so Mamba noise is more readily rejected when it diverges.
+            fusion_cfg = self.base_noise_cfg.get("FUSION", {}) if self.base_noise_cfg else {}
+            default_ratio = fusion_cfg.get("STRICT_RATIO", {})
+
+            def fuse_covariance(Q_m: Tensor, Q_b: Tensor, class_ids: Tensor = None) -> Tensor:
                 tr_m = Q_m.diagonal(dim1=-2, dim2=-1).sum(-1, keepdim=True).unsqueeze(-1)
                 tr_b = Q_b.diagonal(dim1=-2, dim2=-1).sum(-1, keepdim=True).unsqueeze(-1)
-                
-                # If Mamba trace jumps heavily above baseline (meaning OOD/Out-of-control)
-                # the weight drops to 0, smoothly falling back to physical priors.
-                # If Mamba trace is tight and confident, weight stays 1.0 (trust Mamba).
-                weight = torch.clamp(strict_ratio - (tr_m / (tr_b + 1e-6)), min=0.0, max=1.0)
-                
+
+                # Per-category strict_ratio: if class_ids provided, select ratio per track;
+                # otherwise use global default 2.0.
+                if class_ids is not None and default_ratio:
+                    ratio_vals = torch.tensor(
+                        [default_ratio.get(int(cid), 2.0) for cid in class_ids],
+                        device=Q_m.device, dtype=Q_m.dtype
+                    ).view(-1, 1, 1)  # [B, 1, 1]
+                else:
+                    ratio_vals = torch.tensor(2.0, device=Q_m.device, dtype=Q_m.dtype)
+
+                # If Mamba trace jumps heavily above baseline, weight drops to 0,
+                # falling back to physical priors. Tight confident Mamba → weight stays 1.0.
+                weight = torch.clamp(ratio_vals - (tr_m / (tr_b + 1e-6)), min=0.0, max=1.0)
                 return weight * Q_m + (1.0 - weight) * Q_b
-            
+
             # Fuse process noises (Q controls Kalman Gain scaling for prediction)
-            mamba_out["Q_pos"] = fuse_covariance(mamba_out["Q_pos"], Q_p)
-            mamba_out["Q_siz"] = fuse_covariance(mamba_out["Q_siz"], Q_s)
-            
+            mamba_out["Q_pos"] = fuse_covariance(mamba_out["Q_pos"], Q_p, class_ids)
+            mamba_out["Q_siz"] = fuse_covariance(mamba_out["Q_siz"], Q_s, class_ids)
+
             # Fuse observation noises (R controls trustworthiness of incoming detections)
-            mamba_out["R_pos"] = fuse_covariance(mamba_out["R_pos"], R_p)
-            mamba_out["R_siz"] = fuse_covariance(mamba_out["R_siz"], R_s)
+            mamba_out["R_pos"] = fuse_covariance(mamba_out["R_pos"], R_p, class_ids)
+            mamba_out["R_siz"] = fuse_covariance(mamba_out["R_siz"], R_s, class_ids)
 
         # Execute KF predict step using the active (or fused) noise models
         pos_x, pos_P, siz_x, siz_P, ori_x, ori_P = self.kf.predict(

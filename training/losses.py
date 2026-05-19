@@ -198,11 +198,13 @@ class StatePredictionLoss(nn.Module):
         w_pos: float = 1.0,
         w_siz: float = 0.5,
         w_ori: float = 1.0,
+        w_vel: float = 0.3,
     ) -> None:
         super().__init__()
         self.w_pos = w_pos
         self.w_siz = w_siz
         self.w_ori = w_ori
+        self.w_vel = w_vel
 
         # H_pos: [3, 6] — selects [x, y, z] from 6-dim state for NLL loss.
         # The KF update uses a 5D observation [x,y,z,vx,vy], but the NLL loss
@@ -211,6 +213,11 @@ class StatePredictionLoss(nn.Module):
         self.H_pos[0, 0] = 1.0
         self.H_pos[1, 1] = 1.0
         self.H_pos[2, 2] = 1.0
+
+        # H_vel: [2, 6] — selects [vx, vy] from 6-dim state for velocity NLL.
+        self.register_buffer("H_vel", torch.zeros(2, 6))
+        self.H_vel[0, 3] = 1.0
+        self.H_vel[1, 4] = 1.0
 
         # H_siz: [3, 3] — identity (observation = state for size filter)
         self.register_buffer("H_siz", torch.eye(3))
@@ -226,10 +233,11 @@ class StatePredictionLoss(nn.Module):
         gt_next_pos: torch.Tensor,   # [B, 3]
         gt_next_siz: torch.Tensor,   # [B, 3]
         gt_next_ori: torch.Tensor,   # [B, 1]
-        R_pos: torch.Tensor,         # [B, 3, 3]
+        R_pos: torch.Tensor,         # [B, 5, 5]
         R_siz: torch.Tensor,         # [B, 3, 3]
         R_ori: torch.Tensor,         # [B, 1, 1]  (unused, kept for API compat)
         kappa_ori: torch.Tensor = None,  # [B, 1] — Von Mises concentration
+        gt_next_vel: torch.Tensor = None,  # [B, 2] — GT velocity for vel NLL
         in_warmup: bool = False,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
@@ -237,7 +245,7 @@ class StatePredictionLoss(nn.Module):
             loss   : scalar tensor (differentiable)
             detail : dict with individual loss values for logging
         """
-        # Position: Kalman NLL (on xyz only — velocity is auxiliary for KF update)
+        # Position: Kalman NLL (on xyz sub-block)
         loss_pos = kalman_nll_loss(
             z_gt=gt_next_pos,
             x_pred=pos_x_pred,
@@ -245,6 +253,22 @@ class StatePredictionLoss(nn.Module):
             H=self.H_pos,
             R_pred=R_pos[:, :3, :3],  # [B,3,3] position sub-block of [B,5,5] R_pos
         )
+
+        # Velocity: Kalman NLL (on vx,vy sub-block).
+        # GT velocity is approximated from initial GT (constant-vel assumption
+        # over short rollouts). NaN guard prevents one bad batch from crashing training.
+        loss_vel_val = 0.0
+        if gt_next_vel is not None and self.w_vel > 0:
+            loss_vel = kalman_nll_loss(
+                z_gt=gt_next_vel,
+                x_pred=pos_x_pred,
+                P_pred=pos_P_pred,
+                H=self.H_vel,
+                R_pred=R_pos[:, 3:5, 3:5],  # [B,2,2] velocity sub-block
+            )
+            if not torch.isnan(loss_vel) and not torch.isinf(loss_vel):
+                loss_pos = loss_pos + self.w_vel * loss_vel
+                loss_vel_val = loss_vel.item()
 
         # Size: Kalman NLL
         loss_siz = kalman_nll_loss(
@@ -275,6 +299,7 @@ class StatePredictionLoss(nn.Module):
             "loss_pos": loss_pos.item(),
             "loss_siz": loss_siz.item(),
             "loss_ori": loss_ori.item(),
+            "loss_vel": loss_vel_val,
         }
         return loss, detail
 
@@ -371,12 +396,13 @@ class JointLoss(nn.Module):
         w_pos: float = 1.0,
         w_siz: float = 0.5,
         w_ori: float = 1.0,
+        w_vel: float = 0.3,
         lambda_contrast: float = 0.1,
         temperature: float = 0.07,
         physics_scale: float = 50.0,
     ) -> None:
         super().__init__()
-        self.state_loss = StatePredictionLoss(w_pos, w_siz, w_ori)
+        self.state_loss = StatePredictionLoss(w_pos, w_siz, w_ori, w_vel)
         self.contrastive_loss = InfoNCELoss(temperature)
         self.lambda_contrast = lambda_contrast
         self.physics_scale = physics_scale
@@ -394,10 +420,11 @@ class JointLoss(nn.Module):
         gt_next_ori: torch.Tensor,   # [B, 1]
         embeddings: torch.Tensor,    # [B, D]
         instance_tokens: list,        # list of B strings
-        R_pos: torch.Tensor,          # [B, 3, 3]
+        R_pos: torch.Tensor,          # [B, 5, 5]
         R_siz: torch.Tensor,          # [B, 3, 3]
         R_ori: torch.Tensor,          # [B, 1, 1]
         kappa_ori: torch.Tensor = None,  # [B, 1]
+        gt_next_vel: torch.Tensor = None,  # [B, 2]
         in_warmup: bool = False,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
@@ -412,6 +439,7 @@ class JointLoss(nn.Module):
             gt_next_pos, gt_next_siz, gt_next_ori,
             R_pos, R_siz, R_ori,
             kappa_ori=kappa_ori,
+            gt_next_vel=gt_next_vel,
             in_warmup=in_warmup,
         )
 

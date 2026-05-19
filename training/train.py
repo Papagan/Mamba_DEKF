@@ -62,6 +62,7 @@ def training_step(
     noise_cfg: dict = None,
     epoch: int = 0,
     warmup_epochs: int = 0,
+    vel_warmup_epochs: int = 3,
 ) -> tuple:
     """
     Multi-step KF rollout training with noisy teacher forcing.
@@ -168,6 +169,10 @@ def training_step(
     # the uncertainty heads can take shortcuts (κ→0, R→0, logdet→-∞).
     in_warmup = epoch < warmup_epochs
 
+    # Velocity NLL warmup: delay for N epochs after uncertainty-unseal to let
+    # position+orientation NLL stabilise before adding velocity supervision.
+    vel_active = epoch >= warmup_epochs + vel_warmup_epochs
+
     # ---- Step 3: K-step KF rollout with teacher forcing ----
     Q_pos = mamba_out["Q_pos"]
     Q_siz = mamba_out["Q_siz"]
@@ -185,6 +190,9 @@ def training_step(
         R_siz = R_siz.detach()
         R_ori = R_ori.detach()
         kappa_ori = kappa_ori.detach()
+
+    # GT velocity for all rollout steps (constant-velocity approximation over K≤3 frames)
+    vel_gt = gt_pos[:, 3:5]  # [B, 2]
 
     total_state_loss = 0.0
     total_contrast_loss = 0.0
@@ -207,6 +215,8 @@ def training_step(
             mamba_out["embedding"] if k == 0 else None,
             instance_tokens if k == 0 else None,
             R_pos=R_pos, R_siz=R_siz, R_ori=R_ori,
+            kappa_ori=kappa_ori,
+            gt_next_vel=vel_gt if vel_active else None,
             kappa_ori=kappa_ori,
             in_warmup=in_warmup,
         )
@@ -429,10 +439,12 @@ def main():
         w_pos=loss_cfg.get("W_POS", 1.0),
         w_siz=loss_cfg.get("W_SIZ", 0.5),
         w_ori=loss_cfg.get("W_ORI", 1.0),
+        w_vel=loss_cfg.get("W_VEL", 0.3),
         lambda_contrast=loss_cfg.get("LAMBDA_CONTRAST", 0.1),
         temperature=loss_cfg.get("INFONCE_TEMPERATURE", 0.07),
         physics_scale=loss_cfg.get("PHYSICS_SCALE", 5.0),
     ).to(device)
+    vel_warmup_epochs = loss_cfg.get("VEL_WARMUP_EPOCHS", 3)
 
     # ---- Optimizer (separated LR groups) ----
     # Mamba SSM backbone: low LR (5e-5) to prevent early covariance divergence.
@@ -521,7 +533,8 @@ def main():
 
             loss, detail = training_step(
                 mamba, batch, loss_fn, device, noise_cfg,
-                epoch=epoch, warmup_epochs=warmup_epochs)
+                epoch=epoch, warmup_epochs=warmup_epochs,
+                vel_warmup_epochs=vel_warmup_epochs)
 
             # Check for NaN / Inf loss before backward
             if torch.isnan(loss) or torch.isinf(loss):
@@ -585,6 +598,7 @@ def main():
             f"pos={avg_train.get('loss_pos', 0):.4f} "
             f"siz={avg_train.get('loss_siz', 0):.4f} "
             f"ori={avg_train.get('loss_ori', 0):.4f} "
+            f"vel={avg_train.get('loss_vel', 0):.4f} "
             f"contrast={avg_train.get('loss_contrastive', 0):.4f} | "
             f"val={avg_val.get('loss_real', avg_val.get('loss_total', 0)):.4f} "
             f"val_pos={avg_val.get('loss_pos', 0):.4f} | "
@@ -602,6 +616,7 @@ def main():
         writer.add_scalar("train/loss_pos", avg_train.get("loss_pos", 0), step)
         writer.add_scalar("train/loss_siz", avg_train.get("loss_siz", 0), step)
         writer.add_scalar("train/loss_ori", avg_train.get("loss_ori", 0), step)
+        writer.add_scalar("train/loss_vel", avg_train.get("loss_vel", 0), step)
         writer.add_scalar("train/loss_contrastive", avg_train.get("loss_contrastive", 0), step)
         writer.add_scalar("train/loss_kappa_reg", avg_train.get("loss_kappa_reg", 0), step)
         writer.add_scalar("train/loss_delta_pos_reg", avg_train.get("loss_delta_pos_reg", 0), step)
@@ -610,6 +625,7 @@ def main():
         writer.add_scalar("val/loss_pos", avg_val.get("loss_pos", 0), step)
         writer.add_scalar("val/loss_siz", avg_val.get("loss_siz", 0), step)
         writer.add_scalar("val/loss_ori", avg_val.get("loss_ori", 0), step)
+        writer.add_scalar("val/loss_vel", avg_val.get("loss_vel", 0), step)
         writer.add_scalar("val/loss_contrastive", avg_val.get("loss_contrastive", 0), step)
         writer.add_scalar("val/loss_kappa_reg", avg_val.get("loss_kappa_reg", 0), step)
         writer.add_scalar("val/loss_delta_pos_reg", avg_val.get("loss_delta_pos_reg", 0), step)

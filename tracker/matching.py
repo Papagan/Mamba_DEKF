@@ -382,15 +382,30 @@ def match_trajs_and_dets_uncertainty_aware(
 
     if min(cost_matrix.shape) > 0:
         matching_mode = cfg["MATCHING"]["BEV"]["MATCHING_MODE"]
+
+        # ---- Uncertainty-adaptive matching gate ----
+        # Wider gate when KF is uncertain (high P trace), tighter when confident.
+        base_thresholds = cfg["THRESHOLD"]["BEV"]["COST_THRE"]
+        if trk_pos_P is not None and trk_ori_P is not None:
+            uncertainty_vec = compute_uncertainty_penalty(trk_pos_P, trk_ori_P)
+            # typical P trace range: 0.1 (confident) → 50 (lost). map to scale 1.0–2.5
+            avg_unc = float(np.mean(uncertainty_vec))
+            unc_scale = 1.0 + min(0.3 * avg_unc, 1.5)
+        else:
+            unc_scale = 1.0
+        adaptive_thresholds = [v * unc_scale for v in (
+            base_thresholds.values() if isinstance(base_thresholds, dict) else base_thresholds
+        )]
+
         if matching_mode == "Hungarian":
             m_det, m_tra, um_det, um_tra, costs = Hungarian(
                 trans_cost_matrix,
-                cfg["THRESHOLD"]["BEV"]["COST_THRE"],
+                adaptive_thresholds,
             )
         elif matching_mode == "Greedy":
             m_det, m_tra, um_det, um_tra, costs = Greedy(
                 trans_cost_matrix,
-                cfg["THRESHOLD"]["BEV"]["COST_THRE"],
+                adaptive_thresholds,
             )
         else:
             raise ValueError(f"Unknown matching mode: {matching_mode}")

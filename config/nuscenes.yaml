@@ -27,8 +27,13 @@ CATEGORY_MAP_TO_NUMBER : {
 
 # ---- Mamba-Decoupled-EKF Track (Module A + B) ----
 # CHECKPOINT_PATH: trained TemporalMamba weights produced by training/train.py.
-# Must match the architecture below (D_MODEL/D_STATE/...).
+# Must match the architecture below (D_MODEL/D_STATE/N_MAMBA_LAYERS/...).
 # Set to "" to run with random init (only for smoke-tests).
+#
+# Scale-up schemes matching training config:
+#   Baseline:  3 layers, D_MODEL=64, D_STATE=16 (~91K params)
+#   Scheme A:  5 layers, D_MODEL=64, D_STATE=16 (~120K params)
+#   Scheme B:  6 layers, D_MODEL=96, D_STATE=24 (~250K params)
 MAMBA:
   CHECKPOINT_PATH: "checkpoints/mamba_dekf/best.pt"
   D_MODEL: 64
@@ -46,17 +51,22 @@ MAMBA:
 
 MATCHING:
   BEV:
-    # Predict, BackPredict, Fusion
-    COST_STATE: {0: "BackPredict", 1: "BackPredict", 2: "Predict", 3: "Fusion", 4: "Predict", 5: "BackPredict", 6: "BackPredict"}
+    # Cost state per category:
+    #   Predict     — use KF-predicted bbox  (best when KF prediction is accurate)
+    #   BackPredict — use last fused bbox     (best when motion is erratic)
+    #   Fusion      — weighted blend via COST_STATE_PREDICT_RATION
+    # Mamba-DEKF has direct velocity obs → CV prediction is more accurate than MCTrack,
+    # so cars/buses/trucks use Predict; agile categories stay on BackPredict/Fusion.
+    COST_STATE: {0: "Predict", 1: "BackPredict", 2: "BackPredict", 3: "Fusion", 4: "Predict", 5: "Predict", 6: "Predict"}
     # iou_3d, giou_3d, dist_3d, ro_gdiou_3d
-    COST_MODE: {0: "RO_GDIOU_3D", 1: "RO_GDIOU_3D", 2: "RO_GDIOU_3D", 3: "RO_GDIOU_3D", 4: "RO_GDIOU_3D", 5: "RO_GDIOU_3D", 6: "RO_GDIOU_3D"} 
+    COST_MODE: {0: "RO_GDIOU_3D", 1: "RO_GDIOU_3D", 2: "RO_GDIOU_3D", 3: "RO_GDIOU_3D", 4: "RO_GDIOU_3D", 5: "RO_GDIOU_3D", 6: "RO_GDIOU_3D"}
      # Hungarian, Greedy
-    MATCHING_MODE: Hungarian 
+    MATCHING_MODE: Hungarian
   RV:
     # Predict, BackPredict, Fusion
-    COST_STATE: {0: "Predict", 1: "Predict", 2: "Predict", 3: "Predict", 4: "Predict", 5: "Predict", 6: "Predict"} 
+    COST_STATE: {0: "Predict", 1: "Predict", 2: "Predict", 3: "Predict", 4: "Predict", 5: "Predict", 6: "Predict"}
     # IOU_2D, GIOU_2D, DIOU_2D, SDIOU_2D
-    COST_MODE: {0: "SDIOU_2D", 1: "SDIOU_2D", 2: "SDIOU_2D", 3: "SDIOU_2D", 4: "SDIOU_2D", 5: "SDIOU_2D", 6: "SDIOU_2D"} 
+    COST_MODE: {0: "SDIOU_2D", 1: "SDIOU_2D", 2: "SDIOU_2D", 3: "SDIOU_2D", 4: "SDIOU_2D", 5: "SDIOU_2D", 6: "SDIOU_2D"}
      # Hungarian, Greedy
     MATCHING_MODE : Greedy  # Hungarian, Greedy
 
@@ -66,10 +76,14 @@ THRESHOLD:
   INPUT_SCORE: 
     ONLINE: {0: 0.15, 1: 0.16, 2: 0.20, 3: 0.15, 4: 0.16, 5: 0.17, 6: 0.0}
     OFFLINE: {0: 0.15, 1: 0.16, 2: 0.20, 3: 0.15, 4: 0.16, 5: 0.17, 6: 0.0}
-  COST_STATE_PREDICT_RATION: {0: 1.0, 1: 1.0, 2: 1.0, 3: 0.5, 4: 1.0, 5: 1.0, 6: 1.0}
-  NMS_THRE: {0: 0.04, 1: 0.08, 2: 0.08, 3: 0.06, 4: 0.08, 5: 0.12, 6: 0.05}  
+  COST_STATE_PREDICT_RATION: {0: 1.0, 1: 1.0, 2: 1.0, 3: 0.5, 4: 1.0, 5: 1.0, 6: 1.0}  # 3=motorcycle: 50/50 blend
+  NMS_THRE: {0: 0.04, 1: 0.08, 2: 0.08, 3: 0.06, 4: 0.08, 5: 0.12, 6: 0.05}
   BEV:
-    COST_THRE: {0: 1.60, 1: 1.80, 2: 1.60, 3: 1.60, 4: 1.60, 5: 1.60, 6: 1.60} #COST_THRE: {0: 1.10, 1: 2.06, 2: 1.20, 3: 2.06, 4: 1.60, 5: 1.26, 6: 1.16}  # bicycle 2.00→1.20
+    # Per-category matching cost thresholds (lower = stricter).
+    # Uncertainty-adaptive gate scales these dynamically based on P trace.
+    # Large objects (car/bus/truck): tighter (1.20) — dets are reliable, KF predicts well.
+    # Small objects (ped/bike): wider (1.60–1.80) — det noise is higher, more IoU variance.
+    COST_THRE: {0: 1.20, 1: 1.80, 2: 1.60, 3: 1.60, 4: 1.20, 5: 1.40, 6: 1.20}
     COST_MODE: "full"   # "geometric" (early training) | "full" (converged)
     WEIGHT_RO_GDIOU: {
       0: {"w1": 1.0, "w2": 1.0},
@@ -81,8 +95,9 @@ THRESHOLD:
       6: {"w1": 1.0, "w2": 1.0},
     }
     # Module C weights (per category): semantic affinity vs. geometric, uncertainty penalty
-    W_SEMANTIC:    {0: 0.30, 1: 0.30, 2: 0.30, 3: 0.30, 4: 0.30, 5: 0.30, 6: 0.30}
-    W_UNCERTAINTY: {0: 0.10, 1: 0.10, 2: 0.10, 3: 0.10, 4: 0.10, 5: 0.10, 6: 0.10}
+    # Higher w_sem for small/agile categories (ped,bicycle) → embedding match prevents ID switch
+    W_SEMANTIC:    {0: 0.25, 1: 0.35, 2: 0.35, 3: 0.30, 4: 0.20, 5: 0.20, 6: 0.25}
+    W_UNCERTAINTY: {0: 0.10, 1: 0.12, 2: 0.12, 3: 0.10, 4: 0.08, 5: 0.10, 6: 0.08}
   RV:
     COST_THRE: {0: -0.3, 1: -0.3, 2: -0.3, 3: -0.3, 4: -0.3, 5: -0.3, 6: -0.3} 
     COST_MODE: "geometric"   # "geometric" (early training) | "full" (converged)
@@ -94,8 +109,9 @@ THRESHOLD:
     CACHE_BBOX_LENGTH: {0: 30, 1: 30, 2: 30, 3: 30, 4: 30, 5: 30, 6: 30}
 
     # Max consecutive coast (predict-only) frames before death.
-    # Lower = dies faster during occlusion, fewer ID switches but may fragment.
-    PREDICT_BBOX_LENGTH: {0: 15, 1: 15, 2: 8, 3: 10, 4: 15, 5: 15, 6: 15}
+    # Mamba-DEKF has adaptive R in coast mode → can coast longer than MCTrack.
+    # Agile categories (bicycle=12, motorcycle=20) still die faster during occlusion.
+    PREDICT_BBOX_LENGTH: {0: 17, 1: 7, 2: 12, 3: 20, 4: 15, 5: 7, 6: 20}
 
     # Max unmatched frames before status → obscured (not output, but still matchable).
     MAX_UNMATCH_LENGTH: {0: 2, 1: 1, 2: 1, 3: 1, 4: 2, 5: 1, 6: 1}
@@ -108,38 +124,46 @@ THRESHOLD:
     DELET_OUT_VIEW_LENGTH: {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0}
 
     # Detection score threshold for a track to become confirmed.
+    # Mamba-DEKF's KF smooths lower-quality initial dets → set to 0.5 (vs MCTrack 0.7).
     CONFIRMED_DET_SCORE: {0: 0.5, 1: 0.5, 2: 0.5, 3: 0.5, 4: 0.5, 5: 0.5, 6: 0.5}
 
     # Detection score threshold to CREATE a new track (Strict Birth).
     # Higher for noisy categories (bicycle, motorcycle) to suppress false tracks.
-    # CenterPoint produces many false bicycle detections at score 0.4-0.55.
     BIRTH_SCORE: {0: 0.40, 1: 0.45, 2: 0.55, 3: 0.50, 4: 0.35, 5: 0.35, 6: 0.35}
 
     # Sentinel value for filter-predicted bboxes (excluded from output).
     IS_FILTER_PREDICT_BOX: {0: -1, 1: -1, 2: -1, 3: -1, 4: -1, 5: -1, 6: -1}
 
     # Matching cost threshold for track confirmation promotion.
+    # cost < CONFIRMED_MATCHED_SCORE → promote to confirmed (Ro-GDIoU ≈ 1.0 - cost).
     CONFIRMED_MATCHED_SCORE:  {0: 0.3, 1: 0.3, 2: 0.3, 3: 0.3, 4: 0.3, 5: 0.3, 6: 0.3} 
 
 
 # DEKF baseline physical priors for Pure_DEKF and IMM Fusion Mode
 DEKF_BASE_NOISE:
-  # Base Process Noise Diagonals (Standard deviations, will be squared to variances)
-  Q: 
-    POS: [0.1, 0.1, 0.1, 1.5, 1.5, 1.5] # [x, y, z, vx, vy, vz]
-    SIZ: [0.05, 0.05, 0.05]             # [l, w, h] (strict rigid body)
-    ORI: [0.1]                          # [yaw]
+  # Base Process Noise Diagonals (variances, used directly as diag values)
+  Q:
+    POS: [0.5, 0.5, 0.5, 1.5, 1.5, 1.5]     # default [x,y,z,vx,vy,vz] (car-based)
+    POS_PER_CAT:                                # per-category from MCTrack CV model → 6D
+      0: [0.5, 0.5, 0.5, 1.5, 1.5, 1.5]      # car
+      1: [1.5, 1.5, 1.5, 1.5, 1.5, 1.5]      # pedestrian (high position noise, agile)
+      2: [0.3, 0.3, 0.3, 1.0, 1.0, 1.0]      # bicycle (tight position, moderate velocity)
+      3: [0.5, 0.5, 0.5, 4.0, 4.0, 4.0]      # motorcycle (high velocity noise, agile turns)
+      4: [0.5, 0.5, 0.5, 1.5, 1.5, 1.5]      # bus (large, moderate noise)
+      5: [0.3, 0.3, 0.3, 0.1, 0.1, 0.1]      # trailer (slow, tight velocity)
+      6: [0.1, 0.1, 0.1, 2.0, 2.0, 2.0]      # truck (tight position, moderate velocity)
+    SIZ: [0.05, 0.05, 0.05]                   # [l, w, h] (rigid body)
+    ORI: [0.1]                                 # [yaw] angular velocity
 
-  # Base Measurement Noise Diagonals from actual dataset noise.log statistics (Standard deviations)
-  # R_POS (x,y,z), R_SIZ (l,w,h) , R_ORI (yaw) mapped by class ID.
-  # Class ID map:
-  # 0:car, 1:ped, 2:bicycle, 3:motorcycle, 4:bus, 5:trailer, 6:truck
+  # Base Measurement Noise from noise.log statistics (Standard deviations → squared to variances)
   R:
-    POS_STD: [0.51, 0.27, 0.55, 0.86, 1.26, 0.91, 0.64]
-    SIZ_STD: [0.16, 0.05, 0.09, 0.13, 0.67, 1.05, 0.46]
-    ORI_STD: [0.50, 0.91, 0.86, 0.96, 0.48, 0.53, 0.45]
-    # Velocity measurement noise (standard deviation, per category).
-    # Higher values = less trust in detection velocity (CenterPoint v=0 is often wrong).
-    # Bicycle/motorcycle/pedestrian get lower noise so KF infers velocity faster.
-    VEL_STD: [3.0, 1.5, 1.0, 1.5, 5.0, 5.0, 3.0]
+    POS_STD: [0.52, 0.27, 0.55, 0.86, 1.26, 0.91, 0.64]  # per-cat [x,y] from noise.log
+    SIZ_STD: [0.16, 0.05, 0.09, 0.13, 0.67, 1.05, 0.46]  # per-cat size std
+    ORI_STD: [0.50, 0.91, 0.86, 0.96, 0.48, 0.53, 0.45]  # per-cat yaw std
+    VEL_STD: [3.0, 1.5, 1.0, 1.5, 5.0, 5.0, 3.0]         # per-cat vel (high=don't trust)
     MEAS_MULTIPLIER: 0.7  # Temporal coherency smoothing factor
+
+  # Fusion mode: per-category strict_ratio controls how aggressively Mamba noise
+  # is trusted over baseline. Higher = more tolerance for Mamba outlier traces.
+  FUSION:
+    STRICT_RATIO: {0: 2.0, 1: 2.0, 2: 1.5, 3: 1.5, 4: 2.0, 5: 2.0, 6: 2.0}

@@ -666,7 +666,7 @@ class Base3DTracker:
             cfg_relaxed = copy.deepcopy(self.cfg)
             orig_thre = cfg_relaxed["THRESHOLD"]["BEV"]["COST_THRE"]
             cfg_relaxed["THRESHOLD"]["BEV"]["COST_THRE"] = [
-                t * 2.0 for t in orig_thre
+                v * 2.0 for v in orig_thre.values()
             ]
 
             match_res_2, _ = match_trajs_and_dets_uncertainty_aware(
