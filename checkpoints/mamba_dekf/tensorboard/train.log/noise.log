@@ -1,0 +1,125 @@
+--- car (n=71604) ---
+  Position noise [dx, dy]:
+    mean = [0.0026, -0.0055] m
+    std  = [0.5210, 0.5045] m
+    Suggested R_pos diag = [0.2715, 0.2545]
+  Yaw noise:
+    mean = -0.027110 rad
+    std  = 0.507761 rad
+    Suggested R_yaw = 0.257821
+  Size noise [dl, dw]:
+    mean = [-0.0011, 0.0003] m
+    std  = [0.2417, 0.0799] m
+    Suggested R_size diag = [0.0584, 0.0064]
+  Velocity noise [dvx, dvy]:
+    mean = [0.0001, -0.0067] m/s
+    std  = [0.7551, 0.7017] m/s
+    Suggested R_vel diag = [0.5702, 0.4923]
+
+--- pedestrian (n=46123) ---
+  Position noise [dx, dy]:
+    mean = [-0.0008, 0.0058] m
+    std  = [0.2745, 0.2731] m
+    Suggested R_pos diag = [0.0754, 0.0746]
+  Yaw noise:
+    mean = -0.014282 rad
+    std  = 0.919638 rad
+    Suggested R_yaw = 0.845733
+  Size noise [dl, dw]:
+    mean = [-0.0004, 0.0002] m
+    std  = [0.0567, 0.0422] m
+    Suggested R_size diag = [0.0032, 0.0018]
+  Velocity noise [dvx, dvy]:
+    mean = [-0.0022, 0.0030] m/s
+    std  = [0.2494, 0.2409] m/s
+    Suggested R_vel diag = [0.0622, 0.0580]
+
+--- bicycle (n=7380) ---
+  Position noise [dx, dy]:
+    mean = [-0.0027, 0.0094] m
+    std  = [0.5562, 0.5444] m
+    Suggested R_pos diag = [0.3094, 0.2964]
+  Yaw noise:
+    mean = -0.008598 rad
+    std  = 0.867291 rad
+    Suggested R_yaw = 0.752194
+  Size noise [dl, dw]:
+    mean = [-0.0024, -0.0019] m
+    std  = [0.1118, 0.0661] m
+    Suggested R_size diag = [0.0125, 0.0044]
+  Velocity noise [dvx, dvy]:
+    mean = [-0.0018, 0.0058] m/s
+    std  = [0.3933, 0.3942] m/s
+    Suggested R_vel diag = [0.1547, 0.1554]
+
+--- motorcycle (n=9577) ---
+  Position noise [dx, dy]:
+    mean = [-0.0043, 0.0121] m
+    std  = [0.8646, 0.8695] m
+    Suggested R_pos diag = [0.7475, 0.7560]
+  Yaw noise:
+    mean = -0.009534 rad
+    std  = 0.960462 rad
+    Suggested R_yaw = 0.922488
+  Size noise [dl, dw]:
+    mean = [-0.0005, 0.0008] m
+    std  = [0.1866, 0.0860] m
+    Suggested R_size diag = [0.0348, 0.0074]
+  Velocity noise [dvx, dvy]:
+    mean = [-0.0154, -0.0098] m/s
+    std  = [0.8261, 0.8865] m/s
+    Suggested R_vel diag = [0.6825, 0.7858]
+
+--- bus (n=2837) ---
+  Position noise [dx, dy]:
+    mean = [0.0330, -0.0053] m
+    std  = [1.3037, 1.2327] m
+    Suggested R_pos diag = [1.6996, 1.5196]
+  Yaw noise:
+    mean = -0.029306 rad
+    std  = 0.487496 rad
+    Suggested R_yaw = 0.237652
+  Size noise [dl, dw]:
+    mean = [0.0411, 0.0031] m
+    std  = [1.2094, 0.1465] m
+    Suggested R_size diag = [1.4627, 0.0215]
+  Velocity noise [dvx, dvy]:
+    mean = [0.0364, -0.0247] m/s
+    std  = [1.2134, 1.1046] m/s
+    Suggested R_vel diag = [1.4724, 1.2201]
+
+--- trailer (n=4139) ---
+  Position noise [dx, dy]:
+    mean = [0.0091, -0.0148] m
+    std  = [0.9590, 0.8735] m
+    Suggested R_pos diag = [0.9197, 0.7630]
+  Yaw noise:
+    mean = -0.024630 rad
+    std  = 0.539638 rad
+    Suggested R_yaw = 0.291209
+  Size noise [dl, dw]:
+    mean = [-0.0376, -0.0022] m
+    std  = [1.9336, 0.1782] m
+    Suggested R_size diag = [3.7387, 0.0318]
+  Velocity noise [dvx, dvy]:
+    mean = [-0.0006, -0.0130] m/s
+    std  = [0.4770, 0.3982] m/s
+    Suggested R_vel diag = [0.2275, 0.1586]
+
+--- truck (n=32350) ---
+  Position noise [dx, dy]:
+    mean = [0.0067, -0.0063] m
+    std  = [0.6580, 0.6269] m
+    Suggested R_pos diag = [0.4330, 0.3930]
+  Yaw noise:
+    mean = -0.020914 rad
+    std  = 0.451352 rad
+    Suggested R_yaw = 0.203719
+  Size noise [dl, dw]:
+    mean = [-0.0065, 0.0002] m
+    std  = [0.7685, 0.1569] m
+    Suggested R_size diag = [0.5906, 0.0246]
+  Velocity noise [dvx, dvy]:
+    mean = [-0.0000, -0.0099] m/s
+    std  = [0.6409, 0.6169] m/s
+    Suggested R_vel diag = [0.4108, 0.3806]

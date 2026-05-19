@@ -35,12 +35,12 @@ TRAINING:
   MAMBA_LR: 5.0e-5          # lower LR for Mamba SSM backbone
   WEIGHT_DECAY: 1.0e-4
   WARMUP_EPOCHS: 3             # LR scheduler warmup
-  WARMUP_UNCERTAINTY_EPOCHS: 8 # detach Q/R/kappa, use L2 angle loss
+  WARMUP_UNCERTAINTY_EPOCHS: 5 # detach Q/R/kappa, use L2 angle loss
   GRAD_CLIP_NORM: 1.0
   LOG_EVERY: 50
   SAVE_EVERY: 10
   SAVE_DIR: checkpoints/mamba_dekf/
-  AUTO_UNSEAL_EPOCH: 40          # epoch at which to auto-toggle cost to "full"
+  AUTO_UNSEAL_EPOCH: 25          # epoch at which to auto-toggle cost to "full"
   INFERENCE_CONFIG: config/nuscenes.yaml   # which inference config to update
   ROLLOUT_STEPS: 3               # KF auto-regressive rollout depth (1 = single-step)
   NOISE_MAP:                     # Category-specific noise injection
@@ -52,7 +52,7 @@ TRAINING:
 
 # ---- Loss ----
 LOSS:
-  W_POS: 3.0
+  W_POS: 5.0
   W_SIZ: 1.0            # reduced: raw_r_siz init is very negative, don't amplify
   W_ORI: 1.5            # Von Mises NLL range ~0.1-1.0, no need for 50x
   LAMBDA_CONTRAST: 0.3

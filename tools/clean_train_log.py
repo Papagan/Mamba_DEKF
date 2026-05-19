@@ -27,8 +27,8 @@ def clean_log(input_path: str, output_path: str | None = None) -> int:
         r"(?:Logging to|Device:|Train:|Val:|TemporalMamba:|^#)", L
     )]
 
-    # Extract epoch summary lines
-    epoch_pattern = re.compile(r"Epoch\s+\d+/\d+.*train_loss=")
+    # Extract epoch summary lines (new format: "loss=", legacy: "train_loss=")
+    epoch_pattern = re.compile(r"Epoch\s+\d+/\d+.*\bloss=")
     epoch_lines = [L for L in lines if epoch_pattern.search(L)]
 
     header = [
