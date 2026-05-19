@@ -79,7 +79,7 @@ LOSS:
   W_SIZ: 1.0            # reduced: raw_r_siz init is very negative, don't amplify
   W_ORI: 1.5            # Von Mises NLL range ~0.1-1.0, no need for 50x
   W_VEL: 0.3            # velocity NLL weight (≤ W_POS; constant-vel GT is approximate)
-  VEL_WARMUP_EPOCHS: 3  # delay vel NLL for first N epochs after uncertainty-unseal
+  VEL_WARMUP_EPOCHS: 1  # delay vel NLL for first N epochs after uncertainty-unseal
   LAMBDA_CONTRAST: 0.3
   INFONCE_TEMPERATURE: 0.07
   PHYSICS_SCALE: 5.0    # reduced from 20: let pos gradient survive against siz

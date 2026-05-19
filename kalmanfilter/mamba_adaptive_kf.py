@@ -963,8 +963,9 @@ class TemporalMamba(nn.Module):
                 "Q_ori"     : [B, 2, 2]  — orientation process noise   (static)
                 "R_pos"     : [B, 5, 5]  — position measurement noise  (PSD)
                 "R_siz"     : [B, 3, 3]  — size measurement noise      (static)
-                "R_ori"     : [B, 1, 1]  — orientation measurement noise (1/kappa)
-                "kappa_ori" : [B, 1]     — Von Mises concentration for loss
+                "R_ori"         : [B, 1, 1]  — orientation measurement noise (1/kappa, clamped)
+                "kappa_ori"     : [B, 1]     — Von Mises concentration for KF/NLL (clamped ≤ 5.0)
+                "kappa_ori_unc" : [B, 1]     — pre-clamp κ for overconfidence penalty
                 "embedding" : [B, embed_dim] — temporal embedding for association
         """
         # input projection: [B, T, 12] → [B, T, d_model]
@@ -1012,10 +1013,11 @@ class TemporalMamba(nn.Module):
         # ---- Orientation: Von Mises kappa + static Q, derived R ----
         # kappa: concentration parameter (higher = more confident)
         # min_kappa floor prevents kappa → 0 → R_ori → ∞ (degenerate solution)
-        # clamp provides double protection: floor at init + ceiling at forward
+        # kappa_ori_unc: pre-clamp value returned for the overconfidence penalty in train.py.
+        # kappa_ori: clamped to [min_kappa, 5.0], used for KF and Von Mises NLL.
         kappa_raw = self.head_kappa_ori(h_last)                                 # [B, 1]
-        kappa_ori = F.softplus(kappa_raw) + self.min_kappa                      # [B, 1]
-        kappa_ori = torch.clamp(kappa_ori, min=self.min_kappa, max=5.0)
+        kappa_ori_unc = F.softplus(kappa_raw) + self.min_kappa                  # [B, 1] — pre-clamp
+        kappa_ori = torch.clamp(kappa_ori_unc, min=self.min_kappa, max=5.0)     # [B, 1] — for KF/NLL
 
         # R_ori = 1 / kappa (measurement noise derived from concentration)
         R_ori = (1.0 / kappa_ori).unsqueeze(-1)                       # [B, 1, 1]
@@ -1034,6 +1036,7 @@ class TemporalMamba(nn.Module):
             "Q_pos": Q_pos, "Q_siz": Q_siz, "Q_ori": Q_ori,
             "R_pos": R_pos, "R_siz": R_siz, "R_ori": R_ori,
             "kappa_ori": kappa_ori,
+            "kappa_ori_unc": kappa_ori_unc,
             "embedding": embedding,
             "delta_pos": delta_pos,               # [B, 6] — initial-state correction
         }

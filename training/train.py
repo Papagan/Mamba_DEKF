@@ -217,7 +217,6 @@ def training_step(
             R_pos=R_pos, R_siz=R_siz, R_ori=R_ori,
             kappa_ori=kappa_ori,
             gt_next_vel=vel_gt if vel_active else None,
-            kappa_ori=kappa_ori,
             in_warmup=in_warmup,
         )
 
@@ -267,8 +266,10 @@ def training_step(
         loss_fn.lambda_contrast * detail["loss_contrastive"]
     )
 
-    # κ overconfidence penalty: fires when κ > 10 (typical healthy κ ∈ [1, 8]).
-    kappa_reg = 5e-3 * F.relu(mamba_out["kappa_ori"] - 5.0).mean()
+    # κ overconfidence penalty: fires when pre-clamp κ > 5.0 (R_ori < 0.2).
+    # Must use kappa_ori_unc (pre-clamp) — kappa_ori is already clamped to ≤ 5.0
+    # so ReLU(kappa_ori - 5.0) would always be zero.
+    kappa_reg = 5e-3 * F.relu(mamba_out["kappa_ori_unc"] - 5.0).mean()
     detail["loss_kappa_reg"] = kappa_reg.item()
 
     # Δpos L2 penalty: mild regularisation to keep delta_pos bounded.
@@ -283,8 +284,8 @@ def training_step(
         ]:
             diag = mat.diagonal(dim1=-2, dim2=-1)
             detail[f"std_{name}"] = diag.std(dim=0).mean().item()
-        detail["std_kappa"] = mamba_out["kappa_ori"].std(dim=0).mean().item()
-        detail["mean_kappa"] = mamba_out["kappa_ori"].mean().item()
+        detail["std_kappa"] = mamba_out["kappa_ori_unc"].std(dim=0).mean().item()
+        detail["mean_kappa"] = mamba_out["kappa_ori_unc"].mean().item()
 
     # ---- Backward loss: total_loss_tensor already contains
     #      physics_scale × state_NLL + lambda × contrast + kappa_var_reg
