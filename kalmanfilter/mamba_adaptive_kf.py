@@ -1255,7 +1255,12 @@ class MambaDecoupledEKF(nn.Module):
             # Fuse observation noises (R controls trustworthiness of incoming detections)
             mamba_out["R_pos"] = fuse_covariance(mamba_out["R_pos"], R_p, class_ids)
             mamba_out["R_siz"] = fuse_covariance(mamba_out["R_siz"], R_s, class_ids)
-            mamba_out["R_ori"] = fuse_covariance(mamba_out["R_ori"], R_o, class_ids)
+            # R_ori (=1/kappa) is NOT fused via trace-gate here.
+            # kappa already has dual protection: min_kappa floor + overconfidence
+            # penalty (kappa_reg) during training, and 1/kappa lives in a different
+            # numerical range than the baseline variance → trace ratio is misleading.
+            # Orientation safety is provided by Q_ori fusion (above) and the
+            # per-category baseline R_o accessible via pure_dekf mode when needed.
 
         # Execute KF predict step using the active (or fused) noise models
         pos_x, pos_P, siz_x, siz_P, ori_x, ori_P = self.kf.predict(

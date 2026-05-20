@@ -307,7 +307,13 @@ class Base3DTracker:
         sx = siz_x.squeeze().cpu().numpy()   # [3]
         ox = ori_x.squeeze().cpu().numpy()   # [2]
 
-        # ---- Sanity check: reject anomalous position jumps (>10 m) ----
+        # ---- Sanity check: anomalous position jumps (>10 m) ----
+        # When the KF produces an extreme jump (divergent Q), fall back to
+        # the detection position rather than silently retaining stale bbox
+        # fields.  This keeps bbox ↔ KF-state consistent: the next frame's
+        # history extraction reads realistic positions and Mamba sees a
+        # coherent tracklet.
+        kf_jump_ok = True
         if len(traj.bboxes) > 1:
             prev_bbox = traj.bboxes[-2]
             if (hasattr(prev_bbox, "global_xyz_lwh_yaw_predict")
@@ -318,28 +324,21 @@ class Base3DTracker:
             displacement = np.sqrt(
                 (px[0] - prev_pos[0]) ** 2 + (px[1] - prev_pos[1]) ** 2
             )
-            if displacement > 10.0:
-                return  # discard prediction, keep previous-frame coordinates
+            kf_jump_ok = displacement <= 10.0
 
-        # For brand-new tracks, use the detection position as the "prediction".
-        # The KF starts with zero velocity (CenterPoint default), so F@x = x
-        # (no displacement). Using the raw detection position ensures the first
-        # Ro-GDIoU match has the best possible chance. After the first successful
-        # KF update, velocity is inferred from position change and KF predictions
-        # become meaningful.
-        if traj.track_length <= 1:
+        # Use KF prediction for mature tracks; detection position for new tracks
+        # or when KF prediction is anomalous.
+        if traj.track_length <= 1 or not kf_jump_ok:
             predict_xyz = bbox.global_xyz
-            import os as _os
-            if _os.environ.get("DEBUG_TRACKER"):
-                print(f"[NEWBORN] track={traj.track_id} len={traj.track_length} "
-                      f"KF=[{px[0]:.1f},{px[1]:.1f}] det={bbox.global_xyz[:2]}", flush=True)
+            vel_x, vel_y = 0.0, 0.0
         else:
             predict_xyz = [px[0], px[1], px[2]]
+            vel_x, vel_y = px[3], px[4]
         predict_lwh = [sx[0], sx[1], sx[2]]
         predict_yaw = float(ox[0])
 
         bbox.global_xyz_lwh_yaw_predict = predict_xyz + predict_lwh + [predict_yaw]
-        bbox.global_velocity_fusion = [px[3], px[4]]
+        bbox.global_velocity_fusion = [vel_x, vel_y]
         bbox.global_yaw_fusion = predict_yaw
         bbox.lwh_fusion = predict_lwh
 

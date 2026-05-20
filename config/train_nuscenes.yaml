@@ -33,7 +33,7 @@ MODEL:
   D_STATE: 24
   D_CONV: 4
   EXPAND: 2
-  N_MAMBA_LAYERS: 5
+  N_MAMBA_LAYERS: 6
   EMBED_DIM: 32
   # ---- Scheme B: aggressive scale-up (higher MAMBA_LR risk → reduce to 2e-5) ----
   # D_MODEL: 96
@@ -65,7 +65,7 @@ TRAINING:
   SAVE_DIR: checkpoints/mamba_dekf/
   AUTO_UNSEAL_EPOCH: 25          # epoch at which to auto-toggle cost to "full"
   INFERENCE_CONFIG: config/nuscenes.yaml   # which inference config to update
-  ROLLOUT_STEPS: 3               # KF auto-regressive rollout depth (1 = single-step)
+  ROLLOUT_STEPS: 4               # KF auto-regressive rollout depth (1 = single-step)
   NOISE_MAP:                     # Category-specific noise injection
     # Order: [Car, Pedestrian, Bicycle, Motorcycle, Bus, Trailer, Truck]
     POS_STD: [0.51, 0.27, 0.55, 0.86, 1.26, 0.91, 0.64]
