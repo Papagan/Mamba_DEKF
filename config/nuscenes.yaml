@@ -36,13 +36,13 @@ CATEGORY_MAP_TO_NUMBER : {
 #   Scheme B:  6 layers, D_MODEL=96, D_STATE=24 (~250K params)
 MAMBA:
   CHECKPOINT_PATH: "checkpoints/mamba_dekf/best.pt"
-  D_MODEL: 64
-  D_STATE: 16
+  D_MODEL: 96
+  D_STATE: 24
   D_CONV: 4
   EXPAND: 2
   N_MAMBA_LAYERS: 5
   EMBED_DIM: 32
-  HISTORY_LEN: 4
+  HISTORY_LEN: 8
   MAX_BATCH_SIZE: 256
   MIN_DIAG_Q: 0.1
   MIN_DIAG_R: 0.1
@@ -50,6 +50,7 @@ MAMBA:
   MIN_KAPPA: 0.5
 
 MATCHING:
+  USE_BYTETRACK: True   # True = two-stage (high strict + low relaxed), False = single-stage (MCTrack-style)
   BEV:
     # Cost state per category:
     #   Predict     — use KF-predicted bbox  (best when KF prediction is accurate)
@@ -84,7 +85,7 @@ THRESHOLD:
     # Large objects (car/bus/truck): tighter (1.20) — dets are reliable, KF predicts well.
     # Small objects (ped/bike): wider (1.60–1.80) — det noise is higher, more IoU variance.
     COST_THRE: {0: 1.20, 1: 1.80, 2: 1.60, 3: 1.60, 4: 1.20, 5: 1.40, 6: 1.20}
-    COST_MODE: "full"   # "geometric" (early training) | "full" (converged)
+    COST_MODE: "geometric"   # "geometric" (early training) | "full" (converged)
     WEIGHT_RO_GDIOU: {
       0: {"w1": 1.0, "w2": 1.0},
       1: {"w1": 1.0, "w2": 1.0},

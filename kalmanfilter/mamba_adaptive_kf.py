@@ -25,7 +25,7 @@ from torch import Tensor
 from typing import Optional, Tuple, Dict
 
 try:
-    from mamba_ssm import Mamba
+    from mamba_ssm.modules.mamba_simple import Mamba
 except ImportError:
     Mamba = None  # graceful fallback for environments without mamba-ssm
 
@@ -823,6 +823,7 @@ class TemporalMamba(nn.Module):
         num_classes: int = 10,
         min_diag_siz: float = 0.05,
         min_kappa: float = 0.1,
+        force_gru: bool = False,
     ) -> None:
         """
         Args:
@@ -851,8 +852,9 @@ class TemporalMamba(nn.Module):
         # before Mamba blocks to prevent gradient saturation from disparate input scales
         self.input_norm = nn.LayerNorm(d_model)
 
-        # stacked Mamba layers
-        if Mamba is not None:
+        # stacked Mamba layers (or GRU fallback when mamba-ssm is not installed,
+        # or when loading a GRU-trained checkpoint on a machine with mamba-ssm)
+        if Mamba is not None and not force_gru:
             self.mamba_layers = nn.ModuleList([
                 Mamba(
                     d_model=d_model,
@@ -1072,6 +1074,7 @@ class MambaDecoupledEKF(nn.Module):
         min_kappa: float = 0.1,
         device: torch.device = torch.device("cpu"),
         base_noise_cfg: dict = None,
+        force_gru: bool = False,
     ) -> None:
         super().__init__()
         self.mamba = TemporalMamba(
@@ -1086,6 +1089,7 @@ class MambaDecoupledEKF(nn.Module):
             num_classes=num_classes,
             min_diag_siz=min_diag_siz,
             min_kappa=min_kappa,
+            force_gru=force_gru,
         )
         self.kf = DecoupledAdaptiveKF(batch_size, device)
         self.base_noise_cfg = base_noise_cfg
@@ -1232,18 +1236,26 @@ class MambaDecoupledEKF(nn.Module):
                 else:
                     ratio_vals = torch.tensor(2.0, device=Q_m.device, dtype=Q_m.dtype)
 
-                # If Mamba trace jumps heavily above baseline, weight drops to 0,
-                # falling back to physical priors. Tight confident Mamba → weight stays 1.0.
-                weight = torch.clamp(ratio_vals - (tr_m / (tr_b + 1e-6)), min=0.0, max=1.0)
+                # Bidirectional trace gate: penalize Mamba noise when it deviates
+                # from baseline in EITHER direction.
+                #   wt_hi → 0 when tr_m ≫ tr_b (Mamba divergent/loose)
+                #   wt_lo → 0 when tr_m ≪ tr_b (Mamba overconfident/tight)
+                # Upper gate preserves original behaviour exactly.
+                r = tr_m / (tr_b + 1e-6)
+                wt_hi = torch.clamp(ratio_vals - r, min=0.0, max=1.0)
+                wt_lo = torch.clamp(r * ratio_vals, min=0.0, max=1.0)
+                weight = wt_hi * wt_lo
                 return weight * Q_m + (1.0 - weight) * Q_b
 
             # Fuse process noises (Q controls Kalman Gain scaling for prediction)
             mamba_out["Q_pos"] = fuse_covariance(mamba_out["Q_pos"], Q_p, class_ids)
             mamba_out["Q_siz"] = fuse_covariance(mamba_out["Q_siz"], Q_s, class_ids)
+            mamba_out["Q_ori"] = fuse_covariance(mamba_out["Q_ori"], Q_o, class_ids)
 
             # Fuse observation noises (R controls trustworthiness of incoming detections)
             mamba_out["R_pos"] = fuse_covariance(mamba_out["R_pos"], R_p, class_ids)
             mamba_out["R_siz"] = fuse_covariance(mamba_out["R_siz"], R_s, class_ids)
+            mamba_out["R_ori"] = fuse_covariance(mamba_out["R_ori"], R_o, class_ids)
 
         # Execute KF predict step using the active (or fused) noise models
         pos_x, pos_P, siz_x, siz_P, ori_x, ori_P = self.kf.predict(

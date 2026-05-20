@@ -94,7 +94,7 @@ class Trajectory:
         ][self.category_num]
 
         # 0: initialization / 1: confirmed / 2: obscured / 4: dead
-        self.status_flag: int = 1
+        self.status_flag: int = 0
 
     # ------------------------------------------------------------------
     # Lifecycle methods (called by base_tracker.py)
