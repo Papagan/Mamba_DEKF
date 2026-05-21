@@ -547,6 +547,14 @@ class Base3DTracker:
         trajs_cnt = len(trajs)
         dets_cnt = len(frame_info.bboxes)
 
+        _dbg = os.environ.get("DEBUG_TRACKER", "")
+        if _dbg:
+            _statuses = [t.status_flag for t in trajs]
+            print(f"[TRK] frame={frame_info.frame_id} dets={dets_cnt} "
+                  f"trajs={trajs_cnt} status_0={_statuses.count(0)} "
+                  f"status_1={_statuses.count(1)} status_2={_statuses.count(2)}",
+                  flush=True)
+
         # ---- predict all active tracks (Module A + B) ----
         mamba_out, trk_embeddings = self.predict_before_associate(trajs, delta_t)
 
@@ -786,14 +794,19 @@ class Base3DTracker:
                     self.track_id_counter += 1
 
         # ---- death: remove dead tracks ----
+        _n_dead = 0
         for track_id in list(self.all_trajs.keys()):
             if self.all_trajs[track_id].status_flag == 4:
                 self.all_dead_trajs[track_id] = self.all_trajs[track_id]
                 del self.all_trajs[track_id]
-                # clean up KF state
                 self.kf_states.pop(track_id, None)
+                _n_dead += 1
 
         output_trajs = self.get_output_trajs(frame_info.frame_id)
+        if _dbg:
+            print(f"[TRK] frame={frame_info.frame_id} dead={_n_dead} "
+                  f"alive={len(self.all_trajs)} output={len(output_trajs)}",
+                  flush=True)
         return output_trajs
 
     # ==================================================================
