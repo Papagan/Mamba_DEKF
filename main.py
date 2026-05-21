@@ -163,6 +163,30 @@ if __name__ == "__main__":
             eval_kitti(cfg)
     if args.dataset == "nuscenes":
         save_results_nuscenes(tracking_results, save_path)
+        # --- quick sanity: count saved boxes ---
+        _res_file = os.path.join(save_path, "results.json")
+        with open(_res_file) as _f:
+            _saved = json.load(_f)
+        _n_samples = len(_saved.get("results", {}))
+        _n_boxes = sum(len(v) for v in _saved.get("results", {}).values())
+        print(f"[SAVE] samples={_n_samples} boxes={_n_boxes} path={_res_file}")
+        if _n_boxes == 0:
+            # dump first scene's first frame for debugging
+            _scenes = list(tracking_results.keys())
+            if _scenes:
+                _s0 = _scenes[0]
+                _frames = list(tracking_results[_s0].keys())
+                if _frames:
+                    _f0 = _frames[0]
+                    _trajs = tracking_results[_s0][_f0].get("trajs", {})
+                    print(f"[SAVE DEBUG] scene={_s0} frame={_f0} n_trajs={len(_trajs)}")
+                    for _tid, _bb in list(_trajs.items())[:3]:
+                        print(f"[SAVE DEBUG]   track={_tid} cat={_bb.category} "
+                              f"score={_bb.det_score:.3f} "
+                              f"xyz=[{_bb.global_xyz_lwh_yaw_fusion[0]:.1f},"
+                              f"{_bb.global_xyz_lwh_yaw_fusion[1]:.1f},"
+                              f"{_bb.global_xyz_lwh_yaw_fusion[2]:.1f}] "
+                              f"yaw_fusion={getattr(_bb, 'global_yaw_fusion', 'MISSING')}")
         save_results_nuscenes_for_motion(tracking_results, save_path)
         if args.eval:
             eval_nusc(cfg)
