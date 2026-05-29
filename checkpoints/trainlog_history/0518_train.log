@@ -45,4 +45,4 @@
 21:13:45 [INFO] Epoch 26/100 (312.1s) | train_loss=-10.8602 pos=0.1362 siz=-1.2662 ori=-0.8831 contrast=0.1698 | val_loss=-10.3848 val_pos=0.1580 | kappa_m=13.218 kappa_s=13.089 | NaN=0
 21:19:19 [INFO] Epoch 27/100 (316.1s) | train_loss=-10.8497 pos=0.1377 siz=-1.2660 ori=-0.8853 contrast=0.1822 | val_loss=-10.3916 val_pos=0.1581 | kappa_m=13.100 kappa_s=13.008 | NaN=0
 21:24:53 [INFO] Epoch 28/100 (315.4s) | train_loss=-10.9972 pos=0.1355 siz=-1.2663 ori=-0.9004 contrast=0.1834 | val_loss=-10.4645 val_pos=0.1560 | kappa_m=12.871 kappa_s=12.893 | NaN=0
-21:30:27 [INFO] Epoch 29/100 (315.6s) | train_loss=-11.1966 pos=0.1380 siz=-1.2659 ori=-0.9312 contrast=0.1573 | val_loss=-11.2490 val_pos=0.1581 | kappa_m=12.363 kappa_s=12.699 | NaN=0
+21:30:27 [INFO] Epoch 29/100 (315.6s) | train_loss=-11.1966 pos=0.1380 siz=-1.2659 ori=-0.9312 contrast=0.1573 | val_loss=-11.2490 val_pos=0.1581 | kappa_m=12.363 kappa_s=12.699| NaN=0

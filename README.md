@@ -96,6 +96,8 @@ Mamba-DEKF/
 │       └── waymo/eval.py                             # MOTA L1/L2 (Waymo)
 ├── utils/                                            # KITTI / nuScenes / Waymo IO + math helpers
 ├── tools/
+│   ├── clean_result_log.py                           # result.log whitespace cleaner
+│   ├── clean_train_log.py                            # training-log summarizer
 │   └── verify_pipeline.py                            # End-to-end smoke test (no data needed)
 ├── main.py                                           # Tracking + evaluation entry
 ├── requirements.txt

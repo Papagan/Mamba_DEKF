@@ -295,10 +295,9 @@ def cost_calculate_uncertainty_aware(
 
     # ---- resolve per-trajectory cal_flag ----
     if isinstance(cal_flag, list):
-        cal_flags = [("Predict" if cf == "Fusion" else cf) for cf in cal_flag]
+        cal_flags = cal_flag
     else:
-        cf = "Predict" if cal_flag == "Fusion" else cal_flag
-        cal_flags = [cf] * N_trk
+        cal_flags = [cal_flag] * N_trk
 
     # ---- compute combined cost per pair ----
     for t, trk in enumerate(trajs):

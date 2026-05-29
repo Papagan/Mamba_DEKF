@@ -703,7 +703,9 @@ class Base3DTracker:
                 det_global_idx = low_det_indices[low_sub_idx]
                 track_id = trajs[traj_full_idx].track_id
                 det_bbox = frame_info.bboxes[det_global_idx]
-                det_bbox.det_score = max(det_bbox.det_score, 0.5)
+                # Mark Stage-2 rescue matches so they help continuity
+                # without inflating final trajectory confidence.
+                det_bbox.is_low_score_match = True
                 self.all_trajs[track_id].update(det_bbox, 0.0)
                 matched_track_ids.append(track_id)
                 matched_bboxes.append(det_bbox)
@@ -831,7 +833,14 @@ class Base3DTracker:
                     b.det_score for b in traj.bboxes
                     if not getattr(b, "is_fake", False)
                 ]
-                quality_scores = [s for s in real_scores if s >= 0.4]
+                quality_scores = [
+                    b.det_score for b in traj.bboxes
+                    if (
+                        not getattr(b, "is_fake", False)
+                        and not getattr(b, "is_low_score_match", False)
+                        and b.det_score >= 0.4
+                    )
+                ]
                 if quality_scores:
                     bbox.det_score = sum(quality_scores) / len(quality_scores)
                 elif real_scores:

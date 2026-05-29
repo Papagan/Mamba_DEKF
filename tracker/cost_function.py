@@ -354,15 +354,21 @@ def cal_uncertainty_aware_cost(
     Returns:
         cost : float — combined cost (lower = better match)
     """
+    category_num = cfg["CATEGORY_MAP_TO_NUMBER"][box_trk.bboxes[-1].category]
     # geometric cost from existing Ro_GDIoU
-    ro_gdiou = cal_rotation_gdiou_inbev(box_trk, box_det, cfg, cal_flag)
-    geometric_cost = 1.0 - ro_gdiou
+    if cal_flag == "Fusion":
+        ratio = cfg["THRESHOLD"]["COST_STATE_PREDICT_RATION"][category_num]
+        ro_gdiou_pred = cal_rotation_gdiou_inbev(box_trk, box_det, cfg, "Predict")
+        ro_gdiou_back = cal_rotation_gdiou_inbev(box_trk, box_det, cfg, "BackPredict")
+        geometric_cost = ratio * (1.0 - ro_gdiou_pred) + (1.0 - ratio) * (1.0 - ro_gdiou_back)
+    else:
+        ro_gdiou = cal_rotation_gdiou_inbev(box_trk, box_det, cfg, cal_flag)
+        geometric_cost = 1.0 - ro_gdiou
 
     # semantic cost from Mamba embeddings
     semantic_cost = 1.0 - cos_sim
 
     # read weights from config (with safe defaults)
-    category_num = cfg["CATEGORY_MAP_TO_NUMBER"][box_trk.bboxes[-1].category]
     w_sem = cfg.get("THRESHOLD", {}).get("BEV", {}).get("W_SEMANTIC", [0.3])[category_num] \
         if "W_SEMANTIC" in cfg.get("THRESHOLD", {}).get("BEV", {}) else 0.3
     w_unc = cfg.get("THRESHOLD", {}).get("BEV", {}).get("W_UNCERTAINTY", [0.1])[category_num] \
