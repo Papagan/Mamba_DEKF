@@ -1,359 +1,216 @@
-Data loaded successfully.
-Running scenes:   0%|                                                                                                                                                                                                | 0/2 [00:00<?, ?it/s][Base3DTracker] Loaded Mamba weights from checkpoints/mamba_dekf/best.pt
+?it/s][Base3DTracker] Loaded Mamba weights from checkpoints/mamba_dekf/best.pt
+[Base3DTracker] FILTER_MODE=mamba BEV_COST_MODE=full
                                                                                                                                                                                                                                           [TRK] frame=0 dets=73 trajs=0 status_0=0 status_1=0 status_2=0                                                                                                                                                       | 0/40 [00:00<?, ?it/s]
 [TRK] frame=0 stage1 high_dets=19 matched=0
 [TRK] frame=0 stage2 low_dets=54 matched=0
 [TRK] frame=0 births=19 coasts=0 matched_total=0
 [TRK] frame=0 dead=0 alive=19 output=19
-                                                                                                                                                                                                                                          [TRK] frame=1 dets=57 trajs=19 status_0=19 status_1=0 status_2=0                                                                                                                                             | 1/40 [00:00<00:12,  3.19it/s]
-[ASSOC] mode=Hungarian trajs=19 dets=25 finite=296/3325 all_inf_rows=150
+                                                                                                                                                                                                                                          [TRK] frame=1 dets=57 trajs=19 status_0=19 status_1=0 status_2=0                                                                                                                                             | 1/40 [00:00<00:15,  2.59it/s]
+[ASSOC] mode=Hungarian trajs=19 dets=25 finite=296/3325 all_inf_rows=150 cost_min=526070369484.8239 cost_mean=536733958057.2295 cost_max=631284443383.7383
 [ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
+[ASSOC] below-threshold c0:0/266@3.00 c1:0/30@4.50 c2:0/0@4.00 c3:0/0@4.00 c4:0/0@3.00 c5:0/0@3.50 c6:0/0@3.00
 [TRK] frame=1 stage1 high_dets=25 matched=0
-[ASSOC] mode=Hungarian trajs=19 dets=32 finite=149/4256 all_inf_rows=205
+[ASSOC] mode=Hungarian trajs=19 dets=32 finite=149/4256 all_inf_rows=205 cost_min=526070369486.2415 cost_mean=571969126555.8262 cost_max=631284443383.7356
 [ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
+[ASSOC] below-threshold c0:0/84@6.00 c1:0/65@9.00 c2:0/0@8.00 c3:0/0@8.00 c4:0/0@6.00 c5:0/0@7.00 c6:0/0@6.00
 [TRK] frame=1 stage2 low_dets=32 matched=0
 [TRK] frame=1 births=25 coasts=19 matched_total=0
 [TRK] frame=1 dead=0 alive=44 output=44
-                                                                                                                                                                                                                                          [TRK] frame=2 dets=58 trajs=44 status_0=44 status_1=0 status_2=0                                                                                                                                             | 2/40 [00:00<00:10,  3.49it/s]
-[ASSOC] mode=Hungarian trajs=44 dets=30 finite=770/9240 all_inf_rows=180
+                                                                                                                                                                                                                                          [TRK] frame=2 dets=58 trajs=44 status_0=44 status_1=0 status_2=0                                                                                                                                             | 2/40 [00:00<00:12,  3.04it/s]
+[ASSOC] mode=Hungarian trajs=44 dets=30 finite=770/9240 all_inf_rows=180 cost_min=526061980876.8149 cost_mean=1239611309349.8435 cost_max=2526857857599.4185
 [ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
+[ASSOC] below-threshold c0:0/660@3.00 c1:0/110@4.50 c2:0/0@4.00 c3:0/0@4.00 c4:0/0@3.00 c5:0/0@3.50 c6:0/0@3.00
 [TRK] frame=2 stage1 high_dets=30 matched=0
-[ASSOC] mode=Hungarian trajs=44 dets=28 finite=286/8624 all_inf_rows=180
+[ASSOC] mode=Hungarian trajs=44 dets=28 finite=286/8624 all_inf_rows=180 cost_min=526061980878.1611 cost_mean=1322410520443.8594 cost_max=2526857857599.4126
 [ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
+[ASSOC] below-threshold c0:0/165@6.00 c1:0/121@9.00 c2:0/0@8.00 c3:0/0@8.00 c4:0/0@6.00 c5:0/0@7.00 c6:0/0@6.00
 [TRK] frame=2 stage2 low_dets=28 matched=0
 [TRK] frame=2 births=30 coasts=44 matched_total=0
 [TRK] frame=2 dead=0 alive=74 output=74
-                                                                                                                                                                                                                                          [TRK] frame=3 dets=49 trajs=74 status_0=74 status_1=0 status_2=0                                                                                                                                             | 3/40 [00:01<00:14,  2.54it/s]
-[ASSOC] mode=Hungarian trajs=74 dets=27 finite=1154/13986 all_inf_rows=163
+                                                                                                                                                                                                                                          [TRK] frame=3 dets=49 trajs=74 status_0=74 status_1=0 status_2=0                                                                                                                                             | 3/40 [00:01<00:15,  2.35it/s]
+[ASSOC] mode=Hungarian trajs=74 dets=27 finite=1154/13986 all_inf_rows=163 cost_min=527248916480.0160 cost_mean=2233920235233.7520 cost_max=5694317804914.6436
 [ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
+[ASSOC] below-threshold c0:0/1007@3.00 c1:0/147@4.50 c2:0/0@4.00 c3:0/0@4.00 c4:0/0@3.00 c5:0/0@3.50 c6:0/0@3.00
 [TRK] frame=3 stage1 high_dets=27 matched=0
-[ASSOC] mode=Hungarian trajs=74 dets=22 finite=402/11396 all_inf_rows=144
+[ASSOC] mode=Hungarian trajs=74 dets=22 finite=402/11396 all_inf_rows=144 cost_min=527248916480.0411 cost_mean=2247751979540.5996 cost_max=5694317804914.6318
 [ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
+[ASSOC] below-threshold c0:0/318@6.00 c1:0/84@9.00 c2:0/0@8.00 c3:0/0@8.00 c4:0/0@6.00 c5:0/0@7.00 c6:0/0@6.00
 [TRK] frame=3 stage2 low_dets=22 matched=0
 [TRK] frame=3 births=27 coasts=74 matched_total=0
 [TRK] frame=3 dead=0 alive=101 output=0
-                                                                                                                                                                                                                                          [TRK] frame=4 dets=62 trajs=101 status_0=101 status_1=0 status_2=0                                                                                                                                           | 4/40 [00:01<00:18,  1.94it/s]
-[ASSOC] mode=Hungarian trajs=101 dets=28 finite=1593/19796 all_inf_rows=168
+                                                                                                                                                                                                                                          [TRK] frame=4 dets=62 trajs=101 status_0=101 status_1=0 status_2=0                                                                                                                                           | 4/40 [00:01<00:19,  1.89it/s]
+[ASSOC] mode=Hungarian trajs=101 dets=28 finite=1593/19796 all_inf_rows=168 cost_min=529578328064.0085 cost_mean=3700283525374.8247 cost_max=10146579386206.2480
 [ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
+[ASSOC] below-threshold c0:0/1368@3.00 c1:0/224@4.50 c2:0/0@4.00 c3:0/1@4.00 c4:0/0@3.00 c5:0/0@3.50 c6:0/0@3.00
 [TRK] frame=4 stage1 high_dets=28 matched=0
-[ASSOC] mode=Hungarian trajs=101 dets=34 finite=877/24038 all_inf_rows=216
+[ASSOC] mode=Hungarian trajs=101 dets=34 finite=877/24038 all_inf_rows=216 cost_min=529578328064.0615 cost_mean=3738680286584.2441 cost_max=10146579386206.2402
 [ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
+[ASSOC] below-threshold c0:0/648@6.00 c1:0/224@9.00 c2:0/0@8.00 c3:0/5@8.00 c4:0/0@6.00 c5:0/0@7.00 c6:0/0@6.00
 [TRK] frame=4 stage2 low_dets=34 matched=0
 [TRK] frame=4 births=28 coasts=101 matched_total=0
 [TRK] frame=4 dead=0 alive=129 output=0
-                                                                                                                                                                                                                                          [TRK] frame=5 dets=63 trajs=129 status_0=129 status_1=0 status_2=0                                                                                                                                           | 5/40 [00:02<00:26,  1.34it/s]
-[ASSOC] mode=Hungarian trajs=129 dets=23 finite=1763/20769 all_inf_rows=138
+                                                                                                                                                                                                                                          [TRK] frame=5 dets=63 trajs=129 status_0=129 status_1=0 status_2=0                                                                                                                                           | 5/40 [00:03<00:26,  1.30it/s]
+[ASSOC] mode=Hungarian trajs=129 dets=23 finite=1763/20769 all_inf_rows=138 cost_min=428542577868.8181 cost_mean=5200193572950.7139 cost_max=15247111083788.3398
 [ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
+[ASSOC] below-threshold c0:0/1547@3.00 c1:0/216@4.50 c2:0/0@4.00 c3:0/0@4.00 c4:0/0@3.00 c5:0/0@3.50 c6:0/0@3.00
 [TRK] frame=5 stage1 high_dets=23 matched=0
-[ASSOC] mode=Hungarian trajs=129 dets=40 finite=1237/36120 all_inf_rows=253
+[ASSOC] mode=Hungarian trajs=129 dets=40 finite=1237/36120 all_inf_rows=253 cost_min=428542577868.8896 cost_mean=5171151031032.3682 cost_max=15247111083788.3438
 [ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
+[ASSOC] below-threshold c0:0/1001@6.00 c1:0/216@9.00 c2:0/0@8.00 c3:0/20@8.00 c4:0/0@6.00 c5:0/0@7.00 c6:0/0@6.00
 [TRK] frame=5 stage2 low_dets=40 matched=0
 [TRK] frame=5 births=23 coasts=129 matched_total=0
 [TRK] frame=5 dead=0 alive=152 output=0
-                                                                                                                                                                                                                                          [TRK] frame=6 dets=84 trajs=152 status_0=152 status_1=0 status_2=0                                                                                                                                           | 6/40 [00:04<00:33,  1.01it/s]
-[ASSOC] mode=Hungarian trajs=152 dets=24 finite=2064/25536 all_inf_rows=144
+                                                                                                                                                                                                                                          [TRK] frame=6 dets=84 trajs=152 status_0=152 status_1=0 status_2=0                                                                                                                                           | 6/40 [00:04<00:35,  1.04s/it]
+[ASSOC] mode=Hungarian trajs=152 dets=24 finite=2064/25536 all_inf_rows=144 cost_min=528409847398.4426 cost_mean=7546865577733.1318 cost_max=22129561294604.3398
 [ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
+[ASSOC] below-threshold c0:0/1728@3.00 c1:0/336@4.50 c2:0/0@4.00 c3:0/0@4.00 c4:0/0@3.00 c5:0/0@3.50 c6:0/0@3.00
 [TRK] frame=6 stage1 high_dets=24 matched=0
-[ASSOC] mode=Hungarian trajs=152 dets=60 finite=2714/63840 all_inf_rows=371
+[ASSOC] mode=Hungarian trajs=152 dets=60 finite=2714/63840 all_inf_rows=371 cost_min=528409847398.6348 cost_mean=7750087877358.3887 cost_max=22129561294604.3477
 [ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
+[ASSOC] below-threshold c0:0/1728@6.00 c1:0/966@9.00 c2:0/0@8.00 c3:0/20@8.00 c4:0/0@6.00 c5:0/0@7.00 c6:0/0@6.00
 [TRK] frame=6 stage2 low_dets=60 matched=0
 [TRK] frame=6 births=24 coasts=152 matched_total=0
 [TRK] frame=6 dead=0 alive=176 output=0
-                                                                                                                                                                                                                                          [TRK] frame=7 dets=71 trajs=176 status_0=176 status_1=0 status_2=0                                                                                                                                           | 7/40 [00:06<00:47,  1.44s/it]
-[ASSOC] mode=Hungarian trajs=176 dets=30 finite=2980/36960 all_inf_rows=180
+                                                                                                                                                                                                                                          [TRK] frame=7 dets=71 trajs=176 status_0=176 status_1=0 status_2=0                                                                                                                                           | 7/40 [00:07<00:49,  1.49s/it]
+[ASSOC] mode=Hungarian trajs=176 dets=30 finite=2980/36960 all_inf_rows=180 cost_min=528405600665.6539 cost_mean=10273927689870.7910 cost_max=30297077128890.4258
 [ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
+[ASSOC] below-threshold c0:0/2480@3.00 c1:0/500@4.50 c2:0/0@4.00 c3:0/0@4.00 c4:0/0@3.00 c5:0/0@3.50 c6:0/0@3.00
 [TRK] frame=7 stage1 high_dets=30 matched=0
-[ASSOC] mode=Hungarian trajs=176 dets=41 finite=1588/50512 all_inf_rows=256
+[ASSOC] mode=Hungarian trajs=176 dets=41 finite=1588/50512 all_inf_rows=256 cost_min=528405600667.0037 cost_mean=10594506423703.0254 cost_max=30297077128890.4141
 [ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
+[ASSOC] below-threshold c0:0/868@6.00 c1:0/700@9.00 c2:0/0@8.00 c3:0/20@8.00 c4:0/0@6.00 c5:0/0@7.00 c6:0/0@6.00
 [TRK] frame=7 stage2 low_dets=41 matched=0
 [TRK] frame=7 births=30 coasts=176 matched_total=0
 [TRK] frame=7 dead=0 alive=206 output=0
-                                                                                                                                                                                                                                          [TRK] frame=8 dets=68 trajs=206 status_0=206 status_1=0 status_2=0                                                                                                                                           | 8/40 [00:09<00:55,  1.73s/it]
-[ASSOC] mode=Hungarian trajs=206 dets=25 finite=2784/36050 all_inf_rows=151
+                                                                                                                                                                                                                                          [TRK] frame=8 dets=68 trajs=206 status_0=206 status_1=0 status_2=0                                                                                                                                           | 8/40 [00:09<00:56,  1.77s/it]
+[ASSOC] mode=Hungarian trajs=206 dets=25 finite=2784/36050 all_inf_rows=151 cost_min=638709084979.3002 cost_mean=13509920654323.2988 cost_max=40763021894617.1328
 [ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
+[ASSOC] below-threshold c0:0/2304@3.00 c1:0/480@4.50 c2:0/0@4.00 c3:0/0@4.00 c4:0/0@3.00 c5:0/0@3.50 c6:0/0@3.00
 [TRK] frame=8 stage1 high_dets=25 matched=0
-[ASSOC] mode=Hungarian trajs=206 dets=43 finite=2844/62006 all_inf_rows=266
+[ASSOC] mode=Hungarian trajs=206 dets=43 finite=2844/62006 all_inf_rows=266 cost_min=638709084979.4298 cost_mean=13740172750041.4590 cost_max=40763021894617.1328
 [ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
+[ASSOC] below-threshold c0:0/1872@6.00 c1:0/960@9.00 c2:0/0@8.00 c3:0/12@8.00 c4:0/0@6.00 c5:0/0@7.00 c6:0/0@6.00
 [TRK] frame=8 stage2 low_dets=43 matched=0
 [TRK] frame=8 births=25 coasts=206 matched_total=0
 [TRK] frame=8 dead=0 alive=231 output=0
-                                                                                                                                                                                                                                          [TRK] frame=9 dets=57 trajs=231 status_0=231 status_1=0 status_2=0██▌                                                                                                                                        | 9/40 [00:11<01:01,  1.97s/it]
-[ASSOC] mode=Hungarian trajs=231 dets=28 finite=3585/45276 all_inf_rows=168
+                                                                                                                                                                                                                                          [TRK] frame=9 dets=57 trajs=231 status_0=231 status_1=0 status_2=0██▌                                                                                                                                        | 9/40 [00:12<01:03,  2.04s/it]
+[ASSOC] mode=Hungarian trajs=231 dets=28 finite=3585/45276 all_inf_rows=168 cost_min=420891695513.8142 cost_mean=17007894808608.6289 cost_max=51612064992462.8906
 [ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
+[ASSOC] below-threshold c0:0/3040@3.00 c1:0/544@4.50 c2:0/0@4.00 c3:0/0@4.00 c4:0/0@3.00 c5:0/0@3.50 c6:0/1@3.00
 [TRK] frame=9 stage1 high_dets=28 matched=0
-[ASSOC] mode=Hungarian trajs=231 dets=29 finite=1907/46893 all_inf_rows=175
+[ASSOC] mode=Hungarian trajs=231 dets=29 finite=1907/46893 all_inf_rows=175 cost_min=420891695515.4593 cost_mean=17231569012251.2930 cost_max=51612064992462.8906
 [ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
+[ASSOC] below-threshold c0:0/1280@6.00 c1:0/612@9.00 c2:0/0@8.00 c3:0/8@8.00 c4:0/0@6.00 c5:0/0@7.00 c6:0/7@6.00
 [TRK] frame=9 stage2 low_dets=29 matched=0
 [TRK] frame=9 births=28 coasts=231 matched_total=0
 [TRK] frame=9 dead=0 alive=259 output=0
-                                                                                                                                                                                                                                          [TRK] frame=10 dets=58 trajs=259 status_0=259 status_1=0 status_2=0█████▊                                                                                                                                   | 10/40 [00:13<01:01,  2.06s/it]
-[ASSOC] mode=Hungarian trajs=259 dets=25 finite=3651/45325 all_inf_rows=150
+                                                                                                                                                                                                                                          [TRK] frame=10 dets=58 trajs=259 status_0=259 status_1=0 status_2=0█████▊                                                                                                                                   | 10/40 [00:14<01:05,  2.17s/it]
+[ASSOC] mode=Hungarian trajs=259 dets=25 finite=3651/45325 all_inf_rows=150 cost_min=528388666163.2625 cost_mean=20697672897690.7852 cost_max=63776306264803.3906
 [ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
+[ASSOC] below-threshold c0:0/3043@3.00 c1:0/608@4.50 c2:0/0@4.00 c3:0/0@4.00 c4:0/0@3.00 c5:0/0@3.50 c6:0/0@3.00
 [TRK] frame=10 stage1 high_dets=25 matched=0
-[ASSOC] mode=Hungarian trajs=259 dets=33 finite=1883/59829 all_inf_rows=205
+[ASSOC] mode=Hungarian trajs=259 dets=33 finite=1883/59829 all_inf_rows=205 cost_min=422710932930.7076 cost_mean=20917675827183.4102 cost_max=63776306264803.3672
 [ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
+[ASSOC] below-threshold c0:0/1253@6.00 c1:0/608@9.00 c2:0/0@8.00 c3:0/8@8.00 c4:0/0@6.00 c5:0/0@7.00 c6:0/14@6.00
 [TRK] frame=10 stage2 low_dets=33 matched=0
 [TRK] frame=10 births=25 coasts=259 matched_total=0
 [TRK] frame=10 dead=0 alive=284 output=0
-                                                                                                                                                                                                                                          [TRK] frame=11 dets=55 trajs=284 status_0=284 status_1=0 status_2=0██████████▏                                                                                                                              | 11/40 [00:16<01:04,  2.23s/it]
-[ASSOC] mode=Hungarian trajs=284 dets=25 finite=4228/49700 all_inf_rows=150
+                                                                                                                                                                                                                                          [TRK] frame=11 dets=55 trajs=284 status_0=284 status_1=0 status_2=0██████████▏                                                                                                                              | 11/40 [00:17<01:07,  2.34s/it]
+[ASSOC] mode=Hungarian trajs=284 dets=25 finite=4228/49700 all_inf_rows=150 cost_min=527278486323.2443 cost_mean=24780991501994.8477 cost_max=77221552403253.3125
 [ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
+[ASSOC] below-threshold c0:0/3724@3.00 c1:0/504@4.50 c2:0/0@4.00 c3:0/0@4.00 c4:0/0@3.00 c5:0/0@3.50 c6:0/0@3.00
 [TRK] frame=11 stage1 high_dets=25 matched=0
-[ASSOC] mode=Hungarian trajs=284 dets=30 finite=2178/59640 all_inf_rows=184
+[ASSOC] mode=Hungarian trajs=284 dets=30 finite=2178/59640 all_inf_rows=184 cost_min=527278486323.5381 cost_mean=25096089990186.2031 cost_max=77221552403253.2812
 [ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
+[ASSOC] below-threshold c0:0/1568@6.00 c1:0/588@9.00 c2:0/0@8.00 c3:0/10@8.00 c4:0/0@6.00 c5:0/0@7.00 c6:0/12@6.00
 [TRK] frame=11 stage2 low_dets=30 matched=0
 [TRK] frame=11 births=25 coasts=284 matched_total=0
 [TRK] frame=11 dead=0 alive=309 output=0
-                                                                                                                                                                                                                                          [TRK] frame=12 dets=57 trajs=309 status_0=309 status_1=0 status_2=0██████████████▌                                                                                                                          | 12/40 [00:19<01:06,  2.39s/it]
-[ASSOC] mode=Hungarian trajs=309 dets=26 finite=4037/56238 all_inf_rows=157
+                                                                                                                                                                                                                                          [TRK] frame=12 dets=57 trajs=309 status_0=309 status_1=0 status_2=0██████████████▌                                                                                                                          | 12/40 [00:20<01:10,  2.52s/it]
+[ASSOC] mode=Hungarian trajs=309 dets=26 finite=4037/56238 all_inf_rows=157 cost_min=426379155865.6289 cost_mean=28828663701632.6289 cost_max=90418582986426.4062
 [ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
+[ASSOC] below-threshold c0:0/3225@3.00 c1:0/810@4.50 c2:0/0@4.00 c3:0/2@4.00 c4:0/0@3.00 c5:0/0@3.50 c6:0/0@3.00
 [TRK] frame=12 stage1 high_dets=26 matched=0
-[ASSOC] mode=Hungarian trajs=309 dets=31 finite=2593/67053 all_inf_rows=187
+[ASSOC] mode=Hungarian trajs=309 dets=31 finite=2593/67053 all_inf_rows=187 cost_min=426379155865.8013 cost_mean=28873720260135.2734 cost_max=90418582986426.4219
 [ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
+[ASSOC] below-threshold c0:0/1935@6.00 c1:0/630@9.00 c2:0/0@8.00 c3:0/10@8.00 c4:0/0@6.00 c5:0/0@7.00 c6:0/18@6.00
 [TRK] frame=12 stage2 low_dets=31 matched=0
 [TRK] frame=12 births=26 coasts=309 matched_total=0
 [TRK] frame=12 dead=0 alive=335 output=0
-                                                                                                                                                                                                                                          [TRK] frame=13 dets=53 trajs=335 status_0=335 status_1=0 status_2=0██████████████████▉                                                                                                                      | 13/40 [00:22<01:10,  2.61s/it]
-[ASSOC] mode=Hungarian trajs=335 dets=25 finite=4833/58625 all_inf_rows=150
+                                                                                                                                                                                                                                          [TRK] frame=13 dets=53 trajs=335 status_0=335 status_1=0 status_2=0██████████████████▉                                                                                                                      | 13/40 [00:23<01:13,  2.73s/it]
+[ASSOC] mode=Hungarian trajs=335 dets=25 finite=4833/58625 all_inf_rows=150 cost_min=526080907673.6389 cost_mean=33675130223961.3594 cost_max=106308566117255.2031
 [ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
+[ASSOC] below-threshold c0:0/4140@3.00 c1:0/693@4.50 c2:0/0@4.00 c3:0/0@4.00 c4:0/0@3.00 c5:0/0@3.50 c6:0/0@3.00
 [TRK] frame=13 stage1 high_dets=25 matched=0
-[ASSOC] mode=Hungarian trajs=335 dets=28 finite=2175/65660 all_inf_rows=169
+[ASSOC] mode=Hungarian trajs=335 dets=28 finite=2175/65660 all_inf_rows=169 cost_min=420864726141.1799 cost_mean=33435919603343.5938 cost_max=106308566117255.2031
 [ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
+[ASSOC] below-threshold c0:0/1840@6.00 c1:0/297@9.00 c2:0/0@8.00 c3:0/21@8.00 c4:0/1@6.00 c5:0/0@7.00 c6:0/16@6.00
 [TRK] frame=13 stage2 low_dets=28 matched=0
 [TRK] frame=13 births=25 coasts=335 matched_total=0
 [TRK] frame=13 dead=0 alive=360 output=0
-                                                                                                                                                                                                                                          [TRK] frame=14 dets=55 trajs=360 status_0=360 status_1=0 status_2=0███████████████████████▏                                                                                                                 | 14/40 [00:25<01:13,  2.82s/it]
-[ASSOC] mode=Hungarian trajs=360 dets=26 finite=5454/65520 all_inf_rows=156
+                                                                                                                                                                                                                                          [TRK] frame=14 dets=55 trajs=360 status_0=360 status_1=0 status_2=0███████████████████████▏                                                                                                                 | 14/40 [00:26<01:15,  2.89s/it]
+[ASSOC] mode=Hungarian trajs=360 dets=26 finite=5454/65520 all_inf_rows=156 cost_min=527240527872.0432 cost_mean=38864478011986.1094 cost_max=123516352588679.2031
 [ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
+[ASSOC] below-threshold c0:0/4712@3.00 c1:0/742@4.50 c2:0/0@4.00 c3:0/0@4.00 c4:0/0@3.00 c5:0/0@3.50 c6:0/0@3.00
 [TRK] frame=14 stage1 high_dets=26 matched=0
-[ASSOC] mode=Hungarian trajs=360 dets=29 finite=2090/73080 all_inf_rows=178
+[ASSOC] mode=Hungarian trajs=360 dets=29 finite=2090/73080 all_inf_rows=178 cost_min=527240527872.1581 cost_mean=38736073234148.7969 cost_max=123516352588679.2188
 [ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
+[ASSOC] below-threshold c0:0/1736@6.00 c1:0/318@9.00 c2:0/0@8.00 c3:0/18@8.00 c4:0/0@6.00 c5:0/0@7.00 c6:0/18@6.00
 [TRK] frame=14 stage2 low_dets=29 matched=0
 [TRK] frame=14 births=26 coasts=360 matched_total=0
 [TRK] frame=14 dead=0 alive=386 output=0
-                                                                                                                                                                                                                                          [TRK] frame=15 dets=59 trajs=386 status_0=386 status_1=0 status_2=0███████████████████████████▋                                                                                                             | 15/40 [00:29<01:16,  3.07s/it]
-[ASSOC] mode=Hungarian trajs=386 dets=21 finite=4375/56742 all_inf_rows=126
+                                                                                                                                                                                                                                          [TRK] frame=15 dets=59 trajs=386 status_0=386 status_1=0 status_2=0███████████████████████████▋                                                                                                             | 15/40 [00:30<01:17,  3.10s/it]
+[ASSOC] mode=Hungarian trajs=386 dets=21 finite=4375/56742 all_inf_rows=126 cost_min=638739283968.0581 cost_mean=45683047648291.9688 cost_max=143963701358102.5625
 [ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
+[ASSOC] below-threshold c0:0/3471@3.00 c1:0/904@4.50 c2:0/0@4.00 c3:0/0@4.00 c4:0/0@3.00 c5:0/0@3.50 c6:0/0@3.00
 [TRK] frame=15 stage1 high_dets=21 matched=0
-[ASSOC] mode=Hungarian trajs=386 dets=38 finite=3054/102676 all_inf_rows=234
+[ASSOC] mode=Hungarian trajs=386 dets=38 finite=3054/102676 all_inf_rows=234 cost_min=638739283968.2220 cost_mean=44881511735703.8203 cost_max=143963701358102.5312
 [ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
+[ASSOC] below-threshold c0:0/2670@6.00 c1:0/339@9.00 c2:0/0@8.00 c3:0/24@8.00 c4:0/1@6.00 c5:0/0@7.00 c6:0/20@6.00
 [TRK] frame=15 stage2 low_dets=38 matched=0
 [TRK] frame=15 births=21 coasts=386 matched_total=0
 [TRK] frame=15 dead=0 alive=407 output=0
-                                                                                                                                                                                                                                          [TRK] frame=16 dets=46 trajs=407 status_0=407 status_1=0 status_2=0████████████████████████████████                                                                                                         | 16/40 [00:33<01:21,  3.39s/it]
-[ASSOC] mode=Hungarian trajs=407 dets=20 finite=4805/56980 all_inf_rows=120
+                                                                                                                                                                                                                                          [TRK] frame=16 dets=46 trajs=407 status_0=407 status_1=0 status_2=0████████████████████████████████                                                                                                         | 16/40 [00:34<01:21,  3.41s/it]
+[ASSOC] mode=Hungarian trajs=407 dets=20 finite=4805/56980 all_inf_rows=120 cost_min=528475278540.8718 cost_mean=51855832810645.5625 cost_max=163938456085465.1875
 [ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
+[ASSOC] below-threshold c0:0/4200@3.00 c1:0/605@4.50 c2:0/0@4.00 c3:0/0@4.00 c4:0/0@3.00 c5:0/0@3.50 c6:0/0@3.00
 [TRK] frame=16 stage1 high_dets=20 matched=0
-[ASSOC] mode=Hungarian trajs=407 dets=26 finite=2230/74074 all_inf_rows=160
+[ASSOC] mode=Hungarian trajs=407 dets=26 finite=2230/74074 all_inf_rows=160 cost_min=528475278541.0142 cost_mean=51529899410330.4766 cost_max=163938456085465.1562
 [ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
+[ASSOC] below-threshold c0:0/1960@6.00 c1:0/242@9.00 c2:0/0@8.00 c3:0/9@8.00 c4:0/1@6.00 c5:0/0@7.00 c6:0/18@6.00
 [TRK] frame=16 stage2 low_dets=26 matched=0
 [TRK] frame=16 births=20 coasts=407 matched_total=0
 [TRK] frame=16 dead=0 alive=427 output=0
-                                                                                                                                                                                                                                          [TRK] frame=17 dets=42 trajs=427 status_0=427 status_1=0 status_2=0████████████████████████████████████▍                                                                                                    | 17/40 [00:36<01:18,  3.42s/it]
-[ASSOC] mode=Hungarian trajs=427 dets=20 finite=5055/59780 all_inf_rows=120
+                                                                                                                                                                                                                                          [TRK] frame=17 dets=42 trajs=427 status_0=427 status_1=0 status_2=0████████████████████████████████████▍                                                                                                    | 17/40 [00:37<01:19,  3.44s/it]
+[ASSOC] mode=Hungarian trajs=427 dets=20 finite=5055/59780 all_inf_rows=120 cost_min=426384844390.4742 cost_mean=57851397202358.5312 cost_max=183001024183666.7812
 [ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
+[ASSOC] below-threshold c0:0/4425@3.00 c1:0/630@4.50 c2:0/0@4.00 c3:0/0@4.00 c4:0/0@3.00 c5:0/0@3.50 c6:0/0@3.00
 [TRK] frame=17 stage1 high_dets=20 matched=0
-[ASSOC] mode=Hungarian trajs=427 dets=22 finite=2462/65758 all_inf_rows=136
+[ASSOC] mode=Hungarian trajs=427 dets=22 finite=2462/65758 all_inf_rows=136 cost_min=426384844390.5418 cost_mean=58075436433446.7812 cost_max=183001024183666.7500
 [ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
+[ASSOC] below-threshold c0:0/2065@6.00 c1:0/378@9.00 c2:0/0@8.00 c3:0/12@8.00 c4:0/1@6.00 c5:0/0@7.00 c6:0/6@6.00
 [TRK] frame=17 stage2 low_dets=22 matched=0
 [TRK] frame=17 births=20 coasts=427 matched_total=0
 [TRK] frame=17 dead=0 alive=447 output=0
-                                                                                                                                                                                                                                          [TRK] frame=18 dets=49 trajs=447 status_0=447 status_1=0 status_2=0████████████████████████████████████████▊                                                                                                | 18/40 [00:40<01:13,  3.36s/it]
-[ASSOC] mode=Hungarian trajs=447 dets=23 finite=5748/71967 all_inf_rows=138
+                                                                                                                                                                                                                                          [TRK] frame=18 dets=49 trajs=447 status_0=447 status_1=0 status_2=0████████████████████████████████████████▊                                                                                                | 18/40 [00:41<01:16,  3.46s/it]
+[ASSOC] mode=Hungarian trajs=447 dets=23 finite=5748/71967 all_inf_rows=138 cost_min=638702111948.8412 cost_mean=66440896707245.4375 cost_max=207776854415771.7500
 [ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
+[ASSOC] below-threshold c0:0/4960@3.00 c1:0/786@4.50 c2:0/0@4.00 c3:0/0@4.00 c4:0/0@3.00 c5:0/0@3.50 c6:0/2@3.00
 [TRK] frame=18 stage1 high_dets=23 matched=0
-[ASSOC] mode=Hungarian trajs=447 dets=26 finite=3209/81354 all_inf_rows=159
+[ASSOC] mode=Hungarian trajs=447 dets=26 finite=3209/81354 all_inf_rows=159 cost_min=638702111949.1001 cost_mean=66240136839376.2656 cost_max=207776854415771.6875
 [ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
+[ASSOC] below-threshold c0:0/2790@6.00 c1:0/393@9.00 c2:0/0@8.00 c3:0/12@8.00 c4:0/0@6.00 c5:0/0@7.00 c6:0/14@6.00
 [TRK] frame=18 stage2 low_dets=26 matched=0
 [TRK] frame=18 births=23 coasts=447 matched_total=0
 [TRK] frame=18 dead=0 alive=470 output=0
-                                                                                                                                                                                                                                          [TRK] frame=19 dets=49 trajs=470 status_0=470 status_1=0 status_2=0█████████████████████████████████████████████▏                                                                                           | 19/40 [00:44<01:14,  3.53s/it]
-[ASSOC] mode=Hungarian trajs=470 dets=19 finite=5438/62510 all_inf_rows=114
+                                                                                                                                                                                                                                          [TRK] frame=19 dets=49 trajs=470 status_0=470 status_1=0 status_2=0█████████████████████████████████████████████▏                                                                                           | 19/40 [00:45<01:17,  3.67s/it]
+[ASSOC] mode=Hungarian trajs=470 dets=19 finite=5438/62510 all_inf_rows=114 cost_min=528595707494.4566 cost_mean=73622114949534.2500 cost_max=231700541661513.7812
 [ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
+[ASSOC] below-threshold c0:0/4890@3.00 c1:0/548@4.50 c2:0/0@4.00 c3:0/0@4.00 c4:0/0@3.00 c5:0/0@3.50 c6:0/0@3.00
 [TRK] frame=19 stage1 high_dets=19 matched=0
-[ASSOC] mode=Hungarian trajs=470 dets=30 finite=4408/98700 all_inf_rows=185
+[ASSOC] mode=Hungarian trajs=470 dets=30 finite=4408/98700 all_inf_rows=185 cost_min=422876565996.0191 cost_mean=72541570246335.2969 cost_max=231700541661513.7500
 [ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
+[ASSOC] below-threshold c0:0/4238@6.00 c1:0/137@9.00 c2:0/0@8.00 c3:0/9@8.00 c4:0/0@6.00 c5:0/0@7.00 c6:0/24@6.00
 [TRK] frame=19 stage2 low_dets=30 matched=0
 [TRK] frame=19 births=19 coasts=470 matched_total=0
 [TRK] frame=19 dead=0 alive=489 output=0
-                                                                                                                                                                                                                                          [TRK] frame=20 dets=53 trajs=489 status_0=489 status_1=0 status_2=0█████████████████████████████████████████████████▌                                                                                       | 20/40 [00:48<01:13,  3.66s/it]
-[ASSOC] mode=Hungarian trajs=489 dets=18 finite=4800/61614 all_inf_rows=108
-[ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
-[TRK] frame=20 stage1 high_dets=18 matched=0
-[ASSOC] mode=Hungarian trajs=489 dets=35 finite=4633/119805 all_inf_rows=216
-[ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
-[TRK] frame=20 stage2 low_dets=35 matched=0
-[TRK] frame=20 births=18 coasts=489 matched_total=0
-[TRK] frame=20 dead=0 alive=507 output=0
-                                                                                                                                                                                                                                          [TRK] frame=21 dets=54 trajs=507 status_0=507 status_1=0 status_2=0█████████████████████████████████████████████████████▉                                                                                   | 21/40 [00:52<01:15,  3.95s/it]
-[ASSOC] mode=Hungarian trajs=507 dets=19 finite=5323/67431 all_inf_rows=114
-[ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
-[TRK] frame=21 stage1 high_dets=19 matched=0
-[ASSOC] mode=Hungarian trajs=507 dets=35 finite=4396/124215 all_inf_rows=213
-[ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
-[TRK] frame=21 stage2 low_dets=35 matched=0
-[TRK] frame=21 births=19 coasts=507 matched_total=0
-[TRK] frame=21 dead=0 alive=526 output=0
-                                                                                                                                                                                                                                          [TRK] frame=22 dets=46 trajs=526 status_0=526 status_1=0 status_2=0██████████████████████████████████████████████████████████▎                                                                              | 22/40 [00:57<01:16,  4.22s/it]
-[ASSOC] mode=Hungarian trajs=526 dets=20 finite=6245/73640 all_inf_rows=120
-[ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
-[TRK] frame=22 stage1 high_dets=20 matched=0
-[ASSOC] mode=Hungarian trajs=526 dets=26 finite=3872/95732 all_inf_rows=160
-[ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
-[TRK] frame=22 stage2 low_dets=26 matched=0
-[TRK] frame=22 births=20 coasts=526 matched_total=0
-[TRK] frame=22 dead=0 alive=546 output=0
-                                                                                                                                                                                                                                          [TRK] frame=23 dets=48 trajs=546 status_0=546 status_1=0 status_2=0██████████████████████████████████████████████████████████████▌                                                                          | 23/40 [01:02<01:13,  4.30s/it]
-[ASSOC] mode=Hungarian trajs=546 dets=23 finite=7188/87906 all_inf_rows=138
-[ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
-[TRK] frame=23 stage1 high_dets=23 matched=0
-[ASSOC] mode=Hungarian trajs=546 dets=25 finite=3120/95550 all_inf_rows=152
-[ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
-[TRK] frame=23 stage2 low_dets=25 matched=0
-[TRK] frame=23 births=23 coasts=546 matched_total=0
-[TRK] frame=23 dead=0 alive=569 output=0
-                                                                                                                                                                                                                                          [TRK] frame=24 dets=61 trajs=569 status_0=569 status_1=0 status_2=0███████████████████████████████████████████████████████████████████                                                                      | 24/40 [01:06<01:11,  4.50s/it]
-[ASSOC] mode=Hungarian trajs=569 dets=22 finite=6470/87626 all_inf_rows=132
-[ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
-[TRK] frame=24 stage1 high_dets=22 matched=0
-[ASSOC] mode=Hungarian trajs=569 dets=39 finite=5018/155337 all_inf_rows=239
-[ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
-[TRK] frame=24 stage2 low_dets=39 matched=0
-[TRK] frame=24 births=22 coasts=569 matched_total=0
-[TRK] frame=24 dead=0 alive=591 output=0
-                                                                                                                                                                                                                                          [TRK] frame=25 dets=71 trajs=591 status_0=591 status_1=0 status_2=0███████████████████████████████████████████████████████████████████████▍                                                                 | 25/40 [01:13<01:15,  5.03s/it]
-[ASSOC] mode=Hungarian trajs=591 dets=23 finite=7353/95151 all_inf_rows=138
-[ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
-[TRK] frame=25 stage1 high_dets=23 matched=0
-[ASSOC] mode=Hungarian trajs=591 dets=48 finite=6894/198576 all_inf_rows=294
-[ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
-[TRK] frame=25 stage2 low_dets=48 matched=0
-[TRK] frame=25 births=23 coasts=591 matched_total=0
-[TRK] frame=25 dead=0 alive=614 output=0
-                                                                                                                                                                                                                                          [TRK] frame=26 dets=65 trajs=614 status_0=614 status_1=0 status_2=0███████████████████████████████████████████████████████████████████████████▊                                                             | 26/40 [01:20<01:21,  5.81s/it]
-[ASSOC] mode=Hungarian trajs=614 dets=23 finite=7621/98854 all_inf_rows=139
-[ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
-[TRK] frame=26 stage1 high_dets=23 matched=0
-[ASSOC] mode=Hungarian trajs=614 dets=42 finite=5285/180516 all_inf_rows=257
-[ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
-[TRK] frame=26 stage2 low_dets=42 matched=0
-[TRK] frame=26 births=23 coasts=614 matched_total=0
-[TRK] frame=26 dead=0 alive=637 output=0
-                                                                                                                                                                                                                                          [TRK] frame=27 dets=67 trajs=637 status_0=637 status_1=0 status_2=0████████████████████████████████████████████████████████████████████████████████▏                                                        | 27/40 [01:28<01:21,  6.25s/it]
-[ASSOC] mode=Hungarian trajs=637 dets=25 finite=8527/111475 all_inf_rows=150
-[ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
-[TRK] frame=27 stage1 high_dets=25 matched=0
-[ASSOC] mode=Hungarian trajs=637 dets=42 finite=6542/187278 all_inf_rows=252
-[ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
-[TRK] frame=27 stage2 low_dets=42 matched=0
-[TRK] frame=27 births=25 coasts=637 matched_total=0
-[TRK] frame=27 dead=0 alive=662 output=0
-                                                                                                                                                                                                                                          [TRK] frame=28 dets=56 trajs=662 status_0=662 status_1=0 status_2=0████████████████████████████████████████████████████████████████████████████████████▍                                                    | 28/40 [01:35<01:19,  6.66s/it]
-[ASSOC] mode=Hungarian trajs=662 dets=19 finite=6560/88046 all_inf_rows=114
-[ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
-[TRK] frame=28 stage1 high_dets=19 matched=0
-[ASSOC] mode=Hungarian trajs=662 dets=37 finite=6135/171458 all_inf_rows=222
-[ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
-[TRK] frame=28 stage2 low_dets=37 matched=0
-[TRK] frame=28 births=19 coasts=662 matched_total=0
-[TRK] frame=28 dead=0 alive=681 output=0
-                                                                                                                                                                                                                                          [TRK] frame=29 dets=54 trajs=681 status_0=681 status_1=0 status_2=0████████████████████████████████████████████████████████████████████████████████████████▉                                                | 29/40 [01:42<01:12,  6.58s/it]
-[ASSOC] mode=Hungarian trajs=681 dets=17 finite=5545/81039 all_inf_rows=102
-[ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
-[TRK] frame=29 stage1 high_dets=17 matched=0
-[ASSOC] mode=Hungarian trajs=681 dets=37 finite=5650/176379 all_inf_rows=222
-[ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
-[TRK] frame=29 stage2 low_dets=37 matched=0
-[TRK] frame=29 births=17 coasts=681 matched_total=0
-[TRK] frame=29 dead=0 alive=698 output=0
-                                                                                                                                                                                                                                          [TRK] frame=30 dets=54 trajs=698 status_0=698 status_1=0 status_2=0█████████████████████████████████████████████████████████████████████████████████████████████▎                                           | 30/40 [01:48<01:06,  6.60s/it]
-[ASSOC] mode=Hungarian trajs=698 dets=18 finite=5691/87948 all_inf_rows=108
-[ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
-[TRK] frame=30 stage1 high_dets=18 matched=0
-[ASSOC] mode=Hungarian trajs=698 dets=36 finite=6314/175896 all_inf_rows=216
-[ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
-[TRK] frame=30 stage2 low_dets=36 matched=0
-[TRK] frame=30 births=18 coasts=698 matched_total=0
-[TRK] frame=30 dead=0 alive=716 output=0
-                                                                                                                                                                                                                                          [TRK] frame=31 dets=44 trajs=716 status_0=716 status_1=0 status_2=0█████████████████████████████████████████████████████████████████████████████████████████████████▋                                       | 31/40 [01:55<01:00,  6.70s/it]
-[ASSOC] mode=Hungarian trajs=716 dets=21 finite=7239/105252 all_inf_rows=126
-[ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
-[TRK] frame=31 stage1 high_dets=21 matched=0
-[ASSOC] mode=Hungarian trajs=716 dets=23 finite=3524/115276 all_inf_rows=139
-[ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
-[TRK] frame=31 stage2 low_dets=23 matched=0
-[TRK] frame=31 births=21 coasts=716 matched_total=0
-[TRK] frame=31 dead=0 alive=737 output=0
-                                                                                                                                                                                                                                          [TRK] frame=32 dets=49 trajs=737 status_0=737 status_1=0 status_2=0██████████████████████████████████████████████████████████████████████████████████████████████████████                                   | 32/40 [02:01<00:51,  6.48s/it]
-[ASSOC] mode=Hungarian trajs=737 dets=18 finite=6507/92862 all_inf_rows=108
-[ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
-[TRK] frame=32 stage1 high_dets=18 matched=0
-[ASSOC] mode=Hungarian trajs=737 dets=31 finite=6133/159929 all_inf_rows=188
-[ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
-[TRK] frame=32 stage2 low_dets=31 matched=0
-[TRK] frame=32 births=18 coasts=737 matched_total=0
-[TRK] frame=32 dead=0 alive=755 output=0
-                                                                                                                                                                                                                                          [TRK] frame=33 dets=48 trajs=755 status_0=755 status_1=0 status_2=0██████████████████████████████████████████████████████████████████████████████████████████████████████████▍                              | 33/40 [02:08<00:45,  6.47s/it]
-[ASSOC] mode=Hungarian trajs=755 dets=17 finite=6167/89845 all_inf_rows=102
-[ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
-[TRK] frame=33 stage1 high_dets=17 matched=0
-[ASSOC] mode=Hungarian trajs=755 dets=31 finite=5036/163835 all_inf_rows=187
-[ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
-[TRK] frame=33 stage2 low_dets=31 matched=0
-[TRK] frame=33 births=17 coasts=755 matched_total=0
-[TRK] frame=33 dead=0 alive=772 output=0
-                                                                                                                                                                                                                                          [TRK] frame=34 dets=44 trajs=772 status_0=772 status_1=0 status_2=0██████████████████████████████████████████████████████████████████████████████████████████████████████████████▊                          | 34/40 [02:14<00:38,  6.48s/it]
-[ASSOC] mode=Hungarian trajs=772 dets=15 finite=5292/81060 all_inf_rows=90
-[ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
-[TRK] frame=34 stage1 high_dets=15 matched=0
-[ASSOC] mode=Hungarian trajs=772 dets=29 finite=4637/156716 all_inf_rows=175
-[ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
-[TRK] frame=34 stage2 low_dets=29 matched=0
-[TRK] frame=34 births=15 coasts=772 matched_total=0
-[TRK] frame=34 dead=0 alive=787 output=0
-                                                                                                                                                                                                                                          [TRK] frame=35 dets=40 trajs=787 status_0=787 status_1=0 status_2=0███████████████████████████████████████████████████████████████████████████████████████████████████████████████████▏                     | 35/40 [02:20<00:31,  6.40s/it]
-[ASSOC] mode=Hungarian trajs=787 dets=15 finite=5668/82635 all_inf_rows=90
-[ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
-[TRK] frame=35 stage1 high_dets=15 matched=0
-[ASSOC] mode=Hungarian trajs=787 dets=25 finite=3679/137725 all_inf_rows=150
-[ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
-[TRK] frame=35 stage2 low_dets=25 matched=0
-[TRK] frame=35 births=15 coasts=787 matched_total=0
-[TRK] frame=35 dead=0 alive=802 output=0
-                                                                                                                                                                                                                                          [TRK] frame=36 dets=43 trajs=802 status_0=802 status_1=0 status_2=0███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████▌                 | 36/40 [02:26<00:24,  6.16s/it]
-[ASSOC] mode=Hungarian trajs=802 dets=14 finite=5258/78596 all_inf_rows=84
-[ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
-[TRK] frame=36 stage1 high_dets=14 matched=0
-[ASSOC] mode=Hungarian trajs=802 dets=29 finite=7139/162806 all_inf_rows=174
-[ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
-[TRK] frame=36 stage2 low_dets=29 matched=0
-[TRK] frame=36 births=14 coasts=802 matched_total=0
-[TRK] frame=36 dead=0 alive=816 output=0
-                                                                                                                                                                                                                                          [TRK] frame=37 dets=31 trajs=816 status_0=816 status_1=0 status_2=0███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████▉             | 37/40 [02:32<00:18,  6.15s/it]
-[ASSOC] mode=Hungarian trajs=816 dets=10 finite=3242/57120 all_inf_rows=60
-[ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
-[TRK] frame=37 stage1 high_dets=10 matched=0
-[ASSOC] mode=Hungarian trajs=816 dets=21 finite=6133/119952 all_inf_rows=126
-[ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
-[TRK] frame=37 stage2 low_dets=21 matched=0
-[TRK] frame=37 births=10 coasts=816 matched_total=0
-[TRK] frame=37 dead=0 alive=826 output=0
-                                                                                                                                                                                                                                          [TRK] frame=38 dets=44 trajs=826 status_0=826 status_1=0 status_2=0████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████▎        | 38/40 [02:37<00:11,  5.75s/it]
-[ASSOC] mode=Hungarian trajs=826 dets=10 finite=3281/57820 all_inf_rows=60
-[ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
-[TRK] frame=38 stage1 high_dets=10 matched=0
-[ASSOC] mode=Hungarian trajs=826 dets=34 finite=6278/196588 all_inf_rows=205
-[ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
-[TRK] frame=38 stage2 low_dets=34 matched=0
-[TRK] frame=38 births=10 coasts=826 matched_total=0
-[TRK] frame=38 dead=0 alive=836 output=0
-                                                                                                                                                                                                                                          [TRK] frame=39 dets=29 trajs=836 status_0=836 status_1=0 status_2=0████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████▋    | 39/40 [02:44<00:06,  6.01s/it]
-[ASSOC] mode=Hungarian trajs=836 dets=8 finite=2790/46816 all_inf_rows=48
-[ASSOC] unc_scale=2.500 thresholds=[3.0, 4.5, 4.0, 4.0, 3.0, 3.5, 3.0]
-[TRK] frame=39 stage1 high_dets=8 matched=0
-[ASSOC] mode=Hungarian trajs=836 dets=21 finite=4069/122892 all_inf_rows=126
-[ASSOC] unc_scale=2.500 thresholds=[6.0, 9.0, 8.0, 8.0, 6.0, 7.0, 6.0]
-[TRK] frame=39 stage2 low_dets=21 matched=0
-[TRK] frame=39 births=8 coasts=836 matched_total=0
-[TRK] frame=39 dead=0 alive=844 output=0
-Processing scene-0003: 100%|███████████████████████████████████████████████████████████

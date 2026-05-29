@@ -444,6 +444,32 @@ def match_trajs_and_dets_uncertainty_aware(
                 flush=True,
             )
 
+        # Safety fallback:
+        # If full-mode costs are numerically exploded (or yield zero feasible
+        # candidates), fall back to pure geometric association for this frame.
+        # This prevents complete tracker collapse (all tracks stay unconfirmed).
+        feasible_pairs = 0
+        for cls_idx, thr in enumerate(adaptive_thresholds):
+            cls_cost = trans_cost_matrix[cls_idx]
+            cls_finite = np.isfinite(cls_cost)
+            if np.any(cls_finite):
+                feasible_pairs += int(np.sum(cls_cost[cls_finite] <= thr))
+
+        finite_vals = trans_cost_matrix[np.isfinite(trans_cost_matrix)]
+        exploded = (
+            finite_vals.size > 0
+            and float(np.min(finite_vals)) > (float(max(adaptive_thresholds)) * 50.0)
+        )
+        if feasible_pairs == 0 or exploded:
+            if dbg_assoc:
+                reason = "no-feasible-pairs" if feasible_pairs == 0 else "cost-exploded"
+                print(
+                    f"[ASSOC] fallback=geometric reason={reason} "
+                    f"min_cost={float(np.min(finite_vals)) if finite_vals.size else float('inf'):.4f}",
+                    flush=True,
+                )
+            return match_trajs_and_dets(trajs, dets, cfg)
+
         if matching_mode == "Hungarian":
             m_det, m_tra, um_det, um_tra, costs = Hungarian(
                 trans_cost_matrix,

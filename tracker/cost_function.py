@@ -317,7 +317,12 @@ def compute_uncertainty_penalty(
         pos_trace = np.trace(pos_P_list[i][:3, :3])
         # trace of orientation covariance = var(theta) + var(omega)
         ori_trace = np.trace(ori_P_list[i])
-        penalty[i] = pos_trace + ori_trace
+        # Robust compression:
+        # raw covariance traces can explode (e.g., transient filter divergence),
+        # which would dominate the association cost and suppress all matches.
+        # log1p preserves ordering while preventing catastrophic scale blow-up.
+        raw_unc = max(float(pos_trace + ori_trace), 0.0)
+        penalty[i] = np.log1p(raw_unc)
     return penalty
 
 
@@ -354,16 +359,39 @@ def cal_uncertainty_aware_cost(
     Returns:
         cost : float — combined cost (lower = better match)
     """
+    def _geo_cost(flag: str):
+        ro = cal_rotation_gdiou_inbev(box_trk, box_det, cfg, flag)
+        g = 1.0 - ro
+        if not np.isfinite(g):
+            return None
+        return float(g)
+
     category_num = cfg["CATEGORY_MAP_TO_NUMBER"][box_trk.bboxes[-1].category]
     # geometric cost from existing Ro_GDIoU
     if cal_flag == "Fusion":
         ratio = cfg["THRESHOLD"]["COST_STATE_PREDICT_RATION"][category_num]
-        ro_gdiou_pred = cal_rotation_gdiou_inbev(box_trk, box_det, cfg, "Predict")
-        ro_gdiou_back = cal_rotation_gdiou_inbev(box_trk, box_det, cfg, "BackPredict")
-        geometric_cost = ratio * (1.0 - ro_gdiou_pred) + (1.0 - ratio) * (1.0 - ro_gdiou_back)
+        g_pred = _geo_cost("Predict")
+        g_back = _geo_cost("BackPredict")
+        if g_pred is None and g_back is None:
+            geometric_cost = 1e6
+        elif g_pred is None:
+            geometric_cost = g_back
+        elif g_back is None:
+            geometric_cost = g_pred
+        else:
+            geometric_cost = ratio * g_pred + (1.0 - ratio) * g_back
     else:
-        ro_gdiou = cal_rotation_gdiou_inbev(box_trk, box_det, cfg, cal_flag)
-        geometric_cost = 1.0 - ro_gdiou
+        geometric_cost = _geo_cost(cal_flag)
+        if geometric_cost is None:
+            geometric_cost = 1e6
+
+    # If predict branch is numerically unstable (extreme cost), fall back to
+    # back-predict geometry for robustness. This prevents all-zero matching
+    # when KF prediction briefly diverges.
+    if cal_flag == "Predict" and geometric_cost > 1000.0:
+        g_back = _geo_cost("BackPredict")
+        if g_back is not None:
+            geometric_cost = g_back
 
     # semantic cost from Mamba embeddings
     semantic_cost = 1.0 - cos_sim
@@ -380,7 +408,9 @@ def cal_uncertainty_aware_cost(
     cost_mode = cfg.get("THRESHOLD", {}).get("BEV", {}).get("COST_MODE", "geometric")
 
     if cost_mode == "full":
-        cost = (1.0 - w_sem) * geometric_cost + w_sem * semantic_cost + w_unc * uncertainty
+        # Clip uncertainty to a sane bound after log-compression.
+        unc_term = min(float(uncertainty), 20.0)
+        cost = (1.0 - w_sem) * geometric_cost + w_sem * semantic_cost + w_unc * unc_term
     else:
         cost = geometric_cost  # pure Ro-GDIoU
 

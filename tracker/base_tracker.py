@@ -143,6 +143,32 @@ class Base3DTracker:
         # Keyed by track_id → dict of tensors on device
         self.kf_states: Dict[int, Dict[str, torch.Tensor]] = {}
 
+    def _normalize_delta_t(self, dt_raw: float) -> float:
+        """
+        Normalize raw timestamp delta to seconds with unit auto-detection.
+
+        NuScenes sample timestamps are in microseconds. If used directly,
+        delta_t becomes ~5e5 instead of ~0.5, causing KF covariance blow-up
+        and uncertainty-aware association collapse.
+        """
+        if dt_raw <= 0 or not np.isfinite(dt_raw):
+            return 1.0 / self.frame_rate
+
+        # Heuristic unit detection:
+        #   >1e3   : likely microseconds (nuscenes/waymo style)
+        #   >10    : likely milliseconds
+        #   else   : already seconds
+        if dt_raw > 1e3:
+            dt_sec = dt_raw / 1e6
+        elif dt_raw > 10:
+            dt_sec = dt_raw / 1e3
+        else:
+            dt_sec = dt_raw
+
+        # Safety clamp: avoid extreme dt spikes from broken timestamps.
+        dt_sec = float(np.clip(dt_sec, 1e-3, 5.0))
+        return dt_sec
+
     # ==================================================================
     # History extraction: Trajectory bboxes → [B, T, 12] tensor
     # ==================================================================
@@ -197,7 +223,7 @@ class Base3DTracker:
                 omega = 0.0
                 if t_idx > 0:
                     prev_bbox = recent[t_idx - 1]
-                    dt = bbox.timestamp - prev_bbox.timestamp
+                    dt = self._normalize_delta_t(bbox.timestamp - prev_bbox.timestamp)
                     if dt > 0:
                         dy = yaw - prev_bbox.global_yaw
                         # wrap to [-pi, pi]
@@ -386,9 +412,9 @@ class Base3DTracker:
         Falls back to 1/FRAME_RATE if timestamps are unavailable.
         """
         if timestamp is not None and self.last_timestamp is not None:
-            dt = timestamp - self.last_timestamp
-            if dt > 0:
-                return dt
+            dt_raw = timestamp - self.last_timestamp
+            if dt_raw > 0:
+                return self._normalize_delta_t(dt_raw)
         return 1.0 / self.frame_rate
 
     # ==================================================================
@@ -557,7 +583,8 @@ class Base3DTracker:
             _statuses = [t.status_flag for t in trajs]
             print(f"[TRK] frame={frame_info.frame_id} dets={dets_cnt} "
                   f"trajs={trajs_cnt} status_0={_statuses.count(0)} "
-                  f"status_1={_statuses.count(1)} status_2={_statuses.count(2)}",
+                  f"status_1={_statuses.count(1)} status_2={_statuses.count(2)} "
+                  f"dt={delta_t:.4f}s",
                   flush=True)
 
         # ---- predict all active tracks (Module A + B) ----
