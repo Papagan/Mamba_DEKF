@@ -59,6 +59,7 @@ TRAINING:
   WEIGHT_DECAY: 1.0e-4
   WARMUP_EPOCHS: 3             # LR scheduler warmup
   WARMUP_UNCERTAINTY_EPOCHS: 5 # detach Q/R/kappa, use L2 angle loss
+  WARMUP_TRANSITION_EPOCHS: 5  # smooth unfreeze (alpha ramp 0->1) after uncertainty warmup
   GRAD_CLIP_NORM: 1.0
   LOG_EVERY: 50
   SAVE_EVERY: 10

@@ -290,6 +290,7 @@ class StatePredictionLoss(nn.Module):
         kappa_ori: torch.Tensor = None,  # [B, 1] — Von Mises concentration
         gt_next_vel: torch.Tensor = None,  # [B, 2] — GT velocity for vel NLL
         in_warmup: bool = False,
+        ori_nll_alpha: float = None,       # smooth transition 0(angle) -> 1(VM-NLL)
         class_ids: torch.Tensor = None,     # [B]
         class_weights: torch.Tensor = None,  # [C]
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
@@ -341,22 +342,28 @@ class StatePredictionLoss(nn.Module):
             sample_weights=sample_weights,
         )
 
-        # Orientation: during warmup use angle_loss (bounded, no κ shortcut);
-        # after warmup use Von Mises NLL with adaptive κ.
-        if in_warmup:
-            ori_per_sample = 1.0 - torch.cos(ori_x_pred[:, 0, 0] - gt_next_ori.squeeze(-1))
-            if sample_weights is None:
-                loss_ori = ori_per_sample.mean()
-            else:
-                w = sample_weights / (sample_weights.sum() + 1e-8)
-                loss_ori = (ori_per_sample * w).sum()
+        # Orientation loss:
+        # - legacy path: hard switch by in_warmup
+        # - smooth path: ori_nll_alpha in [0,1], blends angle -> Von Mises NLL
+        ori_per_sample = 1.0 - torch.cos(ori_x_pred[:, 0, 0] - gt_next_ori.squeeze(-1))
+        if sample_weights is None:
+            loss_ori_angle = ori_per_sample.mean()
         else:
-            loss_ori = von_mises_loss(
-                pred_yaw=ori_x_pred[:, 0, 0],
-                gt_yaw=gt_next_ori,
-                kappa=kappa_ori,
-                sample_weights=sample_weights,
-            )
+            w = sample_weights / (sample_weights.sum() + 1e-8)
+            loss_ori_angle = (ori_per_sample * w).sum()
+
+        loss_ori_vm = von_mises_loss(
+            pred_yaw=ori_x_pred[:, 0, 0],
+            gt_yaw=gt_next_ori,
+            kappa=kappa_ori,
+            sample_weights=sample_weights,
+        )
+
+        if ori_nll_alpha is None:
+            loss_ori = loss_ori_angle if in_warmup else loss_ori_vm
+        else:
+            alpha = float(max(0.0, min(1.0, ori_nll_alpha)))
+            loss_ori = (1.0 - alpha) * loss_ori_angle + alpha * loss_ori_vm
 
         loss_nis = torch.tensor(0.0, device=pos_x_pred.device)
         if self.w_nis > 0:
@@ -413,6 +420,8 @@ class StatePredictionLoss(nn.Module):
             "loss_pos": loss_pos.item(),
             "loss_siz": loss_siz.item(),
             "loss_ori": loss_ori.item(),
+            "loss_ori_angle": loss_ori_angle.item(),
+            "loss_ori_vm": loss_ori_vm.item(),
             "loss_vel": loss_vel_val,
             "loss_nis": loss_nis.item(),
         }
@@ -555,6 +564,7 @@ class JointLoss(nn.Module):
         kappa_ori: torch.Tensor = None,  # [B, 1]
         gt_next_vel: torch.Tensor = None,  # [B, 2]
         in_warmup: bool = False,
+        ori_nll_alpha: float = None,
         class_ids: torch.Tensor = None,  # [B]
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
@@ -577,6 +587,7 @@ class JointLoss(nn.Module):
             kappa_ori=kappa_ori,
             gt_next_vel=gt_next_vel,
             in_warmup=in_warmup,
+            ori_nll_alpha=ori_nll_alpha,
             class_ids=class_ids,
             class_weights=class_weights_tensor,
         )

@@ -62,6 +62,7 @@ def training_step(
     noise_cfg: dict = None,
     epoch: int = 0,
     warmup_epochs: int = 0,
+    transition_epochs: int = 0,
     vel_warmup_epochs: int = 3,
 ) -> tuple:
     """
@@ -219,10 +220,18 @@ def training_step(
     meas_noise_ori = noise_scale_ori * meas_mult
     meas_noise_vel = noise_scale_vel_xy.unsqueeze(-1) * meas_mult    # [B, 2, 1]
 
-    # ---- Confidence warmup: detach uncertainty heads for first N epochs ----
-    # Forces Mamba backbone to learn accurate feature representations before
-    # the uncertainty heads can take shortcuts (κ→0, R→0, logdet→-∞).
+    # ---- Confidence warmup + smooth unfreeze ----
+    # Hard warmup: alpha=0 (fully detached uncertainty heads).
+    # Transition: alpha ramps 0->1 across transition_epochs.
+    # Post-transition: alpha=1 (fully trainable uncertainty heads).
     in_warmup = epoch < warmup_epochs
+    if epoch < warmup_epochs:
+        unfreeze_alpha = 0.0
+    elif transition_epochs <= 0:
+        unfreeze_alpha = 1.0
+    else:
+        prog = (epoch - warmup_epochs + 1) / float(transition_epochs)
+        unfreeze_alpha = float(max(0.0, min(1.0, prog)))
 
     # Velocity NLL warmup: delay for N epochs after uncertainty-unseal to let
     # position+orientation NLL stabilise before adding velocity supervision.
@@ -237,14 +246,18 @@ def training_step(
     R_ori = mamba_out["R_ori"]
     kappa_ori = mamba_out["kappa_ori"]
 
-    if in_warmup:
-        Q_pos = Q_pos.detach()
-        Q_siz = Q_siz.detach()
-        Q_ori = Q_ori.detach()
-        R_pos = R_pos.detach()
-        R_siz = R_siz.detach()
-        R_ori = R_ori.detach()
-        kappa_ori = kappa_ori.detach()
+    # Smoothly release gradients after warmup (avoid abrupt loss cliff).
+    def _blend_detach(x: torch.Tensor, alpha: float) -> torch.Tensor:
+        xd = x.detach()
+        return xd + (x - xd) * alpha
+
+    Q_pos = _blend_detach(Q_pos, unfreeze_alpha)
+    Q_siz = _blend_detach(Q_siz, unfreeze_alpha)
+    Q_ori = _blend_detach(Q_ori, unfreeze_alpha)
+    R_pos = _blend_detach(R_pos, unfreeze_alpha)
+    R_siz = _blend_detach(R_siz, unfreeze_alpha)
+    R_ori = _blend_detach(R_ori, unfreeze_alpha)
+    kappa_ori = _blend_detach(kappa_ori, unfreeze_alpha)
 
     # GT velocity for all rollout steps (constant-velocity approximation over K≤3 frames)
     vel_gt = gt_pos[:, 3:5]  # [B, 2]
@@ -273,6 +286,7 @@ def training_step(
             kappa_ori=kappa_ori,
             gt_next_vel=vel_gt if vel_active else None,
             in_warmup=in_warmup,
+            ori_nll_alpha=unfreeze_alpha,
             class_ids=class_ids,
         )
 
@@ -347,6 +361,7 @@ def training_step(
     #      physics_scale × state_NLL + lambda × contrast + kappa_var_reg
     real_loss = total_loss_tensor / K + kappa_reg + delta_pos_reg
     detail["loss_real"] = real_loss.item()
+    detail["unfreeze_alpha"] = unfreeze_alpha
     return real_loss, detail
 
 
@@ -369,7 +384,7 @@ def validate(
 
     for batch in val_loader:
         _, detail = training_step(mamba, batch, loss_fn, device, noise_cfg,
-                                  epoch=999, warmup_epochs=0)  # never in warmup
+                                  epoch=999, warmup_epochs=0, transition_epochs=0)  # fully unfrozen
         for k, v in detail.items():
             totals[k] = totals.get(k, 0.0) + v
         n_batches += 1
@@ -587,6 +602,7 @@ def main():
         t0 = time.time()
         noise_cfg = train_cfg.get("NOISE_MAP", None)
         warmup_epochs = train_cfg.get("WARMUP_UNCERTAINTY_EPOCHS", 0)
+        transition_epochs = train_cfg.get("WARMUP_TRANSITION_EPOCHS", 0)
 
         for batch_idx, batch in enumerate(train_loader):
             optimizer.zero_grad()
@@ -594,6 +610,7 @@ def main():
             loss, detail = training_step(
                 mamba, batch, loss_fn, device, noise_cfg,
                 epoch=epoch, warmup_epochs=warmup_epochs,
+                transition_epochs=transition_epochs,
                 vel_warmup_epochs=vel_warmup_epochs)
 
             # Check for NaN / Inf loss before backward
@@ -660,6 +677,7 @@ def main():
             f"ori={avg_train.get('loss_ori', 0):.4f} "
             f"vel={avg_train.get('loss_vel', 0):.4f} "
             f"nis={avg_train.get('loss_nis', 0):.4f} "
+            f"ua={avg_train.get('unfreeze_alpha', 1.0):.2f} "
             f"contrast={avg_train.get('loss_contrastive', 0):.4f} | "
             f"val={avg_val.get('loss_real', avg_val.get('loss_total', 0)):.4f} "
             f"val_pos={avg_val.get('loss_pos', 0):.4f} | "
@@ -682,6 +700,7 @@ def main():
         writer.add_scalar("train/loss_contrastive", avg_train.get("loss_contrastive", 0), step)
         writer.add_scalar("train/loss_kappa_reg", avg_train.get("loss_kappa_reg", 0), step)
         writer.add_scalar("train/loss_delta_pos_reg", avg_train.get("loss_delta_pos_reg", 0), step)
+        writer.add_scalar("train/unfreeze_alpha", avg_train.get("unfreeze_alpha", 1.0), step)
         writer.add_scalar("val/loss_real", avg_val.get("loss_real", avg_val.get("loss_total", 0)), step)
         writer.add_scalar("val/loss_raw", avg_val.get("loss_total", 0), step)
         writer.add_scalar("val/loss_pos", avg_val.get("loss_pos", 0), step)
