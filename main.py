@@ -160,6 +160,12 @@ def run(scene_id, scenes_data, cfg, args, tracking_results):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MCTrack")
     parser.add_argument(
+        "--config",
+        type=str,
+        default="",
+        help="Optional config path. If set, overrides dataset default config path.",
+    )
+    parser.add_argument(
         "--dataset",
         type=str,
         default="kitti",
@@ -173,14 +179,19 @@ if __name__ == "__main__":
     parser.add_argument("--process", "-p", type=int, default=1, help="multi-process!")
     args = parser.parse_args()
 
-    if args.dataset == "kitti":
-        cfg_path = "./config/kitti.yaml"
-    elif args.dataset == "nuscenes":
-        cfg_path = "./config/nuscenes.yaml"
-    elif args.dataset == "waymo":
-        cfg_path = "./config/waymo.yaml"
-    if args.mode:
-        cfg_path = cfg_path.replace(".yaml", "_offline.yaml")
+    if args.config:
+        cfg_path = args.config
+    else:
+        if args.dataset == "kitti":
+            cfg_path = "./config/kitti.yaml"
+        elif args.dataset == "nuscenes":
+            cfg_path = "./config/nuscenes.yaml"
+        elif args.dataset == "waymo":
+            cfg_path = "./config/waymo.yaml"
+        else:
+            raise ValueError(f"Unsupported dataset: {args.dataset}")
+        if args.mode:
+            cfg_path = cfg_path.replace(".yaml", "_offline.yaml")
 
     cfg = yaml.load(open(cfg_path, "r"), Loader=yaml.Loader)
 
