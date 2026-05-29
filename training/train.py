@@ -110,23 +110,78 @@ def training_step(
     # ---- Step 2: Init KF from GT state at frame T (+ noise) ----
     if noise_cfg is None:
         noise_cfg = {
-            "POS_STD": [0.51, 0.27, 0.55, 0.86, 1.26, 0.91, 0.64],
-            "SIZ_STD": [0.16, 0.05, 0.09, 0.13, 0.67, 1.05, 0.46],
+            "POS_STD_XY": [
+                [0.5210, 0.5045],  # car
+                [0.2745, 0.2731],  # pedestrian
+                [0.5562, 0.5444],  # bicycle
+                [0.8646, 0.8695],  # motorcycle
+                [1.3037, 1.2327],  # bus
+                [0.9590, 0.8735],  # trailer
+                [0.6580, 0.6269],  # truck
+            ],
+            "SIZ_STD_LW": [
+                [0.2417, 0.0799],  # car
+                [0.0567, 0.0422],  # pedestrian
+                [0.1118, 0.0661],  # bicycle
+                [0.1866, 0.0860],  # motorcycle
+                [1.2094, 0.1465],  # bus
+                [1.9336, 0.1782],  # trailer
+                [0.7685, 0.1569],  # truck
+            ],
+            "VEL_STD_XY": [
+                [0.7551, 0.7017],  # car
+                [0.2494, 0.2409],  # pedestrian
+                [0.3933, 0.3942],  # bicycle
+                [0.8261, 0.8865],  # motorcycle
+                [1.2134, 1.1046],  # bus
+                [0.4770, 0.3982],  # trailer
+                [0.6409, 0.6169],  # truck
+            ],
             "ORI_STD": [0.50, 0.91, 0.86, 0.96, 0.48, 0.53, 0.45],
             "MEAS_MULTIPLIER": 0.7
         }
 
+    def _std_xy_map(cfg: dict, key_xy: str, key_scalar: str):
+        vals = cfg.get(key_xy, None)
+        if isinstance(vals, list) and len(vals) > 0 and isinstance(vals[0], (list, tuple)):
+            return [[float(v[0]), float(v[1])] for v in vals]
+        sc = cfg.get(key_scalar, None)
+        if isinstance(sc, list) and len(sc) > 0:
+            return [[float(v), float(v)] for v in sc]
+        raise KeyError(f"Missing {key_xy}/{key_scalar} in NOISE_MAP")
+
     # Category-specific noise mapped from yaml config
     # [Car, Pedestrian, Bicycle, Motorcycle, Bus, Trailer, Truck]
-    pos_std_map = torch.tensor(noise_cfg["POS_STD"], device=device)
-    siz_std_map = torch.tensor(noise_cfg["SIZ_STD"], device=device)
-    ori_std_map = torch.tensor(noise_cfg["ORI_STD"], device=device)
+    pos_std_xy_map = torch.tensor(
+        _std_xy_map(noise_cfg, "POS_STD_XY", "POS_STD"), device=device
+    )  # [C,2]
+    siz_std_lw_map = torch.tensor(
+        _std_xy_map(noise_cfg, "SIZ_STD_LW", "SIZ_STD"), device=device
+    )  # [C,2]
+    vel_std_xy_map = torch.tensor(
+        _std_xy_map(noise_cfg, "VEL_STD_XY", "VEL_STD"), device=device
+    )  # [C,2]
+    ori_std_map = torch.tensor(noise_cfg["ORI_STD"], device=device)  # [C]
 
     # Broadcast category-specific noise to batch
-    safe_class_ids = torch.clamp(class_ids, min=0, max=6)
-    noise_scale_pos = pos_std_map[safe_class_ids].view(B, 1, 1)  # [B, 1, 1]
-    noise_scale_siz = siz_std_map[safe_class_ids].view(B, 1, 1)
-    noise_scale_ori = ori_std_map[safe_class_ids].view(B, 1, 1)
+    max_cat = int(min(
+        pos_std_xy_map.shape[0] - 1,
+        siz_std_lw_map.shape[0] - 1,
+        vel_std_xy_map.shape[0] - 1,
+        ori_std_map.shape[0] - 1,
+    ))
+    safe_class_ids = torch.clamp(class_ids, min=0, max=max_cat)
+
+    pos_std_xy = pos_std_xy_map[safe_class_ids]            # [B,2]
+    pos_std_z = pos_std_xy.mean(dim=1, keepdim=True)       # [B,1]
+    noise_scale_pos_xyz = torch.cat([pos_std_xy, pos_std_z], dim=1)  # [B,3]
+
+    siz_std_lw = siz_std_lw_map[safe_class_ids]            # [B,2]
+    siz_std_h = siz_std_lw.mean(dim=1, keepdim=True)       # [B,1]
+    noise_scale_siz_lwh = torch.cat([siz_std_lw, siz_std_h], dim=1)  # [B,3]
+
+    noise_scale_vel_xy = vel_std_xy_map[safe_class_ids]    # [B,2]
+    noise_scale_ori = ori_std_map[safe_class_ids].view(B, 1, 1)  # [B,1,1]
 
     # delta_pos gives Mamba a direct gradient path through loss_pos,
     # not only through R_pos via the KF update.
@@ -140,9 +195,11 @@ def training_step(
     ori_x0 = gt_ori.unsqueeze(-1)                                    # [B, 2, 1]
 
     # Category noise (added on top of delta, as extra perturbation)
-    pos_x0 = pos_x0 + torch.randn_like(pos_x0) * noise_scale_pos * torch.tensor(
-        [1.0, 1.0, 1.0, 0.0, 0.0, 0.0], device=device).view(1, 6, 1)
-    siz_x0 = siz_x0 + torch.randn_like(siz_x0) * noise_scale_siz
+    pos_noise_std_6 = torch.cat(
+        [noise_scale_pos_xyz, torch.zeros(B, 3, device=device)], dim=1
+    ).unsqueeze(-1)  # [B,6,1]
+    pos_x0 = pos_x0 + torch.randn_like(pos_x0) * pos_noise_std_6
+    siz_x0 = siz_x0 + torch.randn_like(siz_x0) * noise_scale_siz_lwh.unsqueeze(-1)
     ori_x0 = ori_x0 + torch.randn_like(ori_x0) * noise_scale_ori * torch.tensor(
         [1.0, 0.0], device=device).view(1, 2, 1)  # noise on theta, not omega
 
@@ -157,12 +214,10 @@ def training_step(
 
     # Measurement noise for teacher forcing — scaled proportionally to std mapped from category
     meas_mult = noise_cfg.get("MEAS_MULTIPLIER", 0.7)
-    meas_noise_pos = noise_scale_pos * meas_mult       # [B, 1, 1] — position noise
-    meas_noise_siz = noise_scale_siz * meas_mult
+    meas_noise_pos = noise_scale_pos_xyz.unsqueeze(-1) * meas_mult  # [B, 3, 1]
+    meas_noise_siz = noise_scale_siz_lwh.unsqueeze(-1) * meas_mult  # [B, 3, 1]
     meas_noise_ori = noise_scale_ori * meas_mult
-    # Velocity observation noise: 2× position std (4× variance) so KF
-    # trusts velocity less than position (CenterPoint velocity is often zero).
-    meas_noise_vel = noise_scale_pos * meas_mult * 2.0  # [B, 1, 1]
+    meas_noise_vel = noise_scale_vel_xy.unsqueeze(-1) * meas_mult    # [B, 2, 1]
 
     # ---- Confidence warmup: detach uncertainty heads for first N epochs ----
     # Forces Mamba backbone to learn accurate feature representations before
@@ -218,6 +273,7 @@ def training_step(
             kappa_ori=kappa_ori,
             gt_next_vel=vel_gt if vel_active else None,
             in_warmup=in_warmup,
+            class_ids=class_ids,
         )
 
         total_state_loss += detail_k["loss_state"]   # for logging only
@@ -441,9 +497,12 @@ def main():
         w_siz=loss_cfg.get("W_SIZ", 0.5),
         w_ori=loss_cfg.get("W_ORI", 1.0),
         w_vel=loss_cfg.get("W_VEL", 0.3),
+        w_nis=loss_cfg.get("W_NIS", 0.0),
         lambda_contrast=loss_cfg.get("LAMBDA_CONTRAST", 0.1),
         temperature=loss_cfg.get("INFONCE_TEMPERATURE", 0.07),
         physics_scale=loss_cfg.get("PHYSICS_SCALE", 5.0),
+        hard_negative_topk=loss_cfg.get("HARD_NEGATIVE_TOPK", 0),
+        class_weights=loss_cfg.get("CLASS_WEIGHTS", None),
     ).to(device)
     vel_warmup_epochs = loss_cfg.get("VEL_WARMUP_EPOCHS", 3)
 
@@ -600,6 +659,7 @@ def main():
             f"siz={avg_train.get('loss_siz', 0):.4f} "
             f"ori={avg_train.get('loss_ori', 0):.4f} "
             f"vel={avg_train.get('loss_vel', 0):.4f} "
+            f"nis={avg_train.get('loss_nis', 0):.4f} "
             f"contrast={avg_train.get('loss_contrastive', 0):.4f} | "
             f"val={avg_val.get('loss_real', avg_val.get('loss_total', 0)):.4f} "
             f"val_pos={avg_val.get('loss_pos', 0):.4f} | "
@@ -618,6 +678,7 @@ def main():
         writer.add_scalar("train/loss_siz", avg_train.get("loss_siz", 0), step)
         writer.add_scalar("train/loss_ori", avg_train.get("loss_ori", 0), step)
         writer.add_scalar("train/loss_vel", avg_train.get("loss_vel", 0), step)
+        writer.add_scalar("train/loss_nis", avg_train.get("loss_nis", 0), step)
         writer.add_scalar("train/loss_contrastive", avg_train.get("loss_contrastive", 0), step)
         writer.add_scalar("train/loss_kappa_reg", avg_train.get("loss_kappa_reg", 0), step)
         writer.add_scalar("train/loss_delta_pos_reg", avg_train.get("loss_delta_pos_reg", 0), step)
@@ -627,6 +688,7 @@ def main():
         writer.add_scalar("val/loss_siz", avg_val.get("loss_siz", 0), step)
         writer.add_scalar("val/loss_ori", avg_val.get("loss_ori", 0), step)
         writer.add_scalar("val/loss_vel", avg_val.get("loss_vel", 0), step)
+        writer.add_scalar("val/loss_nis", avg_val.get("loss_nis", 0), step)
         writer.add_scalar("val/loss_contrastive", avg_val.get("loss_contrastive", 0), step)
         writer.add_scalar("val/loss_kappa_reg", avg_val.get("loss_kappa_reg", 0), step)
         writer.add_scalar("val/loss_delta_pos_reg", avg_val.get("loss_delta_pos_reg", 0), step)

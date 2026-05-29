@@ -1095,6 +1095,26 @@ class MambaDecoupledEKF(nn.Module):
         self.base_noise_cfg = base_noise_cfg
         self.device = device
 
+    @staticmethod
+    def _as_std_xy_map(r_cfg: dict, key_xy: str, key_scalar: str) -> list:
+        """
+        Parse per-class [x, y] std map with backward compatibility.
+        """
+        xy = r_cfg.get(key_xy, None)
+        if isinstance(xy, list) and len(xy) > 0 and isinstance(xy[0], (list, tuple)):
+            return [[float(v[0]), float(v[1])] for v in xy]
+        sc = r_cfg.get(key_scalar, None)
+        if isinstance(sc, list) and len(sc) > 0:
+            return [[float(v), float(v)] for v in sc]
+        raise KeyError(f"Missing {key_xy} / {key_scalar} in R config.")
+
+    @staticmethod
+    def _as_std_1d_map(r_cfg: dict, key: str, default: float = 1.0, n: int = 7) -> list:
+        vals = r_cfg.get(key, None)
+        if isinstance(vals, list) and len(vals) > 0:
+            return [float(v) for v in vals]
+        return [float(default)] * n
+
 
     def _get_base_noise(self, bsize: int, dtype: torch.dtype, class_ids: Tensor = None) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
         """
@@ -1110,6 +1130,8 @@ class MambaDecoupledEKF(nn.Module):
             q_pos = [0.5, 0.5, 0.5, 1.5, 1.5, 1.5]
             q_siz = [0.05, 0.05, 0.05]
             q_ori = [0.1]
+            q_pos_diag = torch.tensor(q_pos, device=self.device, dtype=dtype)
+            Q_pos_base = torch.diag(q_pos_diag).unsqueeze(0).expand(bsize, -1, -1)
 
             r_pos = torch.full((bsize, 5,), 0.2, device=self.device, dtype=dtype)
             r_siz = torch.full((bsize, 3,), 0.3, device=self.device, dtype=dtype)
@@ -1122,13 +1144,28 @@ class MambaDecoupledEKF(nn.Module):
             R_cfg = self.base_noise_cfg["R"]
             mul = R_cfg.get("MEAS_MULTIPLIER", 1.0)
 
-            p_std = torch.tensor(R_cfg["POS_STD"], device=self.device, dtype=dtype) * mul
-            s_std = torch.tensor(R_cfg["SIZ_STD"], device=self.device, dtype=dtype) * mul
-            o_std = torch.tensor(R_cfg["ORI_STD"], device=self.device, dtype=dtype) * mul
-            # Velocity measurement noise: det velocity is often zero (CenterPoint) —
-            # use a high std so the KF trusts velocity observations less than position.
-            v_std = torch.tensor(R_cfg.get("VEL_STD", [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]),
-                                 device=self.device, dtype=dtype) * mul
+            # Axis-aware noise maps from MCTrack noise.log (preferred):
+            #   POS_STD_XY: [[sx, sy], ...]
+            #   SIZ_STD_LW: [[sl, sw], ...]
+            #   VEL_STD_XY: [[svx, svy], ...]
+            # Backward compatible scalar maps are still accepted:
+            #   POS_STD / SIZ_STD / VEL_STD.
+            pos_std_xy = torch.tensor(
+                self._as_std_xy_map(R_cfg, "POS_STD_XY", "POS_STD"),
+                device=self.device, dtype=dtype,
+            ) * mul  # [C,2]
+            siz_std_lw = torch.tensor(
+                self._as_std_xy_map(R_cfg, "SIZ_STD_LW", "SIZ_STD"),
+                device=self.device, dtype=dtype,
+            ) * mul  # [C,2]
+            vel_std_xy = torch.tensor(
+                self._as_std_xy_map(R_cfg, "VEL_STD_XY", "VEL_STD"),
+                device=self.device, dtype=dtype,
+            ) * mul  # [C,2]
+            ori_std = torch.tensor(
+                self._as_std_1d_map(R_cfg, "ORI_STD", default=0.5, n=pos_std_xy.shape[0]),
+                device=self.device, dtype=dtype,
+            ) * mul  # [C]
 
             # ---- Per-category process noise Q ----
             # Build from POS_PER_CAT dict (MCTrack-sourced), fallback to shared POS
@@ -1143,21 +1180,30 @@ class MambaDecoupledEKF(nn.Module):
                 q_pos_diag = torch.tensor(Q_cfg["POS"], device=self.device, dtype=dtype)
                 Q_pos_base = torch.diag(q_pos_diag).unsqueeze(0).expand(bsize, -1, -1)
 
-            # ---- Measurement noise R (always per-category via POS_STD/VEL_STD) ----
+            # ---- Measurement noise R (axis-aware, per-category) ----
+            # pos obs is [x,y,z,vx,vy]. noise.log has x/y and vx/vy;
+            # we derive z std as mean(x,y) to keep consistent scale.
+            pos_std_z = pos_std_xy.mean(dim=1, keepdim=True)   # [C,1]
+            siz_std_h = siz_std_lw.mean(dim=1, keepdim=True)   # [C,1]
+            pos_std_xyz = torch.cat([pos_std_xy, pos_std_z], dim=1)  # [C,3]
+            siz_std_lwh = torch.cat([siz_std_lw, siz_std_h], dim=1)  # [C,3]
+
             if class_ids is None:
-                r_pos_xyz = p_std[0].expand(bsize, 3) ** 2          # [bsize, 3]
-                r_pos_v = v_std[0].expand(bsize, 2) ** 2             # [bsize, 2]
+                r_pos_xyz = pos_std_xyz[0].expand(bsize, 3) ** 2      # [bsize, 3]
+                r_pos_v = vel_std_xy[0].expand(bsize, 2) ** 2          # [bsize, 2]
                 r_pos = torch.cat([r_pos_xyz, r_pos_v], dim=-1)      # [bsize, 5]
-                r_siz = s_std[0].expand(bsize, 3) ** 2
-                r_ori = o_std[0].expand(bsize, 1) ** 2
+                r_siz = siz_std_lwh[0].expand(bsize, 3) ** 2
+                r_ori = ori_std[0].expand(bsize, 1) ** 2
             else:
-                c_ids = torch.clamp(class_ids, 0, len(p_std) - 1)
-                c_ids_v = torch.clamp(class_ids, 0, len(v_std) - 1)
-                r_pos_xyz = (p_std[c_ids] ** 2).unsqueeze(1).expand(bsize, 3)
-                r_pos_v   = (v_std[c_ids_v] ** 2).unsqueeze(1).expand(bsize, 2)
+                c_ids = torch.clamp(class_ids, 0, pos_std_xyz.shape[0] - 1)
+                c_ids_v = torch.clamp(class_ids, 0, vel_std_xy.shape[0] - 1)
+                c_ids_s = torch.clamp(class_ids, 0, siz_std_lwh.shape[0] - 1)
+                c_ids_o = torch.clamp(class_ids, 0, ori_std.shape[0] - 1)
+                r_pos_xyz = pos_std_xyz[c_ids] ** 2                   # [B,3]
+                r_pos_v   = vel_std_xy[c_ids_v] ** 2                  # [B,2]
                 r_pos = torch.cat([r_pos_xyz, r_pos_v], dim=-1)      # [bsize, 5]
-                r_siz = (s_std[c_ids] ** 2).unsqueeze(1).expand(bsize, 3)
-                r_ori = (o_std[c_ids] ** 2).unsqueeze(1).expand(bsize, 1)
+                r_siz = siz_std_lwh[c_ids_s] ** 2                     # [B,3]
+                r_ori = (ori_std[c_ids_o] ** 2).unsqueeze(1)          # [B,1]
 
         q_siz_diag = torch.tensor(q_siz, device=self.device, dtype=dtype)
         Q_siz_base = torch.diag(q_siz_diag).unsqueeze(0).expand(bsize, -1, -1)
@@ -1172,6 +1218,41 @@ class MambaDecoupledEKF(nn.Module):
         R_ori_base = torch.diag_embed(r_ori)
 
         return Q_pos_base, R_pos_base, Q_siz_base, R_siz_base, Q_ori_base, R_ori_base
+
+    def _apply_residual_anchor(
+        self,
+        pred_cov: Tensor,
+        base_cov: Tensor,
+        min_ratio: float,
+        max_ratio: float,
+    ) -> Tensor:
+        """
+        Anchor predicted covariance to baseline via residual std scaling.
+
+        std_new = std_base * clamp(std_pred / std_base, [min_ratio, max_ratio])
+        cov_new = Corr(pred) * (std_new std_new^T)
+        """
+        eps = 1e-8
+        diag_pred = torch.clamp(pred_cov.diagonal(dim1=-2, dim2=-1), min=eps)  # [B,D]
+        diag_base = torch.clamp(base_cov.diagonal(dim1=-2, dim2=-1), min=eps)  # [B,D]
+
+        std_pred = torch.sqrt(diag_pred)
+        std_base = torch.sqrt(diag_base)
+        ratio = std_pred / torch.clamp(std_base, min=eps)
+        ratio = torch.clamp(ratio, min=min_ratio, max=max_ratio)
+        std_new = std_base * ratio
+
+        outer_pred = torch.bmm(std_pred.unsqueeze(-1), std_pred.unsqueeze(1))
+        corr = pred_cov / torch.clamp(outer_pred, min=eps)
+        D = pred_cov.shape[-1]
+        eye = torch.eye(D, device=pred_cov.device, dtype=pred_cov.dtype).unsqueeze(0)
+        corr = corr * (1.0 - eye) + eye
+
+        outer_new = torch.bmm(std_new.unsqueeze(-1), std_new.unsqueeze(1))
+        cov_new = corr * outer_new
+        cov_new = 0.5 * (cov_new + cov_new.transpose(-1, -2))
+        cov_new = cov_new + 1e-6 * eye
+        return cov_new
 
     def predict_with_mamba(
         self,
@@ -1199,12 +1280,16 @@ class MambaDecoupledEKF(nn.Module):
         """
         # Run Mamba network (O(N) operation)
         mamba_out = self.mamba(track_history, class_ids=class_ids)
+        bsize = track_history.size(0)
+        dtype = track_history.dtype
+        have_base = self.base_noise_cfg is not None
+        if have_base:
+            Q_p, R_p, Q_s, R_s, Q_o, R_o = self._get_base_noise(bsize, dtype, class_ids)
+        else:
+            Q_p = R_p = Q_s = R_s = Q_o = R_o = None
 
         if mode == "pure_dekf":
             # Bypass Mamba noise predictions, inject static DEKF physical priors
-            bsize = track_history.size(0)
-            dtype = track_history.dtype
-            Q_p, R_p, Q_s, R_s, Q_o, R_o = self._get_base_noise(bsize, dtype, class_ids)
             mamba_out.update({
                 "Q_pos": Q_p, "R_pos": R_p,
                 "Q_siz": Q_s, "R_siz": R_s,
@@ -1213,10 +1298,6 @@ class MambaDecoupledEKF(nn.Module):
             
         elif mode == "fusion":
             # State-level Variance Fusion (Strategy B: Soft-Gating via Trace constraint)
-            bsize = track_history.size(0)
-            dtype = track_history.dtype
-            Q_p, R_p, Q_s, R_s, Q_o, R_o = self._get_base_noise(bsize, dtype, class_ids)
-
             # Per-category strict_ratio: categories with agile motion (bicycle/motorcycle)
             # use a lower ratio so Mamba noise is more readily rejected when it diverges.
             fusion_cfg = self.base_noise_cfg.get("FUSION", {}) if self.base_noise_cfg else {}
@@ -1261,6 +1342,27 @@ class MambaDecoupledEKF(nn.Module):
             # numerical range than the baseline variance → trace ratio is misleading.
             # Orientation safety is provided by Q_ori fusion (above) and the
             # per-category baseline R_o accessible via pure_dekf mode when needed.
+
+        # Residual anchoring: constrain adaptive R around MCTrack priors.
+        # Equivalent to R = R_base * exp(delta)-style scaling in std space.
+        if have_base:
+            anchor_cfg = self.base_noise_cfg.get("RESIDUAL_ANCHOR", {})
+            if bool(anchor_cfg.get("ENABLED", False)):
+                min_ratio = float(anchor_cfg.get("MIN_STD_RATIO", 0.5))
+                max_ratio = float(anchor_cfg.get("MAX_STD_RATIO", 2.0))
+                targets = set(anchor_cfg.get("TARGETS", ["R_pos", "R_siz", "R_ori"]))
+                if "R_pos" in targets:
+                    mamba_out["R_pos"] = self._apply_residual_anchor(
+                        mamba_out["R_pos"], R_p, min_ratio, max_ratio,
+                    )
+                if "R_siz" in targets:
+                    mamba_out["R_siz"] = self._apply_residual_anchor(
+                        mamba_out["R_siz"], R_s, min_ratio, max_ratio,
+                    )
+                if "R_ori" in targets:
+                    mamba_out["R_ori"] = self._apply_residual_anchor(
+                        mamba_out["R_ori"], R_o, min_ratio, max_ratio,
+                    )
 
         # Execute KF predict step using the active (or fused) noise models
         pos_x, pos_P, siz_x, siz_P, ori_x, ori_P = self.kf.predict(

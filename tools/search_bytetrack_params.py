@@ -30,6 +30,16 @@ class SearchParam:
     values: List
 
 
+@dataclass
+class ConstraintSpec:
+    scope: str
+    metric: str
+    min_value: float | None = None
+    max_value: float | None = None
+    mode: str = "hard"  # hard | soft
+    weight: float = 1.0
+
+
 def load_yaml(path: str) -> Dict:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
@@ -40,7 +50,7 @@ def dump_yaml(path: str, data: Dict) -> None:
         yaml.safe_dump(data, f, sort_keys=False, allow_unicode=False)
 
 
-def load_search_space(path: str) -> Tuple[List[SearchParam], str | None]:
+def load_search_space(path: str) -> Tuple[List[SearchParam], str | None, List[ConstraintSpec]]:
     with open(path, "r", encoding="utf-8") as f:
         if path.endswith(".json"):
             obj = json.load(f)
@@ -58,8 +68,44 @@ def load_search_space(path: str) -> Tuple[List[SearchParam], str | None]:
         if not pth or not isinstance(vals, list) or len(vals) == 0:
             raise ValueError(f"Invalid search parameter entry: {p}")
         params.append(SearchParam(path=pth, values=vals))
+
+    constraints_raw = obj.get("constraints", [])
+    constraints: List[ConstraintSpec] = []
+    for c in constraints_raw:
+        scope = str(c.get("scope", "")).strip()
+        metric = str(c.get("metric", "")).strip()
+        if not scope or not metric:
+            raise ValueError(f"Invalid constraint (missing scope/metric): {c}")
+
+        min_raw = c.get("min", c.get("min_value", None))
+        max_raw = c.get("max", c.get("max_value", None))
+        if min_raw is None and max_raw is None:
+            raise ValueError(f"Invalid constraint (need min or max): {c}")
+        if min_raw is not None and max_raw is not None:
+            raise ValueError(f"Invalid constraint (min and max cannot coexist): {c}")
+
+        min_value = float(min_raw) if min_raw is not None else None
+        max_value = float(max_raw) if max_raw is not None else None
+        mode = str(c.get("mode", c.get("type", "hard"))).strip().lower()
+        if mode not in {"hard", "soft"}:
+            raise ValueError(f"Invalid constraint mode={mode}: {c}")
+        weight = float(c.get("weight", 1.0))
+        if weight < 0:
+            raise ValueError(f"Constraint weight must be >= 0: {c}")
+
+        constraints.append(
+            ConstraintSpec(
+                scope=scope,
+                metric=metric,
+                min_value=min_value,
+                max_value=max_value,
+                mode=mode,
+                weight=weight,
+            )
+        )
+
     default_objective = obj.get("objective", None)
-    return params, default_objective
+    return params, default_objective, constraints
 
 
 def _key_candidates(seg: str) -> List:
@@ -143,29 +189,80 @@ def safe_eval_expression(expr: str) -> float:
     return float(eval(compile(node, "<objective>", "eval"), {"__builtins__": {}}, {}))
 
 
+def metric_lookup(eval_obj: Dict, scope: str, metric: str) -> float:
+    if scope == "overall":
+        v = eval_obj.get("overall", {}).get(metric, float("nan"))
+    else:
+        v = eval_obj.get("per_class", {}).get(scope, {}).get(metric, float("nan"))
+    try:
+        fv = float(v)
+    except Exception:
+        return float("nan")
+    return fv
+
+
 def evaluate_objective(eval_obj: Dict, objective: str) -> float:
     # Token format: overall.idf1 or car.mota etc.
     token_pattern = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b")
 
-    def lookup(scope: str, metric: str) -> float:
-        if scope == "overall":
-            v = eval_obj.get("overall", {}).get(metric, float("nan"))
-        else:
-            v = eval_obj.get("per_class", {}).get(scope, {}).get(metric, float("nan"))
-        try:
-            fv = float(v)
-        except Exception:
-            return float("nan")
-        return fv
-
     replaced = objective
     seen_tokens = set(token_pattern.findall(objective))
     for scope, metric in seen_tokens:
-        val = lookup(scope, metric)
+        val = metric_lookup(eval_obj, scope, metric)
         if not (val == val):  # nan
             val = -1e9
         replaced = replaced.replace(f"{scope}.{metric}", f"({val})")
     return safe_eval_expression(replaced)
+
+
+def _calc_normalized_violation(value: float, c: ConstraintSpec) -> Tuple[bool, float]:
+    if not (value == value):  # nan
+        return True, 1e6
+    if c.min_value is not None:
+        if value >= c.min_value:
+            return False, 0.0
+        denom = max(abs(c.min_value), 1e-6)
+        return True, (c.min_value - value) / denom
+    # c.max_value is not None
+    if value <= c.max_value:
+        return False, 0.0
+    denom = max(abs(c.max_value), 1e-6)
+    return True, (value - c.max_value) / denom
+
+
+def evaluate_constraints(eval_obj: Dict, constraints: List[ConstraintSpec]) -> Dict:
+    details = []
+    hard_violations = []
+    soft_penalty = 0.0
+
+    for c in constraints:
+        value = metric_lookup(eval_obj, c.scope, c.metric)
+        violated, gap = _calc_normalized_violation(value, c)
+        penalty = c.weight * gap if (violated and c.mode == "soft") else 0.0
+        if violated and c.mode == "hard":
+            hard_violations.append(f"{c.scope}.{c.metric}")
+        soft_penalty += penalty
+        details.append(
+            {
+                "scope": c.scope,
+                "metric": c.metric,
+                "mode": c.mode,
+                "value": value,
+                "min": c.min_value,
+                "max": c.max_value,
+                "violated": violated,
+                "normalized_gap": gap,
+                "weight": c.weight,
+                "penalty": penalty,
+            }
+        )
+
+    return {
+        "passed_hard": len(hard_violations) == 0,
+        "hard_violations": hard_violations,
+        "soft_penalty": soft_penalty,
+        "details": details,
+    }
 
 
 def run_and_capture(cmd: List[str], cwd: str, log_path: str, quiet: bool) -> Tuple[int, str]:
@@ -253,6 +350,12 @@ def main() -> None:
     parser.add_argument("--run-dir", default="", help="Optional output directory for this search run.")
     parser.add_argument("--quiet-subprocess", action="store_true", help="Suppress trial subprocess stdout.")
     parser.add_argument("--dry-run", action="store_true", help="Only sample and print trials, do not run tracking.")
+    parser.add_argument(
+        "--hard-constraint-policy",
+        choices=["drop", "keep"],
+        default="drop",
+        help="drop=hard-constraint violation => objective=-inf; keep=still rank by penalized score.",
+    )
     args = parser.parse_args()
 
     workdir = os.path.abspath(args.workdir)
@@ -267,7 +370,7 @@ def main() -> None:
     if not os.path.exists(eval_script_path):
         raise FileNotFoundError(eval_script_path)
 
-    params, objective_from_space = load_search_space(search_space_path)
+    params, objective_from_space, constraints = load_search_space(search_space_path)
     objective = args.objective.strip() or (objective_from_space or "0.7*overall.idf1 + 0.3*overall.mota")
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -289,6 +392,8 @@ def main() -> None:
         "max_trials": args.max_trials,
         "seed": args.seed,
         "objective": objective,
+        "hard_constraint_policy": args.hard_constraint_policy,
+        "constraints": [c.__dict__ for c in constraints],
         "n_trials": len(trials),
         "created_at": stamp,
     }
@@ -297,11 +402,20 @@ def main() -> None:
 
     print(f"[SEARCH] run_dir={run_dir}")
     print(f"[SEARCH] objective={objective}")
+    print(f"[SEARCH] constraints={len(constraints)}")
     print(f"[SEARCH] trials={len(trials)}")
 
     if args.dry_run:
         for i, t in enumerate(trials):
             print(f"[DRY] trial={i:03d} params={t}")
+        if constraints:
+            print("[DRY] constraints:")
+            for c in constraints:
+                if c.min_value is not None:
+                    rule = f">= {c.min_value}"
+                else:
+                    rule = f"<= {c.max_value}"
+                print(f"[DRY]   {c.mode} {c.scope}.{c.metric} {rule} weight={c.weight}")
         return
 
     results = []
@@ -404,16 +518,33 @@ def main() -> None:
             eval_obj = json.load(f)
 
         try:
-            objective_value = evaluate_objective(eval_obj, objective)
+            objective_raw = evaluate_objective(eval_obj, objective)
         except Exception as exc:
-            objective_value = float("-inf")
+            objective_raw = float("-inf")
             print(f"[TRIAL {trial_tag}] objective parse/eval failed: {exc}")
+
+        c_eval = evaluate_constraints(eval_obj, constraints) if constraints else {
+            "passed_hard": True,
+            "hard_violations": [],
+            "soft_penalty": 0.0,
+            "details": [],
+        }
+        objective_penalized = objective_raw - float(c_eval["soft_penalty"])
+        if (not c_eval["passed_hard"]) and args.hard_constraint_policy == "drop":
+            objective_value = float("-inf")
+            status = "constraint_failed"
+        else:
+            objective_value = objective_penalized
+            status = "ok"
 
         trial_result = {
             "trial": trial_tag,
             "params": trial_params,
-            "status": "ok",
+            "status": status,
             "objective": objective_value,
+            "objective_raw": objective_raw,
+            "objective_penalized": objective_penalized,
+            "constraint_eval": c_eval,
             "result_json": result_json_path,
             "eval_json": eval_json,
             "overall": eval_obj.get("overall", {}),
@@ -422,6 +553,8 @@ def main() -> None:
 
         print(
             f"[TRIAL {trial_tag}] objective={objective_value:.6f} "
+            f"raw={objective_raw:.6f} penalty={c_eval['soft_penalty']:.6f} "
+            f"hard_ok={c_eval['passed_hard']} "
             f"overall.idf1={trial_result['overall'].get('idf1', float('nan'))} "
             f"overall.mota={trial_result['overall'].get('mota', float('nan'))}",
             flush=True,
@@ -449,4 +582,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

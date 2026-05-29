@@ -158,13 +158,45 @@ DEKF_BASE_NOISE:
 
   # Base Measurement Noise from noise.log statistics (Standard deviations → squared to variances)
   R:
-    POS_STD: [0.52, 0.27, 0.55, 0.86, 1.26, 0.91, 0.64]  # per-cat [x,y] from noise.log
-    SIZ_STD: [0.16, 0.05, 0.09, 0.13, 0.67, 1.05, 0.46]  # per-cat size std
+    # Axis-aware per-category std from docs/noise.log
+    # Order: [car, pedestrian, bicycle, motorcycle, bus, trailer, truck]
+    POS_STD_XY:
+      - [0.5210, 0.5045]
+      - [0.2745, 0.2731]
+      - [0.5562, 0.5444]
+      - [0.8646, 0.8695]
+      - [1.3037, 1.2327]
+      - [0.9590, 0.8735]
+      - [0.6580, 0.6269]
+    SIZ_STD_LW:
+      - [0.2417, 0.0799]
+      - [0.0567, 0.0422]
+      - [0.1118, 0.0661]
+      - [0.1866, 0.0860]
+      - [1.2094, 0.1465]
+      - [1.9336, 0.1782]
+      - [0.7685, 0.1569]
     ORI_STD: [0.50, 0.91, 0.86, 0.96, 0.48, 0.53, 0.45]  # per-cat yaw std
-    VEL_STD: [3.0, 1.5, 1.0, 1.5, 5.0, 5.0, 3.0]         # per-cat vel (high=don't trust)
+    VEL_STD_XY:
+      - [0.7551, 0.7017]
+      - [0.2494, 0.2409]
+      - [0.3933, 0.3942]
+      - [0.8261, 0.8865]
+      - [1.2134, 1.1046]
+      - [0.4770, 0.3982]
+      - [0.6409, 0.6169]
     MEAS_MULTIPLIER: 0.7  # Temporal coherency smoothing factor
 
   # Fusion mode: per-category strict_ratio controls how aggressively Mamba noise
   # is trusted over baseline. Higher = more tolerance for Mamba outlier traces.
   FUSION:
     STRICT_RATIO: {0: 2.0, 1: 2.0, 2: 1.5, 3: 1.5, 4: 2.0, 5: 2.0, 6: 2.0}
+
+  # Residual anchoring:
+  # constrain learned measurement covariance around MCTrack priors in std-space.
+  # Equivalent to R = R_base * exp(delta) with bounded delta.
+  RESIDUAL_ANCHOR:
+    ENABLED: True
+    TARGETS: ["R_pos", "R_siz", "R_ori"]
+    MIN_STD_RATIO: 0.60
+    MAX_STD_RATIO: 1.80

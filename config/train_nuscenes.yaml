@@ -66,10 +66,32 @@ TRAINING:
   AUTO_UNSEAL_EPOCH: 25          # epoch at which to auto-toggle cost to "full"
   INFERENCE_CONFIG: config/nuscenes.yaml   # which inference config to update
   ROLLOUT_STEPS: 4               # KF auto-regressive rollout depth (1 = single-step)
-  NOISE_MAP:                     # Category-specific noise injection
+  NOISE_MAP:                     # Category-specific noise injection (from docs/noise.log)
     # Order: [Car, Pedestrian, Bicycle, Motorcycle, Bus, Trailer, Truck]
-    POS_STD: [0.51, 0.27, 0.55, 0.86, 1.26, 0.91, 0.64]
-    SIZ_STD: [0.16, 0.05, 0.09, 0.13, 0.67, 1.05, 0.46]
+    POS_STD_XY:
+      - [0.5210, 0.5045]
+      - [0.2745, 0.2731]
+      - [0.5562, 0.5444]
+      - [0.8646, 0.8695]
+      - [1.3037, 1.2327]
+      - [0.9590, 0.8735]
+      - [0.6580, 0.6269]
+    SIZ_STD_LW:
+      - [0.2417, 0.0799]
+      - [0.0567, 0.0422]
+      - [0.1118, 0.0661]
+      - [0.1866, 0.0860]
+      - [1.2094, 0.1465]
+      - [1.9336, 0.1782]
+      - [0.7685, 0.1569]
+    VEL_STD_XY:
+      - [0.7551, 0.7017]
+      - [0.2494, 0.2409]
+      - [0.3933, 0.3942]
+      - [0.8261, 0.8865]
+      - [1.2134, 1.1046]
+      - [0.4770, 0.3982]
+      - [0.6409, 0.6169]
     ORI_STD: [0.50, 0.91, 0.86, 0.96, 0.48, 0.53, 0.45]
     MEAS_MULTIPLIER: 0.7
 
@@ -79,8 +101,12 @@ LOSS:
   W_SIZ: 1.0            # reduced: raw_r_siz init is very negative, don't amplify
   W_ORI: 1.5            # Von Mises NLL range ~0.1-1.0, no need for 50x
   W_VEL: 0.3            # velocity NLL weight (≤ W_POS; constant-vel GT is approximate)
+  W_NIS: 0.1            # NIS calibration weight (innovation consistency)
   VEL_WARMUP_EPOCHS: 1  # delay vel NLL for first N epochs after uncertainty-unseal
   LAMBDA_CONTRAST: 0.3
   INFONCE_TEMPERATURE: 0.07
+  HARD_NEGATIVE_TOPK: 32
+  # Class reweighting for hard/noisy categories:
+  # [car, pedestrian, bicycle, motorcycle, bus, trailer, truck]
+  CLASS_WEIGHTS: [1.0, 1.1, 1.3, 1.5, 1.2, 1.4, 1.1]
   PHYSICS_SCALE: 5.0    # reduced from 20: let pos gradient survive against siz
-

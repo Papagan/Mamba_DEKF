@@ -35,6 +35,7 @@ def von_mises_loss(
     pred_yaw: torch.Tensor,   # [B] or [B, 1]
     gt_yaw: torch.Tensor,     # [B] or [B, 1]
     kappa: torch.Tensor,      # [B, 1] — concentration parameter
+    sample_weights: torch.Tensor = None,  # [B]
 ) -> torch.Tensor:
     """
     Von Mises negative log-likelihood for angular predictions.
@@ -68,7 +69,10 @@ def von_mises_loss(
     k_term = k                                              # [B]
 
     nll_per_sample = cos_term + log_i0e + k_term            # [B]
-    return nll_per_sample.mean()
+    if sample_weights is None:
+        return nll_per_sample.mean()
+    w = sample_weights / (sample_weights.sum() + 1e-8)
+    return (nll_per_sample * w).sum()
 
 
 # ======================================================================
@@ -82,6 +86,7 @@ def kalman_nll_loss(
     H: torch.Tensor,           # [m, n]       — observation matrix (constant)
     R_pred: torch.Tensor,      # [B, m, m]   — measurement noise covariance (PSD)
     eps: float = 1e-5,
+    sample_weights: torch.Tensor = None,  # [B]
 ) -> torch.Tensor:
     """
     Gaussian negative log-likelihood for a Kalman filter prediction.
@@ -147,7 +152,50 @@ def kalman_nll_loss(
 
     # ---- per-sample NLL + guard, then mean over batch ----
     nll_per_sample = 0.5 * (logdet + quad_form) + logdet_guard
-    return nll_per_sample.mean()
+    if sample_weights is None:
+        return nll_per_sample.mean()
+    w = sample_weights / (sample_weights.sum() + 1e-8)
+    return (nll_per_sample * w).sum()
+
+
+def kalman_nis_per_sample(
+    z_gt: torch.Tensor,        # [B, m]
+    x_pred: torch.Tensor,      # [B, n, 1]
+    P_pred: torch.Tensor,      # [B, n, n]
+    H: torch.Tensor,           # [m, n]
+    R_pred: torch.Tensor,      # [B, m, m]
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    """
+    Compute per-sample NIS = y^T S^{-1} y (no reduction).
+    """
+    B = z_gt.shape[0]
+    m = H.shape[0]
+    dev = z_gt.device
+    H = H.to(device=dev)
+
+    z = z_gt.unsqueeze(-1)                                    # [B, m, 1]
+    H_batch = H.unsqueeze(0).expand(B, -1, -1)                # [B, m, n]
+    y = z - torch.bmm(H_batch, x_pred)                        # [B, m, 1]
+
+    S = torch.bmm(torch.bmm(H_batch, P_pred), H_batch.transpose(-1, -2)) + R_pred
+    I = torch.eye(m, device=dev, dtype=S.dtype).unsqueeze(0).expand(B, -1, -1)
+    S_reg = S + eps * I
+
+    try:
+        L = torch.linalg.cholesky(S_reg)
+        sol = torch.cholesky_solve(y, L)
+    except RuntimeError:
+        S_reg = S + (eps * 100) * I
+        L = torch.linalg.cholesky(S_reg)
+        sol = torch.cholesky_solve(y, L)
+
+    nis = torch.bmm(y.transpose(-1, -2), sol).squeeze(-1).squeeze(-1)  # [B]
+    return nis
+
+
+def wrap_to_pi_torch(x: torch.Tensor) -> torch.Tensor:
+    return x - 2.0 * math.pi * torch.round(x / (2.0 * math.pi))
 
 
 # ======================================================================
@@ -199,12 +247,14 @@ class StatePredictionLoss(nn.Module):
         w_siz: float = 0.5,
         w_ori: float = 1.0,
         w_vel: float = 0.3,
+        w_nis: float = 0.0,
     ) -> None:
         super().__init__()
         self.w_pos = w_pos
         self.w_siz = w_siz
         self.w_ori = w_ori
         self.w_vel = w_vel
+        self.w_nis = w_nis
 
         # H_pos: [3, 6] — selects [x, y, z] from 6-dim state for NLL loss.
         # The KF update uses a 5D observation [x,y,z,vx,vy], but the NLL loss
@@ -221,6 +271,7 @@ class StatePredictionLoss(nn.Module):
 
         # H_siz: [3, 3] — identity (observation = state for size filter)
         self.register_buffer("H_siz", torch.eye(3))
+        self.register_buffer("H_ori", torch.tensor([[1.0, 0.0]]))
 
     def forward(
         self,
@@ -239,12 +290,20 @@ class StatePredictionLoss(nn.Module):
         kappa_ori: torch.Tensor = None,  # [B, 1] — Von Mises concentration
         gt_next_vel: torch.Tensor = None,  # [B, 2] — GT velocity for vel NLL
         in_warmup: bool = False,
+        class_ids: torch.Tensor = None,     # [B]
+        class_weights: torch.Tensor = None,  # [C]
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
         Returns:
             loss   : scalar tensor (differentiable)
             detail : dict with individual loss values for logging
         """
+        sample_weights = None
+        if class_ids is not None and class_weights is not None:
+            cids = torch.clamp(class_ids, 0, class_weights.shape[0] - 1)
+            sample_weights = class_weights[cids]
+            sample_weights = sample_weights / (sample_weights.mean() + 1e-8)
+
         # Position: Kalman NLL (on xyz sub-block)
         loss_pos = kalman_nll_loss(
             z_gt=gt_next_pos,
@@ -252,6 +311,7 @@ class StatePredictionLoss(nn.Module):
             P_pred=pos_P_pred,
             H=self.H_pos,
             R_pred=R_pos[:, :3, :3],  # [B,3,3] position sub-block of [B,5,5] R_pos
+            sample_weights=sample_weights,
         )
 
         # Velocity: Kalman NLL (on vx,vy sub-block).
@@ -265,6 +325,7 @@ class StatePredictionLoss(nn.Module):
                 P_pred=pos_P_pred,
                 H=self.H_vel,
                 R_pred=R_pos[:, 3:5, 3:5],  # [B,2,2] velocity sub-block
+                sample_weights=sample_weights,
             )
             if not torch.isnan(loss_vel) and not torch.isinf(loss_vel):
                 loss_pos = loss_pos + self.w_vel * loss_vel
@@ -277,29 +338,83 @@ class StatePredictionLoss(nn.Module):
             P_pred=siz_P_pred,
             H=self.H_siz,
             R_pred=R_siz,
+            sample_weights=sample_weights,
         )
 
         # Orientation: during warmup use angle_loss (bounded, no κ shortcut);
         # after warmup use Von Mises NLL with adaptive κ.
         if in_warmup:
-            loss_ori = angle_loss(
-                pred_yaw=ori_x_pred[:, 0, 0],
-                gt_yaw=gt_next_ori.squeeze(-1),
-            )
+            ori_per_sample = 1.0 - torch.cos(ori_x_pred[:, 0, 0] - gt_next_ori.squeeze(-1))
+            if sample_weights is None:
+                loss_ori = ori_per_sample.mean()
+            else:
+                w = sample_weights / (sample_weights.sum() + 1e-8)
+                loss_ori = (ori_per_sample * w).sum()
         else:
             loss_ori = von_mises_loss(
                 pred_yaw=ori_x_pred[:, 0, 0],
                 gt_yaw=gt_next_ori,
                 kappa=kappa_ori,
+                sample_weights=sample_weights,
             )
 
-        loss = self.w_pos * loss_pos + self.w_siz * loss_siz + self.w_ori * loss_ori
+        loss_nis = torch.tensor(0.0, device=pos_x_pred.device)
+        if self.w_nis > 0:
+            nis_pos = kalman_nis_per_sample(
+                z_gt=gt_next_pos, x_pred=pos_x_pred, P_pred=pos_P_pred,
+                H=self.H_pos, R_pred=R_pos[:, :3, :3],
+            )  # [B]
+            nis_siz = kalman_nis_per_sample(
+                z_gt=gt_next_siz, x_pred=siz_x_pred, P_pred=siz_P_pred,
+                H=self.H_siz, R_pred=R_siz,
+            )  # [B]
+
+            nis_terms = [
+                F.smooth_l1_loss(nis_pos / 3.0, torch.ones_like(nis_pos), reduction="none"),
+                F.smooth_l1_loss(nis_siz / 3.0, torch.ones_like(nis_siz), reduction="none"),
+            ]
+            if gt_next_vel is not None:
+                nis_vel = kalman_nis_per_sample(
+                    z_gt=gt_next_vel, x_pred=pos_x_pred, P_pred=pos_P_pred,
+                    H=self.H_vel, R_pred=R_pos[:, 3:5, 3:5],
+                )  # [B]
+                nis_terms.append(
+                    F.smooth_l1_loss(nis_vel / 2.0, torch.ones_like(nis_vel), reduction="none")
+                )
+
+            # Orientation NIS (wrap innovation on circle).
+            pred_yaw = ori_x_pred[:, 0, 0]
+            gt_yaw = gt_next_ori.squeeze(-1)
+            wrapped_diff = wrap_to_pi_torch(gt_yaw - pred_yaw)
+            z_ori_adj = (pred_yaw + wrapped_diff).unsqueeze(-1)  # [B,1]
+            nis_ori = kalman_nis_per_sample(
+                z_gt=z_ori_adj, x_pred=ori_x_pred, P_pred=ori_P_pred,
+                H=self.H_ori, R_pred=R_ori,
+            )  # [B]
+            nis_terms.append(
+                F.smooth_l1_loss(nis_ori, torch.ones_like(nis_ori), reduction="none")
+            )
+
+            nis_stack = torch.stack(nis_terms, dim=0).mean(dim=0)  # [B]
+            if sample_weights is None:
+                loss_nis = nis_stack.mean()
+            else:
+                w = sample_weights / (sample_weights.sum() + 1e-8)
+                loss_nis = (nis_stack * w).sum()
+
+        loss = (
+            self.w_pos * loss_pos
+            + self.w_siz * loss_siz
+            + self.w_ori * loss_ori
+            + self.w_nis * loss_nis
+        )
 
         detail = {
             "loss_pos": loss_pos.item(),
             "loss_siz": loss_siz.item(),
             "loss_ori": loss_ori.item(),
             "loss_vel": loss_vel_val,
+            "loss_nis": loss_nis.item(),
         }
         return loss, detail
 
@@ -319,9 +434,10 @@ class InfoNCELoss(nn.Module):
     averaged over all anchors that have at least one positive.
     """
 
-    def __init__(self, temperature: float = 0.07) -> None:
+    def __init__(self, temperature: float = 0.07, hard_negative_topk: int = 0) -> None:
         super().__init__()
         self.temperature = temperature
+        self.hard_negative_topk = hard_negative_topk
 
     def forward(
         self,
@@ -361,13 +477,22 @@ class InfoNCELoss(nn.Module):
         sim_stable = sim_matrix - sim_max.detach()
 
         self_mask = ~torch.eye(B, dtype=torch.bool, device=device)
-        exp_sim = torch.exp(sim_stable) * self_mask.float()
-        log_denom = torch.log(exp_sim.sum(dim=1) + 1e-8)
+        exp_pos = torch.exp(sim_stable) * pos_mask.float()             # [B, B]
+        pos_sum = exp_pos.sum(dim=1)                                   # [B]
 
-        exp_pos = torch.exp(sim_stable) * pos_mask.float()
-        log_pos_sum = torch.log(exp_pos.sum(dim=1) + 1e-8)
+        neg_mask = self_mask & (~pos_mask)
+        exp_neg = torch.exp(sim_stable) * neg_mask.float()             # [B, B]
+        if self.hard_negative_topk > 0:
+            neg_logits = sim_stable.masked_fill(~neg_mask, float("-inf"))
+            k = min(self.hard_negative_topk, B - 1)
+            topk_vals, _ = torch.topk(neg_logits, k=k, dim=1)
+            topk_vals = topk_vals.masked_fill(torch.isinf(topk_vals), float("-inf"))
+            hard_neg_sum = torch.exp(topk_vals).sum(dim=1)             # [B]
+            denom = pos_sum + hard_neg_sum + 1e-8
+        else:
+            denom = pos_sum + exp_neg.sum(dim=1) + 1e-8
 
-        loss_per_anchor = log_denom - log_pos_sum  # [B]
+        loss_per_anchor = -torch.log(pos_sum / denom + 1e-8)  # [B]
         loss = loss_per_anchor[has_positive].mean()
 
         detail = {
@@ -397,15 +522,19 @@ class JointLoss(nn.Module):
         w_siz: float = 0.5,
         w_ori: float = 1.0,
         w_vel: float = 0.3,
+        w_nis: float = 0.0,
         lambda_contrast: float = 0.1,
         temperature: float = 0.07,
         physics_scale: float = 50.0,
+        hard_negative_topk: int = 0,
+        class_weights: list = None,
     ) -> None:
         super().__init__()
-        self.state_loss = StatePredictionLoss(w_pos, w_siz, w_ori, w_vel)
-        self.contrastive_loss = InfoNCELoss(temperature)
+        self.state_loss = StatePredictionLoss(w_pos, w_siz, w_ori, w_vel, w_nis)
+        self.contrastive_loss = InfoNCELoss(temperature, hard_negative_topk=hard_negative_topk)
         self.lambda_contrast = lambda_contrast
         self.physics_scale = physics_scale
+        self.class_weights = class_weights
 
     def forward(
         self,
@@ -426,12 +555,19 @@ class JointLoss(nn.Module):
         kappa_ori: torch.Tensor = None,  # [B, 1]
         gt_next_vel: torch.Tensor = None,  # [B, 2]
         in_warmup: bool = False,
+        class_ids: torch.Tensor = None,  # [B]
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
         Returns:
             loss   : scalar tensor for backward()
             detail : dict with all sub-loss values
         """
+        class_weights_tensor = None
+        if self.class_weights is not None:
+            class_weights_tensor = torch.tensor(
+                self.class_weights, device=pos_x_pred.device, dtype=pos_x_pred.dtype,
+            )
+
         loss_state, detail_state = self.state_loss(
             pos_x_pred, pos_P_pred,
             siz_x_pred, siz_P_pred,
@@ -441,6 +577,8 @@ class JointLoss(nn.Module):
             kappa_ori=kappa_ori,
             gt_next_vel=gt_next_vel,
             in_warmup=in_warmup,
+            class_ids=class_ids,
+            class_weights=class_weights_tensor,
         )
 
         # Contrastive loss only on step 0 (embeddings not None).
