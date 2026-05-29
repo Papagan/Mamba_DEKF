@@ -661,6 +661,12 @@ class Base3DTracker:
                 matched_bboxes.append(det_bbox)
                 matched_traj_full_set.add(traj_idx)
                 matched_high_sub_set.add(high_sub_idx)
+            if _dbg:
+                print(
+                    f"[TRK] frame={frame_info.frame_id} stage1 "
+                    f"high_dets={len(high_dets)} matched={len(match_res_1)}",
+                    flush=True,
+                )
 
             # ---- Stage 2: unmatched trajs vs low-score dets (relaxed) ----
             unmatched_traj_full_indices = [
@@ -710,6 +716,12 @@ class Base3DTracker:
                 matched_track_ids.append(track_id)
                 matched_bboxes.append(det_bbox)
                 matched_traj_full_set.add(traj_full_idx)
+            if _dbg:
+                print(
+                    f"[TRK] frame={frame_info.frame_id} stage2 "
+                    f"low_dets={len(low_dets)} matched={len(match_res_2)}",
+                    flush=True,
+                )
 
             # ---- coast: trajectories that missed both stages ----
             for i in range(trajs_cnt):
@@ -735,6 +747,14 @@ class Base3DTracker:
                     self.all_trajs[self.track_id_counter] = new_traj
                     self._init_kf_state(self.track_id_counter, det_bbox)
                     self.track_id_counter += 1
+            if _dbg:
+                births = len(high_dets) - len(matched_high_sub_set)
+                coasts = trajs_cnt - len(matched_traj_full_set)
+                print(
+                    f"[TRK] frame={frame_info.frame_id} births={births} coasts={coasts} "
+                    f"matched_total={len(matched_track_ids)}",
+                    flush=True,
+                )
 
         else:
             # ================================================================

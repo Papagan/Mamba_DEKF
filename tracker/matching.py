@@ -4,6 +4,7 @@
 
 import numpy as np
 import lap
+import os
 
 from tracker.cost_function import *
 from utils.utils import mask_tras_dets
@@ -353,6 +354,13 @@ def match_trajs_and_dets_uncertainty_aware(
     if len(trajs) == 0 or len(dets) == 0:
         return np.empty((0, 2), dtype=int), np.empty((0,), dtype=float)
 
+    # Geometric mode is intended as a stable fallback during early training
+    # or debugging. Route directly to the original geometric matcher so
+    # uncertainty/embedding branches cannot suppress all matches.
+    cost_mode = cfg.get("THRESHOLD", {}).get("BEV", {}).get("COST_MODE", "geometric")
+    if cost_mode != "full":
+        return match_trajs_and_dets(trajs, dets, cfg)
+
     # fallback to original if no Mamba outputs available
     has_mamba = (trk_embeddings is not None and det_embeddings is not None)
     if not has_mamba:
@@ -381,6 +389,17 @@ def match_trajs_and_dets_uncertainty_aware(
 
     if min(cost_matrix.shape) > 0:
         matching_mode = cfg["MATCHING"]["BEV"]["MATCHING_MODE"]
+        dbg_assoc = os.environ.get("DEBUG_ASSOC", "")
+        if dbg_assoc:
+            finite_mask = np.isfinite(trans_cost_matrix)
+            finite_count = int(finite_mask.sum())
+            total_count = int(trans_cost_matrix.size)
+            all_inf_rows = int(np.sum(np.all(~finite_mask, axis=2)))
+            print(
+                f"[ASSOC] mode={matching_mode} trajs={len(trajs)} dets={len(dets)} "
+                f"finite={finite_count}/{total_count} all_inf_rows={all_inf_rows}",
+                flush=True,
+            )
 
         # ---- Uncertainty-adaptive matching gate ----
         # Wider gate when KF is uncertain (high P trace), tighter when confident.
@@ -395,6 +414,11 @@ def match_trajs_and_dets_uncertainty_aware(
         adaptive_thresholds = [v * unc_scale for v in (
             base_thresholds.values() if isinstance(base_thresholds, dict) else base_thresholds
         )]
+        if dbg_assoc:
+            print(
+                f"[ASSOC] unc_scale={unc_scale:.3f} thresholds={adaptive_thresholds}",
+                flush=True,
+            )
 
         if matching_mode == "Hungarian":
             m_det, m_tra, um_det, um_tra, costs = Hungarian(
