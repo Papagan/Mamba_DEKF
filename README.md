@@ -507,4 +507,17 @@ Final results are written under `results/nuscenes/<timestamp>/result.json`.
   year={2024}
 }
 ```
-
+## 自动寻优
+  python tools/search_bytetrack_params.py \
+    --base-config config/nuscenes.yaml \
+    --search-space tools/bytetrack_search_space.nuscenes.json \
+    --dataset nuscenes \
+    --process 1 \
+    --mode random \
+    --max-trials 20 \
+    --seed 42 \
+    --dataroot /root/autodl-tmp/data/nuscenes/datasets/ \
+    --version v1.0-trainval \
+    --eval-set val \
+    --dist-th 2.0 \
+    --score-thr 0.0
