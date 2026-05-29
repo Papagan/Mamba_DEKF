@@ -9,6 +9,7 @@ import argparse
 import os
 import time
 import multiprocessing
+import math
 from tqdm import tqdm
 from datetime import datetime
 from functools import partial
@@ -22,6 +23,75 @@ from evaluation.static_evaluation.waymo.eval import eval_waymo
 from utils.kitti_utils import save_results_kitti
 from utils.nusc_utils import save_results_nuscenes, save_results_nuscenes_for_motion
 from utils.waymo_utils.convert_result import save_results_waymo
+
+
+def _print_nuscenes_result_diagnostics(results_path):
+    with open(results_path, "r", encoding="utf-8") as f:
+        saved = json.load(f)
+
+    results = saved.get("results", {})
+    sample_count = len(results)
+    nonempty_samples = sum(1 for boxes in results.values() if boxes)
+    total_boxes = sum(len(boxes) for boxes in results.values())
+    print(
+        f"[SAVE DIAG] samples={sample_count} nonempty_samples={nonempty_samples} "
+        f"boxes={total_boxes}"
+    )
+
+    class_counts = {}
+    invalid_counts = {
+        "score_nonfinite": 0,
+        "translation_nonfinite": 0,
+        "size_nonfinite": 0,
+        "rotation_nonfinite": 0,
+        "velocity_nonfinite": 0,
+    }
+    score_stats = {}
+    first_examples = []
+
+    for sample_token, boxes in results.items():
+        for box in boxes:
+            cls = box.get("tracking_name", "UNKNOWN")
+            class_counts[cls] = class_counts.get(cls, 0) + 1
+
+            score = box.get("tracking_score", None)
+            if not isinstance(score, (int, float)) or not math.isfinite(score):
+                invalid_counts["score_nonfinite"] += 1
+            else:
+                stat = score_stats.setdefault(cls, {"min": score, "max": score})
+                stat["min"] = min(stat["min"], score)
+                stat["max"] = max(stat["max"], score)
+
+            for key, invalid_key in [
+                ("translation", "translation_nonfinite"),
+                ("size", "size_nonfinite"),
+                ("rotation", "rotation_nonfinite"),
+                ("velocity", "velocity_nonfinite"),
+            ]:
+                values = box.get(key, [])
+                if (
+                    not isinstance(values, list)
+                    or any((not isinstance(v, (int, float)) or not math.isfinite(v)) for v in values)
+                ):
+                    invalid_counts[invalid_key] += 1
+
+            if len(first_examples) < 5:
+                first_examples.append(
+                    {
+                        "sample_token": sample_token,
+                        "tracking_name": cls,
+                        "tracking_id": box.get("tracking_id"),
+                        "tracking_score": box.get("tracking_score"),
+                        "translation": box.get("translation"),
+                        "size": box.get("size"),
+                    }
+                )
+
+    print(f"[SAVE DIAG] class_counts={class_counts}")
+    print(f"[SAVE DIAG] invalid_counts={invalid_counts}")
+    print(f"[SAVE DIAG] score_stats={score_stats}")
+    for idx, example in enumerate(first_examples):
+        print(f"[SAVE DIAG] example_{idx}={example}")
 
 
 def run(scene_id, scenes_data, cfg, args, tracking_results):
@@ -187,6 +257,7 @@ if __name__ == "__main__":
                               f"{_bb.global_xyz_lwh_yaw_fusion[1]:.1f},"
                               f"{_bb.global_xyz_lwh_yaw_fusion[2]:.1f}] "
                               f"yaw_fusion={getattr(_bb, 'global_yaw_fusion', 'MISSING')}")
+        _print_nuscenes_result_diagnostics(_res_file)
         save_results_nuscenes_for_motion(tracking_results, save_path)
         if args.eval:
             eval_nusc(cfg)
