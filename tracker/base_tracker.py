@@ -133,6 +133,11 @@ class Base3DTracker:
         self.mamba_ekf.eval()
 
         self.embed_dim: int = mamba_cfg["EMBED_DIM"]
+        print(
+            f"[Base3DTracker] FILTER_MODE={self.filter_mode} "
+            f"BEV_COST_MODE={self.cfg.get('THRESHOLD', {}).get('BEV', {}).get('COST_MODE', 'unknown')}",
+            flush=True,
+        )
 
         # ---- per-track KF state storage ----
         # Keyed by track_id → dict of tensors on device

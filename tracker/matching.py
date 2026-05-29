@@ -395,9 +395,19 @@ def match_trajs_and_dets_uncertainty_aware(
             finite_count = int(finite_mask.sum())
             total_count = int(trans_cost_matrix.size)
             all_inf_rows = int(np.sum(np.all(~finite_mask, axis=2)))
+            finite_vals = trans_cost_matrix[finite_mask]
+            if finite_vals.size > 0:
+                finite_min = float(np.min(finite_vals))
+                finite_max = float(np.max(finite_vals))
+                finite_mean = float(np.mean(finite_vals))
+            else:
+                finite_min = float("inf")
+                finite_max = float("inf")
+                finite_mean = float("inf")
             print(
                 f"[ASSOC] mode={matching_mode} trajs={len(trajs)} dets={len(dets)} "
-                f"finite={finite_count}/{total_count} all_inf_rows={all_inf_rows}",
+                f"finite={finite_count}/{total_count} all_inf_rows={all_inf_rows} "
+                f"cost_min={finite_min:.4f} cost_mean={finite_mean:.4f} cost_max={finite_max:.4f}",
                 flush=True,
             )
 
@@ -415,8 +425,22 @@ def match_trajs_and_dets_uncertainty_aware(
             base_thresholds.values() if isinstance(base_thresholds, dict) else base_thresholds
         )]
         if dbg_assoc:
+            cls_hits = []
+            for cls_idx, thr in enumerate(adaptive_thresholds):
+                cls_cost = trans_cost_matrix[cls_idx]
+                cls_finite = np.isfinite(cls_cost)
+                cls_total = int(cls_finite.sum())
+                if cls_total == 0:
+                    cls_hits.append(f"c{cls_idx}:0/0@{thr:.2f}")
+                    continue
+                cls_good = int(np.sum(cls_cost[cls_finite] <= thr))
+                cls_hits.append(f"c{cls_idx}:{cls_good}/{cls_total}@{thr:.2f}")
             print(
                 f"[ASSOC] unc_scale={unc_scale:.3f} thresholds={adaptive_thresholds}",
+                flush=True,
+            )
+            print(
+                "[ASSOC] below-threshold " + " ".join(cls_hits),
                 flush=True,
             )
 
