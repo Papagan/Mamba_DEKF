@@ -742,19 +742,31 @@ def main():
             logger.info(f"  New best model → {best_path} (val_loss={val_total:.4f})")
 
         # ---- Auto-unseal: toggle inference cost from "geometric" → "full" ----
+        # Default behavior is dry-run to avoid mutating source config files.
+        # Set TRAINING.AUTO_UNSEAL_WRITE_BACK=true to restore legacy write-back.
         auto_unseal_epoch = train_cfg.get("AUTO_UNSEAL_EPOCH", 0)
         if auto_unseal_epoch > 0 and (epoch + 1) == auto_unseal_epoch:
+            auto_unseal_write_back = bool(train_cfg.get("AUTO_UNSEAL_WRITE_BACK", False))
             inf_cfg_path = train_cfg.get("INFERENCE_CONFIG", "config/nuscenes.yaml")
             if os.path.exists(inf_cfg_path):
                 with open(inf_cfg_path, "r") as f:
                     inf_cfg = yaml.safe_load(f)
                 old_mode = inf_cfg.get("THRESHOLD", {}).get("BEV", {}).get("COST_MODE", "unknown")
                 inf_cfg.setdefault("THRESHOLD", {}).setdefault("BEV", {})["COST_MODE"] = "full"
-                with open(inf_cfg_path, "w") as f:
-                    yaml.safe_dump(inf_cfg, f, default_flow_style=False, sort_keys=False)
-                logger.info(
-                    f"  *** AUTO-UNSEAL: {inf_cfg_path} COST_MODE: {old_mode} → full ***"
-                )
+                if auto_unseal_write_back:
+                    with open(inf_cfg_path, "w") as f:
+                        yaml.safe_dump(inf_cfg, f, default_flow_style=False, sort_keys=False)
+                    logger.info(
+                        f"  *** AUTO-UNSEAL: {inf_cfg_path} COST_MODE: {old_mode} → full ***"
+                    )
+                else:
+                    preview_path = os.path.join(save_dir, "auto_unseal_preview.yaml")
+                    with open(preview_path, "w") as f:
+                        yaml.safe_dump(inf_cfg, f, default_flow_style=False, sort_keys=False)
+                    logger.info(
+                        "  *** AUTO-UNSEAL (dry-run): source config unchanged; "
+                        f"preview saved to {preview_path} (COST_MODE: {old_mode} → full) ***"
+                    )
             else:
                 logger.warning(
                     f"  AUTO-UNSEAL skipped: {inf_cfg_path} not found"

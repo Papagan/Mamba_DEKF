@@ -202,6 +202,12 @@ def eval_one_class_iterative(
     frame_count = 0
     gt_total = 0
     pred_total = 0
+    # motmetrics (with some pandas versions) expects numeric OId/HId.
+    # Keep stable per-class integer ids for GT and prediction objects.
+    gt_id_map: Dict[str, int] = {}
+    pred_id_map: Dict[str, int] = {}
+    gt_next_id = 0
+    pred_next_id = 0
 
     for scene_name, sample_tokens in iter_sample_tokens_by_scene(nusc, eval_scene_names):
         for sample_token in sample_tokens:
@@ -219,11 +225,21 @@ def eval_one_class_iterative(
             )
             dists = build_distance_matrix(gt_objs, pred_objs, dist_th)
 
-            acc.update(
-                [o.obj_id for o in gt_objs],
-                [o.obj_id for o in pred_objs],
-                dists,
-            )
+            gt_ids: List[int] = []
+            for o in gt_objs:
+                if o.obj_id not in gt_id_map:
+                    gt_id_map[o.obj_id] = gt_next_id
+                    gt_next_id += 1
+                gt_ids.append(gt_id_map[o.obj_id])
+
+            pred_ids: List[int] = []
+            for o in pred_objs:
+                if o.obj_id not in pred_id_map:
+                    pred_id_map[o.obj_id] = pred_next_id
+                    pred_next_id += 1
+                pred_ids.append(pred_id_map[o.obj_id])
+
+            acc.update(gt_ids, pred_ids, dists)
 
             frame_count += 1
             gt_total += len(gt_objs)
@@ -382,4 +398,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

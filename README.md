@@ -507,17 +507,60 @@ Final results are written under `results/nuscenes/<timestamp>/result.json`.
   year={2024}
 }
 ```
-## 自动寻优
-  python tools/search_bytetrack_params.py \
-    --base-config config/nuscenes.yaml \
-    --search-space tools/bytetrack_search_space.nuscenes.json \
-    --dataset nuscenes \
-    --process 1 \
-    --mode random \
-    --max-trials 20 \
-    --seed 42 \
-    --dataroot /root/autodl-tmp/data/nuscenes/datasets/ \
-    --version v1.0-trainval \
-    --eval-set val \
-    --dist-th 2.0 \
-    --score-thr 0.0
+
+## 14. ByteTrack 参数自动寻优
+
+脚本：`tools/search_bytetrack_params.py`  
+默认搜索空间：`tools/bytetrack_search_space.nuscenes.json`
+
+### 14.1 快速开始
+
+```bash
+python tools/search_bytetrack_params.py \
+  --base-config config/nuscenes.yaml \
+  --search-space tools/bytetrack_search_space.nuscenes.json \
+  --dataset nuscenes \
+  --process 1 \
+  --mode random \
+  --max-trials 20 \
+  --seed 42 \
+  --dataroot /root/autodl-tmp/data/nuscenes/datasets/ \
+  --version v1.0-trainval \
+  --eval-set val \
+  --dist-th 2.0 \
+  --score-thr 0.0
+```
+
+### 14.2 常用参数
+
+- `--mode`: `random` 或 `grid`
+- `--max-trials`: 最大试验数
+- `--objective`: 覆盖搜索空间中的目标函数
+- `--hard-constraint-policy`: `drop` 或 `keep`
+- `--run-dir`: 指定输出目录（不指定时自动创建时间戳目录）
+- `--dry-run`: 仅采样并打印 trial，不执行 tracking/eval
+- `--quiet-subprocess`: 不在终端回显子进程日志
+
+### 14.3 结果保存位置（Best result 在哪里）
+
+每次运行会生成：
+
+`tools/search_runs/bytetrack_<YYYYMMDD_HHMMSS>/`
+
+关键文件：
+
+- `manifest.json`: 本次搜索配置与元信息
+- `results_partial.json`: 运行过程中的中间结果
+- `results_ranked.json`: 最终排序结果（**best result 在这里**）
+
+`results_ranked.json` 中：
+
+- `best`: 最优 trial 的完整信息（参数、目标值、约束检查、对应结果路径）
+- `ranked`: 所有 trial 按 objective 降序排列
+
+每个 trial 子目录 `trial_XXX/` 还包含：
+
+- `config.yaml`: 本 trial 实际使用配置
+- `main.log`: 跟踪阶段日志
+- `eval.log`: 迭代评估日志
+- `eval_iter.json`: 逐类别 + overall 指标
