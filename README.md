@@ -531,6 +531,32 @@ python tools/search_bytetrack_params.py \
   --score-thr 0.0
 ```
 
+稳定提升建议（两阶段 + 稳定性惩罚）：
+
+```bash
+python tools/search_bytetrack_params.py \
+  --base-config config/nuscenes.yaml \
+  --search-space tools/bytetrack_search_space.nuscenes.json \
+  --dataset nuscenes \
+  --process 1 \
+  --mode random \
+  --two-stage \
+  --coarse-trials 60 \
+  --refine-trials 120 \
+  --topk-refine 10 \
+  --refine-jitter 0.1 \
+  --n-folds 3 \
+  --stability-weight 0.2 \
+  --seed 42 \
+  --dataroot /root/autodl-tmp/data/nuscenes/datasets/ \
+  --version v1.0-trainval \
+  --eval-set val \
+  --dist-th 2.0 \
+  --score-thr 0.0
+```
+
+如果本机没有安装 `nuscenes-devkit`，可用 `--scene-names-file path/to/val_scenes.txt` 提供场景列表来做 fold 划分（每行一个 scene name）。
+
 ### 14.2 常用参数
 
 - `--mode`: `random` 或 `grid`
@@ -540,6 +566,13 @@ python tools/search_bytetrack_params.py \
 - `--run-dir`: 指定输出目录（不指定时自动创建时间戳目录）
 - `--dry-run`: 仅采样并打印 trial，不执行 tracking/eval
 - `--quiet-subprocess`: 不在终端回显子进程日志
+- `--n-folds`: fold 数（`1` 表示不做 fold，直接全量 val）
+- `--stability-weight`: 稳定性惩罚系数（惩罚 fold objective 的标准差）
+- `--two-stage`: 启用 coarse->refine
+- `--coarse-trials / --refine-trials`: 两阶段各自 trial 数
+- `--topk-refine`: coarse 前 k 名作为 refine 锚点
+- `--refine-jitter`: refine 数值参数扰动幅度
+- `--scene-names-file`: fold 划分使用的场景清单（可替代 nuscenes-devkit split）
 
 ### 14.3 结果保存位置（Best result 在哪里）
 

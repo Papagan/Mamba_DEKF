@@ -98,6 +98,15 @@ def get_eval_scene_names(eval_set: str) -> List[str]:
     return splits[eval_set]
 
 
+def load_scene_list(path: str) -> List[str]:
+    with open(path, "r", encoding="utf-8") as f:
+        lines = [x.strip() for x in f.readlines()]
+    scenes = [x for x in lines if x and not x.startswith("#")]
+    if not scenes:
+        raise ValueError(f"No valid scenes found in scene-list file: {path}")
+    return scenes
+
+
 def iter_sample_tokens_by_scene(nusc: NuScenes, eval_scene_names: List[str]) -> Iterable[Tuple[str, List[str]]]:
     scene_name_set = set(eval_scene_names)
     for scene in nusc.scene:
@@ -303,6 +312,11 @@ def main() -> None:
     )
     parser.add_argument("--dist-th", type=float, default=2.0, help="Center-distance match threshold (meters)")
     parser.add_argument("--score-thr", type=float, default=0.0, help="Prediction score threshold")
+    parser.add_argument(
+        "--scene-list",
+        default="",
+        help="Optional text file (one scene name per line). Intersect with eval-set scenes.",
+    )
     parser.add_argument("--verbose-every", type=int, default=0, help="Print iterator log every N frames (0=off)")
     parser.add_argument("-o", "--output", default="", help="Optional output JSON path")
     args = parser.parse_args()
@@ -316,6 +330,15 @@ def main() -> None:
 
     nusc = NuScenes(version=args.version, dataroot=args.dataroot, verbose=False)
     eval_scene_names = get_eval_scene_names(args.eval_set)
+    if args.scene_list:
+        if not os.path.exists(args.scene_list):
+            raise FileNotFoundError(args.scene_list)
+        selected_scenes = set(load_scene_list(args.scene_list))
+        eval_scene_names = [s for s in eval_scene_names if s in selected_scenes]
+        if not eval_scene_names:
+            raise ValueError(
+                f"No scenes left after intersecting eval_set={args.eval_set} with scene-list={args.scene_list}"
+            )
 
     all_metrics: Dict[str, Dict] = {}
     all_accs = []
@@ -323,7 +346,8 @@ def main() -> None:
 
     print(
         f"[INFO] eval_set={args.eval_set} scenes={len(eval_scene_names)} "
-        f"classes={class_list} dist_th={args.dist_th} score_thr={args.score_thr}",
+        f"classes={class_list} dist_th={args.dist_th} score_thr={args.score_thr} "
+        f"scene_list={'on' if args.scene_list else 'off'}",
         flush=True,
     )
 
@@ -378,6 +402,8 @@ def main() -> None:
             "dataroot": args.dataroot,
             "version": args.version,
             "eval_set": args.eval_set,
+            "scene_count": len(eval_scene_names),
+            "scene_list": args.scene_list,
             "classes": class_list,
             "dist_th": args.dist_th,
             "score_thr": args.score_thr,
