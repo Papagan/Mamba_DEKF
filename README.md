@@ -528,7 +528,8 @@ python tools/search_bytetrack_params.py \
   --version v1.0-trainval \
   --eval-set val \
   --dist-th 2.0 \
-  --score-thr 0.0
+  --score-thr 0.0 \
+  --eval-workers 8
 ```
 
 稳定提升建议（两阶段 + 稳定性惩罚）：
@@ -552,7 +553,8 @@ python tools/search_bytetrack_params.py \
   --version v1.0-trainval \
   --eval-set val \
   --dist-th 2.0 \
-  --score-thr 0.0
+  --score-thr 0.0 \
+  --eval-workers 8
 ```
 
 如果本机没有安装 `nuscenes-devkit`，可用 `--scene-names-file path/to/val_scenes.txt` 提供场景列表来做 fold 划分（每行一个 scene name）。
@@ -573,6 +575,7 @@ python tools/search_bytetrack_params.py \
 - `--topk-refine`: coarse 前 k 名作为 refine 锚点
 - `--refine-jitter`: refine 数值参数扰动幅度
 - `--scene-names-file`: fold 划分使用的场景清单（可替代 nuscenes-devkit split）
+- `--eval-workers`: 评估脚本按类别并行线程数，范围 `1..8`（超过 8 会自动截断到 8）
 
 ### 14.3 结果保存位置（Best result 在哪里）
 

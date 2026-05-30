@@ -25,6 +25,8 @@ from typing import Dict, Iterable, List, Tuple
 
 import yaml
 
+MAX_EVAL_WORKERS = 8
+
 
 @dataclass
 class SearchParam:
@@ -487,6 +489,7 @@ def run_eval_once(
     classes: str,
     dist_th: float,
     score_thr: float,
+    eval_workers: int,
     scene_list_path: str | None,
     eval_json_path: str,
     eval_log_path: str,
@@ -509,6 +512,8 @@ def run_eval_once(
         str(dist_th),
         "--score-thr",
         str(score_thr),
+        "--num-workers",
+        str(eval_workers),
     ]
     if scene_list_path:
         eval_cmd.extend(["--scene-list", scene_list_path])
@@ -538,6 +543,7 @@ def main() -> None:
     parser.add_argument("--classes", default="bicycle,bus,car,motorcycle,pedestrian,trailer,truck", help="Classes for eval script.")
     parser.add_argument("--dist-th", type=float, default=2.0, help="Center distance threshold for evaluator.")
     parser.add_argument("--score-thr", type=float, default=0.0, help="Score threshold for evaluator.")
+    parser.add_argument("--eval-workers", type=int, default=1, help=f"Eval worker threads for evaluator (1..{MAX_EVAL_WORKERS}).")
     parser.add_argument("--workdir", default=".", help="Repo root containing main.py")
     parser.add_argument("--run-dir", default="", help="Optional output directory for this search run.")
     parser.add_argument("--quiet-subprocess", action="store_true", help="Suppress trial subprocess stdout.")
@@ -581,6 +587,14 @@ def main() -> None:
         raise ValueError("--refine-jitter must be >= 0")
     if args.stability_weight < 0:
         raise ValueError("--stability-weight must be >= 0")
+    if args.eval_workers < 1:
+        raise ValueError("--eval-workers must be >= 1")
+    if args.eval_workers > MAX_EVAL_WORKERS:
+        print(
+            f"[SEARCH] clamp --eval-workers from {args.eval_workers} to {MAX_EVAL_WORKERS} "
+            f"(max={MAX_EVAL_WORKERS})"
+        )
+        args.eval_workers = MAX_EVAL_WORKERS
     if args.scene_names_file:
         scene_names_file = os.path.abspath(os.path.join(workdir, args.scene_names_file))
         if not os.path.exists(scene_names_file):
@@ -642,6 +656,7 @@ def main() -> None:
         "fold_seed": args.fold_seed,
         "scene_names_file": scene_names_file,
         "stability_weight": args.stability_weight,
+        "eval_workers": args.eval_workers,
         "fold_specs": fold_specs,
         "seed": args.seed,
         "objective": objective,
@@ -657,6 +672,7 @@ def main() -> None:
     print(f"[SEARCH] objective={objective}")
     print(f"[SEARCH] constraints={len(constraints)}")
     print(f"[SEARCH] n_folds={args.n_folds} stability_weight={args.stability_weight}")
+    print(f"[SEARCH] eval_workers={args.eval_workers}")
     print(f"[SEARCH] two_stage={args.two_stage} planned_trials={n_total_trials}")
     if args.two_stage:
         print(f"[SEARCH] coarse_trials={len(coarse_trials)} refine_trials={args.refine_trials}")
@@ -762,6 +778,7 @@ def main() -> None:
                 classes=args.classes,
                 dist_th=args.dist_th,
                 score_thr=args.score_thr,
+                eval_workers=args.eval_workers,
                 scene_list_path=fd.get("scene_list_path"),
                 eval_json_path=eval_json,
                 eval_log_path=eval_log,

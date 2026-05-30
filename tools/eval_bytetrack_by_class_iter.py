@@ -13,6 +13,7 @@ This script evaluates tracking outputs in nuScenes `results.json` format.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import math
 import os
@@ -56,6 +57,8 @@ DEFAULT_CLASS_RANGE = {
     "motorcycle": 40.0,
     "bicycle": 40.0,
 }
+
+MAX_EVAL_WORKERS = 8
 
 
 @dataclass
@@ -297,6 +300,12 @@ def parse_classes(raw: str) -> List[str]:
     return vals
 
 
+def clamp_num_workers(n: int) -> int:
+    if n < 1:
+        return 1
+    return min(n, MAX_EVAL_WORKERS)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Iterative per-class ByteTrack-style MOT metrics on nuScenes tracking results."
@@ -318,6 +327,12 @@ def main() -> None:
         help="Optional text file (one scene name per line). Intersect with eval-set scenes.",
     )
     parser.add_argument("--verbose-every", type=int, default=0, help="Print iterator log every N frames (0=off)")
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=1,
+        help=f"Parallel worker threads across classes (1..{MAX_EVAL_WORKERS}).",
+    )
     parser.add_argument("-o", "--output", default="", help="Optional output JSON path")
     args = parser.parse_args()
 
@@ -327,6 +342,13 @@ def main() -> None:
     class_list = parse_classes(args.classes)
     result_data = load_results(args.result)
     pred_by_sample = result_data.get("results", {})
+    num_workers = clamp_num_workers(args.num_workers)
+    if num_workers != args.num_workers:
+        print(
+            f"[INFO] clamp --num-workers from {args.num_workers} to {num_workers} "
+            f"(max={MAX_EVAL_WORKERS})",
+            flush=True,
+        )
 
     nusc = NuScenes(version=args.version, dataroot=args.dataroot, verbose=False)
     eval_scene_names = get_eval_scene_names(args.eval_set)
@@ -347,11 +369,11 @@ def main() -> None:
     print(
         f"[INFO] eval_set={args.eval_set} scenes={len(eval_scene_names)} "
         f"classes={class_list} dist_th={args.dist_th} score_thr={args.score_thr} "
-        f"scene_list={'on' if args.scene_list else 'off'}",
+        f"scene_list={'on' if args.scene_list else 'off'} workers={num_workers}",
         flush=True,
     )
 
-    for cls_name in class_list:
+    def _eval_one_class(cls_name: str):
         acc, extras = eval_one_class_iterative(
             nusc=nusc,
             eval_scene_names=eval_scene_names,
@@ -363,17 +385,42 @@ def main() -> None:
             verbose_every=args.verbose_every,
         )
         cls_metrics = summarize_acc(acc, cls_name, extras)
-        all_metrics[cls_name] = cls_metrics
-        all_accs.append(acc)
+        return cls_name, cls_metrics, acc
+
+    acc_by_class: Dict[str, mm.MOTAccumulator] = {}
+    if num_workers == 1:
+        for cls_name in class_list:
+            cls_name, cls_metrics, acc = _eval_one_class(cls_name)
+            all_metrics[cls_name] = cls_metrics
+            acc_by_class[cls_name] = acc
+            print(
+                f"[CLASS] {cls_name:>10s} "
+                f"MOTA={cls_metrics['mota']:.4f} IDF1={cls_metrics['idf1']:.4f} "
+                f"R={cls_metrics['recall']:.4f} P={cls_metrics['precision']:.4f} "
+                f"TP={int(cls_metrics['num_matches'])} FP={int(cls_metrics['num_false_positives'])} "
+                f"FN={int(cls_metrics['num_misses'])} IDSW={int(cls_metrics['num_switches'])}",
+                flush=True,
+            )
+    else:
+        pool_workers = min(num_workers, len(class_list))
+        with ThreadPoolExecutor(max_workers=pool_workers) as ex:
+            future_map = {ex.submit(_eval_one_class, cls_name): cls_name for cls_name in class_list}
+            for fut in as_completed(future_map):
+                cls_name, cls_metrics, acc = fut.result()
+                all_metrics[cls_name] = cls_metrics
+                acc_by_class[cls_name] = acc
+                print(
+                    f"[CLASS] {cls_name:>10s} "
+                    f"MOTA={cls_metrics['mota']:.4f} IDF1={cls_metrics['idf1']:.4f} "
+                    f"R={cls_metrics['recall']:.4f} P={cls_metrics['precision']:.4f} "
+                    f"TP={int(cls_metrics['num_matches'])} FP={int(cls_metrics['num_false_positives'])} "
+                    f"FN={int(cls_metrics['num_misses'])} IDSW={int(cls_metrics['num_switches'])}",
+                    flush=True,
+                )
+
+    for cls_name in class_list:
+        all_accs.append(acc_by_class[cls_name])
         all_names.append(cls_name)
-        print(
-            f"[CLASS] {cls_name:>10s} "
-            f"MOTA={cls_metrics['mota']:.4f} IDF1={cls_metrics['idf1']:.4f} "
-            f"R={cls_metrics['recall']:.4f} P={cls_metrics['precision']:.4f} "
-            f"TP={int(cls_metrics['num_matches'])} FP={int(cls_metrics['num_false_positives'])} "
-            f"FN={int(cls_metrics['num_misses'])} IDSW={int(cls_metrics['num_switches'])}",
-            flush=True,
-        )
 
     mh = mm.metrics.create()
     overall = mh.compute_many(
@@ -407,6 +454,7 @@ def main() -> None:
             "classes": class_list,
             "dist_th": args.dist_th,
             "score_thr": args.score_thr,
+            "num_workers": num_workers,
             "class_range": DEFAULT_CLASS_RANGE,
         },
         "per_class": all_metrics,
