@@ -594,6 +594,21 @@ python tools/search_bytetrack_params.py \
 - `best`: 最优 trial 的完整信息（参数、目标值、约束检查、对应结果路径）
 - `ranked`: 所有 trial 按 objective 降序排列
 
+如果寻优中断，例如原计划 `20` 轮但只跑完 `18` 轮，可直接从当前目录提取已完成轮次里的最优结果：
+
+```bash
+python tools/show_best_search_result.py \
+  tools/search_runs/bytetrack_<YYYYMMDD_HHMMSS>
+```
+
+如果要输出完整 JSON：
+
+```bash
+python tools/show_best_search_result.py \
+  tools/search_runs/bytetrack_<YYYYMMDD_HHMMSS> \
+  --json
+```
+
 每个 trial 子目录 `trial_XXX/` 还包含：
 
 - `config.yaml`: 本 trial 实际使用配置
