@@ -334,6 +334,41 @@ python tools/build_centerpoint_mini_train_dataset.py \
   --train-config config/train_nuscenes.yaml
 ```
 
+Common arguments:
+
+- `--det-json`: BaseVersion detection json, usually `centerpoint/val.json`
+- `--nusc-dataroot`: nuScenes dataset root
+- `--nusc-version`: metadata version, default `v1.0-trainval`
+- `--output`: output cache `.pkl` path
+- `--max-scenes`: use the first `N` matched scenes, `0` means all available scenes in the json
+- `--dist-th`: GT/detection center-distance matching threshold in meters
+- `--min-frames`: minimum total frames required for a saved tracklet
+- `--min-matched-frames`: minimum matched detection frames required for a saved tracklet
+- `--no-misses`: drop GT miss frames instead of keeping them as explicit unmatched steps
+- `--train-config`: reads `HISTORY_LEN`, `ROLLOUT_STEPS`, and `BATCH_SIZE` for sample/batch estimation
+
+Examples:
+
+```bash
+# Build using all scenes available in val.json
+python tools/build_centerpoint_mini_train_dataset.py \
+  --det-json /root/autodl-tmp/data/base_version/nuscenes/centerpoint/val.json \
+  --nusc-dataroot /root/autodl-tmp/data/nuscenes/datasets/ \
+  --output /root/autodl-tmp/data/training_cache/nuscenes/centerpoint_mini_train_full_from_val.pkl \
+  --max-scenes 0 \
+  --train-config config/train_nuscenes.yaml
+
+# Build a stricter cache: tighter match threshold, require more matched frames
+python tools/build_centerpoint_mini_train_dataset.py \
+  --det-json /root/autodl-tmp/data/base_version/nuscenes/centerpoint/val.json \
+  --nusc-dataroot /root/autodl-tmp/data/nuscenes/datasets/ \
+  --output /root/autodl-tmp/data/training_cache/nuscenes/centerpoint_mini_train_strict.pkl \
+  --max-scenes 10 \
+  --dist-th 1.5 \
+  --min-matched-frames 3 \
+  --train-config config/train_nuscenes.yaml
+```
+
 What it does:
 
 - Reads BaseVersion detections from `centerpoint/val.json`.
