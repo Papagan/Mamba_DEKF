@@ -24,6 +24,13 @@ import torch.nn.functional as F
 from torch import Tensor
 from typing import Optional, Tuple, Dict
 
+from kalmanfilter.noise_priors import (
+    _as_std_1d_map,
+    _as_std_xy_map,
+    apply_residual_anchor,
+    build_base_covariances,
+)
+
 try:
     from mamba_ssm.modules.mamba_simple import Mamba
 except ImportError:
@@ -824,6 +831,7 @@ class TemporalMamba(nn.Module):
         min_diag_siz: float = 0.05,
         min_kappa: float = 0.1,
         force_gru: bool = False,
+        base_noise_cfg: dict = None,
     ) -> None:
         """
         Args:
@@ -844,6 +852,7 @@ class TemporalMamba(nn.Module):
         self.embed_dim = embed_dim
         self.min_diag_siz = min_diag_siz
         self.min_kappa = min_kappa
+        self.base_noise_cfg = base_noise_cfg
 
         # input projection: 13 → d_model
         self.input_proj = nn.Linear(self.INPUT_DIM, d_model)
@@ -946,6 +955,10 @@ class TemporalMamba(nn.Module):
         self,
         track_history: Tensor,
         class_ids: Optional[Tensor] = None,
+        current_range: Optional[Tensor] = None,
+        detection_driven_mask: Optional[Tensor] = None,
+        history_mask: Optional[Tensor] = None,
+        history_match_mask: Optional[Tensor] = None,
     ) -> Dict[str, Tensor]:
         """
         Process joint historical states and produce noise matrices + embedding.
@@ -1034,6 +1047,34 @@ class TemporalMamba(nn.Module):
 
         delta_pos = self.head_delta_pos(h_last)   # [B, 6]
 
+        if self.base_noise_cfg is not None:
+            anchor_cfg = self.base_noise_cfg.get("RESIDUAL_ANCHOR", {})
+            if bool(anchor_cfg.get("ENABLED", False)):
+                base_cov = build_base_covariances(
+                    base_noise_cfg=self.base_noise_cfg,
+                    class_ids=class_ids,
+                    dtype=h_last.dtype,
+                    device=dev,
+                    track_history=track_history,
+                    current_range=current_range,
+                    detection_driven_mask=detection_driven_mask,
+                    history_mask=history_mask,
+                    history_match_mask=history_match_mask,
+                )
+                min_ratio = float(anchor_cfg.get("MIN_STD_RATIO", 0.5))
+                max_ratio = float(anchor_cfg.get("MAX_STD_RATIO", 2.0))
+                targets = set(anchor_cfg.get("TARGETS", ["Q_pos", "R_pos", "R_siz", "R_ori"]))
+                if "Q_pos" in targets:
+                    Q_pos = apply_residual_anchor(Q_pos, base_cov["Q_pos_base"], min_ratio, max_ratio)
+                if "R_pos" in targets:
+                    R_pos = apply_residual_anchor(R_pos, base_cov["R_pos_base"], min_ratio, max_ratio)
+                if "R_siz" in targets:
+                    R_siz = apply_residual_anchor(R_siz, base_cov["R_siz_base"], min_ratio, max_ratio)
+                if "R_ori" in targets:
+                    R_ori = apply_residual_anchor(R_ori, base_cov["R_ori_base"], min_ratio, max_ratio)
+                if "Q_ori" in targets:
+                    Q_ori = apply_residual_anchor(Q_ori, base_cov["Q_ori_base"], min_ratio, max_ratio)
+
         return {
             "Q_pos": Q_pos, "Q_siz": Q_siz, "Q_ori": Q_ori,
             "R_pos": R_pos, "R_siz": R_siz, "R_ori": R_ori,
@@ -1090,31 +1131,11 @@ class MambaDecoupledEKF(nn.Module):
             min_diag_siz=min_diag_siz,
             min_kappa=min_kappa,
             force_gru=force_gru,
+            base_noise_cfg=base_noise_cfg,
         )
         self.kf = DecoupledAdaptiveKF(batch_size, device)
         self.base_noise_cfg = base_noise_cfg
         self.device = device
-
-    @staticmethod
-    def _as_std_xy_map(r_cfg: dict, key_xy: str, key_scalar: str) -> list:
-        """
-        Parse per-class [x, y] std map with backward compatibility.
-        """
-        xy = r_cfg.get(key_xy, None)
-        if isinstance(xy, list) and len(xy) > 0 and isinstance(xy[0], (list, tuple)):
-            return [[float(v[0]), float(v[1])] for v in xy]
-        sc = r_cfg.get(key_scalar, None)
-        if isinstance(sc, list) and len(sc) > 0:
-            return [[float(v), float(v)] for v in sc]
-        raise KeyError(f"Missing {key_xy} / {key_scalar} in R config.")
-
-    @staticmethod
-    def _as_std_1d_map(r_cfg: dict, key: str, default: float = 1.0, n: int = 7) -> list:
-        vals = r_cfg.get(key, None)
-        if isinstance(vals, list) and len(vals) > 0:
-            return [float(v) for v in vals]
-        return [float(default)] * n
-
 
     def _get_base_noise(self, bsize: int, dtype: torch.dtype, class_ids: Tensor = None) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
         """
@@ -1151,19 +1172,19 @@ class MambaDecoupledEKF(nn.Module):
             # Backward compatible scalar maps are still accepted:
             #   POS_STD / SIZ_STD / VEL_STD.
             pos_std_xy = torch.tensor(
-                self._as_std_xy_map(R_cfg, "POS_STD_XY", "POS_STD"),
+                _as_std_xy_map(R_cfg, "POS_STD_XY", "POS_STD"),
                 device=self.device, dtype=dtype,
             ) * mul  # [C,2]
             siz_std_lw = torch.tensor(
-                self._as_std_xy_map(R_cfg, "SIZ_STD_LW", "SIZ_STD"),
+                _as_std_xy_map(R_cfg, "SIZ_STD_LW", "SIZ_STD"),
                 device=self.device, dtype=dtype,
             ) * mul  # [C,2]
             vel_std_xy = torch.tensor(
-                self._as_std_xy_map(R_cfg, "VEL_STD_XY", "VEL_STD"),
+                _as_std_xy_map(R_cfg, "VEL_STD_XY", "VEL_STD"),
                 device=self.device, dtype=dtype,
             ) * mul  # [C,2]
             ori_std = torch.tensor(
-                self._as_std_1d_map(R_cfg, "ORI_STD", default=0.5, n=pos_std_xy.shape[0]),
+                _as_std_1d_map(R_cfg, "ORI_STD", default=0.5, n=pos_std_xy.shape[0]),
                 device=self.device, dtype=dtype,
             ) * mul  # [C]
 
@@ -1219,47 +1240,16 @@ class MambaDecoupledEKF(nn.Module):
 
         return Q_pos_base, R_pos_base, Q_siz_base, R_siz_base, Q_ori_base, R_ori_base
 
-    def _apply_residual_anchor(
-        self,
-        pred_cov: Tensor,
-        base_cov: Tensor,
-        min_ratio: float,
-        max_ratio: float,
-    ) -> Tensor:
-        """
-        Anchor predicted covariance to baseline via residual std scaling.
-
-        std_new = std_base * clamp(std_pred / std_base, [min_ratio, max_ratio])
-        cov_new = Corr(pred) * (std_new std_new^T)
-        """
-        eps = 1e-8
-        diag_pred = torch.clamp(pred_cov.diagonal(dim1=-2, dim2=-1), min=eps)  # [B,D]
-        diag_base = torch.clamp(base_cov.diagonal(dim1=-2, dim2=-1), min=eps)  # [B,D]
-
-        std_pred = torch.sqrt(diag_pred)
-        std_base = torch.sqrt(diag_base)
-        ratio = std_pred / torch.clamp(std_base, min=eps)
-        ratio = torch.clamp(ratio, min=min_ratio, max=max_ratio)
-        std_new = std_base * ratio
-
-        outer_pred = torch.bmm(std_pred.unsqueeze(-1), std_pred.unsqueeze(1))
-        corr = pred_cov / torch.clamp(outer_pred, min=eps)
-        D = pred_cov.shape[-1]
-        eye = torch.eye(D, device=pred_cov.device, dtype=pred_cov.dtype).unsqueeze(0)
-        corr = corr * (1.0 - eye) + eye
-
-        outer_new = torch.bmm(std_new.unsqueeze(-1), std_new.unsqueeze(1))
-        cov_new = corr * outer_new
-        cov_new = 0.5 * (cov_new + cov_new.transpose(-1, -2))
-        cov_new = cov_new + 1e-6 * eye
-        return cov_new
-
     def predict_with_mamba(
         self,
         track_history: Tensor,
         delta_t,          # float (scalar) or [B] Tensor — per-sample when batched
         class_ids: Optional[Tensor] = None,
         mode: str = "mamba",
+        current_range: Optional[Tensor] = None,
+        detection_driven_mask: Optional[Tensor] = None,
+        history_mask: Optional[Tensor] = None,
+        history_match_mask: Optional[Tensor] = None,
     ) -> Tuple[Dict[str, Tensor], Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
         """
         Run Mamba to get adaptive Q/R, then run KF predict.
@@ -1279,7 +1269,14 @@ class MambaDecoupledEKF(nn.Module):
             pos_x, pos_P, siz_x, siz_P, ori_x, ori_P  (predicted states)
         """
         # Run Mamba network (O(N) operation)
-        mamba_out = self.mamba(track_history, class_ids=class_ids)
+        mamba_out = self.mamba(
+            track_history,
+            class_ids=class_ids,
+            current_range=current_range,
+            detection_driven_mask=detection_driven_mask,
+            history_mask=history_mask,
+            history_match_mask=history_match_mask,
+        )
         bsize = track_history.size(0)
         dtype = track_history.dtype
         have_base = self.base_noise_cfg is not None
@@ -1342,27 +1339,6 @@ class MambaDecoupledEKF(nn.Module):
             # numerical range than the baseline variance → trace ratio is misleading.
             # Orientation safety is provided by Q_ori fusion (above) and the
             # per-category baseline R_o accessible via pure_dekf mode when needed.
-
-        # Residual anchoring: constrain adaptive R around MCTrack priors.
-        # Equivalent to R = R_base * exp(delta)-style scaling in std space.
-        if have_base:
-            anchor_cfg = self.base_noise_cfg.get("RESIDUAL_ANCHOR", {})
-            if bool(anchor_cfg.get("ENABLED", False)):
-                min_ratio = float(anchor_cfg.get("MIN_STD_RATIO", 0.5))
-                max_ratio = float(anchor_cfg.get("MAX_STD_RATIO", 2.0))
-                targets = set(anchor_cfg.get("TARGETS", ["R_pos", "R_siz", "R_ori"]))
-                if "R_pos" in targets:
-                    mamba_out["R_pos"] = self._apply_residual_anchor(
-                        mamba_out["R_pos"], R_p, min_ratio, max_ratio,
-                    )
-                if "R_siz" in targets:
-                    mamba_out["R_siz"] = self._apply_residual_anchor(
-                        mamba_out["R_siz"], R_s, min_ratio, max_ratio,
-                    )
-                if "R_ori" in targets:
-                    mamba_out["R_ori"] = self._apply_residual_anchor(
-                        mamba_out["R_ori"], R_o, min_ratio, max_ratio,
-                    )
 
         # Execute KF predict step using the active (or fused) noise models
         pos_x, pos_P, siz_x, siz_P, ori_x, ori_P = self.kf.predict(

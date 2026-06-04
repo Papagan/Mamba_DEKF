@@ -80,6 +80,7 @@ Mamba-DEKF/
 ├── training/
 │   ├── train.py                                      # Training entry + multi-step rollout
 │   ├── gt_tracklet_dataset.py                        # GT tracklet extraction + Dataset
+│   ├── det_tracklet_dataset.py                       # Detection-driven Dataset from aligned caches
 │   └── losses.py                                     # Kalman NLL + Von Mises + InfoNCE
 ├── dataset/
 │   └── baseversion_dataset.py                        # BaseVersion JSON → Frame/BBox loader
@@ -235,6 +236,35 @@ python training/train.py --config config/train_nuscenes.yaml \
 
 Training writes periodic checkpoints (`checkpoint_epoch{N}.pt`) and the best validation checkpoint (`best.pt`) under `TRAINING.SAVE_DIR`.
 
+### 5.1.1 Detection-driven training
+
+`training/train.py` now supports two sources:
+
+- `DATA.TRAIN_SOURCE: gt`
+- `DATA.TRAIN_SOURCE: det`
+
+When using `det`, set the aligned cache paths directly in `config/train_nuscenes.yaml`:
+
+```yaml
+DATA:
+  TRAIN_SOURCE: det
+  VAL_SOURCE: det
+  TRAIN_TRACKLET_PKL: /root/autodl-tmp/data/training_cache/nuscenes/centerpoint_mini_train_from_val.pkl
+  VAL_TRACKLET_PKL: /root/autodl-tmp/data/training_cache/nuscenes/centerpoint_mini_train_from_val.pkl
+  REQUIRE_CURRENT_MATCH: true
+  MIN_HISTORY_MATCH_RATIO: 0.25
+```
+
+The detection-driven path changes the supervision contract:
+
+- history uses detector observations `obs_feature_12`
+- KF initial state comes from the current matched detection
+- rollout targets stay on GT future states
+- KF update during rollout prefers future matched detections from the cache; miss steps are handled as near no-op updates via inflated `R`
+- `det_score`, history match ratio, current range, and speed are exposed for conditional noise scaling
+
+This keeps the existing rollout loss but moves the input distribution much closer to real tracking.
+
 ### 5.2 Loss design
 
 | Component | Loss | Purpose |
@@ -282,6 +312,98 @@ Epoch 5/100 (12.3s) | train_loss=X pos=X siz=X ori=X contrast=X | kappa_m=3.45 k
 - `kappa_m` (mean κ): should rise from ~0.7 toward 3–8 over epochs, then stabilise. Continuous unbounded increase → overfitting.
 - `kappa_s` (κ std): should be **non-zero** — this proves Mamba is producing input-dependent κ rather than a constant.
 - If `kappa_s ≈ 0.0000` and loss is stagnant, the kappa head has collapsed. Restart with lower `W_ORI` or higher `PHYSICS_SCALE`.
+
+### 5.5 Build a Mini Detection-Driven Cache from CenterPoint
+
+If you only have CenterPoint BaseVersion detections such as:
+
+```bash
+/root/autodl-tmp/data/base_version/nuscenes/centerpoint/val.json
+```
+
+you can build a **mini detection-driven training cache** by aligning those detections with nuScenes GT on the same `sample_token`.
+
+Tool:
+
+```bash
+python tools/build_centerpoint_mini_train_dataset.py \
+  --det-json /root/autodl-tmp/data/base_version/nuscenes/centerpoint/val.json \
+  --nusc-dataroot /root/autodl-tmp/data/nuscenes/datasets/ \
+  --output /root/autodl-tmp/data/training_cache/nuscenes/centerpoint_mini_train_from_val.pkl \
+  --max-scenes 10 \
+  --train-config config/train_nuscenes.yaml
+```
+
+What it does:
+
+- Reads BaseVersion detections from `centerpoint/val.json`.
+- Loads nuScenes GT from `NUSC_DATAROOT`.
+- Matches detections to GT per class using 2D center distance (`--dist-th`, default `2.0m`).
+- Saves a mini cache under `training_cache/nuscenes/`.
+
+Outputs:
+
+- `centerpoint_mini_train_from_val.pkl`
+- `centerpoint_mini_train_from_val_summary.json`
+
+Each saved tracklet contains:
+
+- `instance_token`
+- `category`
+- `frames`
+
+Each frame contains both GT labels and detector observations:
+
+- `gt_feature_12`, `gt_global_xyz`, `gt_lwh`, `gt_yaw`, `gt_velocity`
+- `obs_feature_12`, `det_global_xyz`, `det_lwh`, `det_yaw`, `det_velocity`
+- `is_matched`, `match_distance`, `det_score`
+
+Training-alignment statistics:
+
+- The script reads `MODEL.HISTORY_LEN`, `TRAINING.ROLLOUT_STEPS`, and `TRAINING.BATCH_SIZE` from `config/train_nuscenes.yaml`.
+- It prints and saves:
+  - total selected scenes
+  - total saved tracklets
+  - estimated training samples under the current `history_len + rollout_steps` setting
+  - estimated batches per epoch under the current `BATCH_SIZE`
+
+Notes:
+
+- This is a **mini cache built from `val.json`**, suitable for pipeline verification and detection-driven dataset development.
+- It is **not** a replacement for a real `train.json`. For formal training, generate CenterPoint detections on the nuScenes `train` split as well.
+
+### 5.6 Conditional Noise + Residual Covariance
+
+`config/train_nuscenes.yaml` now splits noise handling into three layers:
+
+- `TRAINING.NOISE_MAP`: base per-class/per-axis stats used for teacher-forcing and state initialisation
+- `BASE_NOISE.CONDITIONAL_NOISE`: score/range/miss/speed/yaw-rate dependent scaling
+- `BASE_NOISE.RESIDUAL_ANCHOR`: bounded residual covariance learning around the baseline prior
+
+The default detection-oriented controls are:
+
+```yaml
+BASE_NOISE:
+  CONDITIONAL_NOISE:
+    ENABLED: true
+    SCORE_WEIGHT: 0.8
+    MISS_WEIGHT: 0.8
+    RANGE_WEIGHT: 0.3
+    SPEED_WEIGHT: 0.2
+    YAW_RATE_WEIGHT: 0.2
+    MIN_SCALE: 0.75
+    MAX_SCALE: 2.5
+  RESIDUAL_ANCHOR:
+    ENABLED: true
+    TARGETS: ["Q_pos", "R_pos", "R_siz", "R_ori"]
+    MIN_STD_RATIO: 0.60
+    MAX_STD_RATIO: 1.80
+  DETECTION_UPDATE:
+    ENABLED: true
+    MISS_R_SCALE: 1000.0
+```
+
+This keeps the MCTrack-style noise prior as the baseline, but lets the model inflate or shrink it only within a controlled range instead of learning unconstrained covariance from scratch.
 
 ---
 

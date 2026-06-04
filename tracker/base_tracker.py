@@ -175,7 +175,7 @@ class Base3DTracker:
 
     def _extract_track_history(
         self, trajs: List[Trajectory],
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Extract joint historical state from each trajectory's bbox history,
         padded/truncated to self.history_len frames.
@@ -194,11 +194,15 @@ class Base3DTracker:
             trajs : list of N active Trajectory objects
 
         Returns:
-            history : [N, T, 12] tensor on self.device
+            history            : [N, T, 12] tensor on self.device
+            history_mask       : [N, T] bool tensor
+            history_match_mask : [N, T] bool tensor
         """
         B = len(trajs)
         T = self.history_len
         history = torch.zeros(B, T, 12, device=self.device)
+        history_mask = torch.zeros(B, T, dtype=torch.bool, device=self.device)
+        history_match_mask = torch.zeros(B, T, dtype=torch.bool, device=self.device)
 
         for i, traj in enumerate(trajs):
             bboxes = traj.bboxes
@@ -246,8 +250,10 @@ class Base3DTracker:
                     lwh[0], lwh[1], lwh[2],
                     yaw, omega, det_score,
                 ], device=self.device)
+                history_mask[i, offset] = True
+                history_match_mask[i, offset] = not getattr(bbox, "is_fake", False)
 
-        return history
+        return history, history_mask, history_match_mask
 
     # ==================================================================
     # KF state management per track
@@ -438,7 +444,7 @@ class Base3DTracker:
         B = len(trajs)
 
         # ---- 1. Extract history [B, T, 12] ----
-        history = self._extract_track_history(trajs)
+        history, history_mask, history_match_mask = self._extract_track_history(trajs)
 
         # ---- 2. Load per-track KF states into batch ----
         pos_x, pos_P, siz_x, siz_P, ori_x, ori_P = self._batch_kf_states(track_ids)
@@ -453,9 +459,22 @@ class Base3DTracker:
         # ---- 4. Mamba predict: history → Q/R/embedding, then KF predict ----
         class_ids = torch.tensor([t.category_num for t in trajs],
                                  dtype=torch.long, device=self.device)
+        current_range = torch.tensor(
+            [float(np.linalg.norm(np.asarray(t.bboxes[-1].global_xyz[:2], dtype=np.float32))) for t in trajs],
+            dtype=torch.float32,
+            device=self.device,
+        )
+        detection_driven_mask = torch.ones(B, dtype=torch.bool, device=self.device)
         with torch.no_grad():
             mamba_out, px, pP, sx, sP, ox, oP = self.mamba_ekf.predict_with_mamba(
-                history, delta_t, class_ids=class_ids, mode=self.filter_mode
+                history,
+                delta_t,
+                class_ids=class_ids,
+                mode=self.filter_mode,
+                current_range=current_range,
+                detection_driven_mask=detection_driven_mask,
+                history_mask=history_mask,
+                history_match_mask=history_match_mask,
             )
 
         # ---- 5. Write predicted states back to per-track storage ----
@@ -614,19 +633,32 @@ class Base3DTracker:
         cost_mode = self.cfg.get("THRESHOLD", {}).get("BEV", {}).get("COST_MODE", "geometric")
         if dets_cnt > 0 and cost_mode == "full" and self.filter_mode in ["mamba", "fusion"]:
             det_history = torch.zeros(dets_cnt, self.history_len, 12, device=self.device)
-            for idx, det in enumerate(frame_info.bboxes):
-                det_history[idx, -1, :] = torch.tensor([
-                    0.0, 0.0, det.global_xyz[2],
-                    0.0, 0.0, 0.0,
-                    det.lwh[0], det.lwh[1], det.lwh[2],
-                    det.global_yaw, 0.0, det.det_score
-                ], device=self.device)
             cat_map = self.cfg["CATEGORY_MAP_TO_NUMBER"]
             det_class_ids = torch.tensor(
                 [cat_map.get(det.category, 0) for det in frame_info.bboxes],
                 dtype=torch.long, device=self.device)
+            det_history_mask = torch.zeros(dets_cnt, self.history_len, dtype=torch.bool, device=self.device)
+            det_history_match_mask = torch.zeros(dets_cnt, self.history_len, dtype=torch.bool, device=self.device)
+            det_current_range = torch.zeros(dets_cnt, dtype=torch.float32, device=self.device)
             with torch.no_grad():
-                det_mamba_out = self.mamba_ekf.mamba(det_history, class_ids=det_class_ids)
+                for idx, det in enumerate(frame_info.bboxes):
+                    det_history[idx, -1, :] = torch.tensor([
+                        0.0, 0.0, det.global_xyz[2],
+                        det.global_velocity[0], det.global_velocity[1], 0.0,
+                        det.lwh[0], det.lwh[1], det.lwh[2],
+                        det.global_yaw, 0.0, det.det_score
+                    ], device=self.device)
+                    det_history_mask[idx, -1] = True
+                    det_history_match_mask[idx, -1] = True
+                    det_current_range[idx] = float(np.linalg.norm(np.asarray(det.global_xyz[:2], dtype=np.float32)))
+                det_mamba_out = self.mamba_ekf.mamba(
+                    det_history,
+                    class_ids=det_class_ids,
+                    current_range=det_current_range,
+                    detection_driven_mask=torch.ones(dets_cnt, dtype=torch.bool, device=self.device),
+                    history_mask=det_history_mask,
+                    history_match_mask=det_history_match_mask,
+                )
             det_embeddings_all = det_mamba_out["embedding"].cpu().numpy()
         else:
             det_embeddings_all = np.zeros((dets_cnt, self.embed_dim), dtype=np.float32) if dets_cnt > 0 else None

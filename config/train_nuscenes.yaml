@@ -8,7 +8,13 @@ DATA:
   NUSC_DATAROOT: /root/autodl-tmp/data/nuscenes/datasets/
   TRAIN_SPLIT: train
   VAL_SPLIT: val
+  TRAIN_SOURCE: gt          # gt / det
+  VAL_SOURCE: gt            # gt / det
   TRACKLET_CACHE_DIR: /root/autodl-tmp/data/training_cache/nuscenes/
+  TRAIN_TRACKLET_PKL: null  # required when TRAIN_SOURCE=det
+  VAL_TRACKLET_PKL: null    # required when VAL_SOURCE=det
+  REQUIRE_CURRENT_MATCH: true
+  MIN_HISTORY_MATCH_RATIO: 0.25
   CATEGORY_FILTER: null   # null = all categories; or ["car", "pedestrian"]
 
 # ---- Model (TemporalMamba) ----
@@ -95,6 +101,68 @@ TRAINING:
       - [0.6409, 0.6169]
     ORI_STD: [0.50, 0.91, 0.86, 0.96, 0.48, 0.53, 0.45]
     MEAS_MULTIPLIER: 0.7
+
+BASE_NOISE:
+  Q:
+    POS: [0.5, 0.5, 0.5, 1.5, 1.5, 1.5]
+    POS_PER_CAT:
+      0: [0.2, 0.2, 0.2, 1.0, 1.0, 1.0]
+      1: [1.5, 1.5, 1.5, 1.5, 1.5, 1.5]
+      2: [0.3, 0.3, 0.3, 1.0, 1.0, 1.0]
+      3: [0.5, 0.5, 0.5, 4.0, 4.0, 4.0]
+      4: [0.5, 0.5, 0.5, 1.5, 1.5, 1.5]
+      5: [0.3, 0.3, 0.3, 0.1, 0.1, 0.1]
+      6: [0.1, 0.1, 0.1, 2.0, 2.0, 2.0]
+    SIZ: [0.05, 0.05, 0.05]
+    ORI: [0.1]
+  R:
+    POS_STD_XY:
+      - [0.5210, 0.5045]
+      - [0.2745, 0.2731]
+      - [0.5562, 0.5444]
+      - [0.8646, 0.8695]
+      - [1.3037, 1.2327]
+      - [0.9590, 0.8735]
+      - [0.6580, 0.6269]
+    SIZ_STD_LW:
+      - [0.2417, 0.0799]
+      - [0.0567, 0.0422]
+      - [0.1118, 0.0661]
+      - [0.1866, 0.0860]
+      - [1.2094, 0.1465]
+      - [1.9336, 0.1782]
+      - [0.7685, 0.1569]
+    VEL_STD_XY:
+      - [0.7551, 0.7017]
+      - [0.2494, 0.2409]
+      - [0.3933, 0.3942]
+      - [0.8261, 0.8865]
+      - [1.2134, 1.1046]
+      - [0.4770, 0.3982]
+      - [0.6409, 0.6169]
+    ORI_STD: [0.50, 0.91, 0.86, 0.96, 0.48, 0.53, 0.45]
+  CONDITIONAL_NOISE:
+    ENABLED: true
+    SCORE_WEIGHT: 0.8
+    MISS_WEIGHT: 0.8
+    RANGE_WEIGHT: 0.3
+    SPEED_WEIGHT: 0.2
+    YAW_RATE_WEIGHT: 0.2
+    SIZE_SCORE_WEIGHT: 0.4
+    SIZE_MISS_WEIGHT: 0.2
+    RANGE_REF: 30.0
+    SPEED_REF: 15.0
+    YAW_RATE_REF: 0.5
+    MIN_SCALE: 0.75
+    MAX_SCALE: 2.5
+  RESIDUAL_ANCHOR:
+    ENABLED: true
+    TARGETS: ["Q_pos", "R_pos", "R_siz", "R_ori"]
+    MIN_STD_RATIO: 0.60
+    MAX_STD_RATIO: 1.80
+  DETECTION_UPDATE:
+    ENABLED: true
+    MISS_R_SCALE: 1000.0
 
 # ---- Loss ----
 LOSS:

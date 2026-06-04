@@ -41,10 +41,18 @@ from training.gt_tracklet_dataset import (
     TrackletDataset,
     tracklet_collate_fn,
 )
+from training.det_tracklet_dataset import (
+    DetectionTrackletDataset,
+    detection_tracklet_collate_fn,
+)
 from training.losses import JointLoss
 from kalmanfilter.mamba_adaptive_kf import (
     TemporalMamba,
     DecoupledAdaptiveKF,
+)
+from kalmanfilter.noise_priors import (
+    build_base_covariances,
+    categories_to_class_ids,
 )
 
 logger = logging.getLogger("train")
@@ -60,6 +68,7 @@ def training_step(
     loss_fn: JointLoss,
     device: torch.device,
     noise_cfg: dict = None,
+    base_noise_cfg: dict = None,
     epoch: int = 0,
     warmup_epochs: int = 0,
     transition_epochs: int = 0,
@@ -91,22 +100,45 @@ def training_step(
     gt_pos = batch["gt_current_state_pos"].to(device)      # [B, 6]
     gt_siz = batch["gt_current_state_siz"].to(device)      # [B, 3]
     gt_ori = batch["gt_current_state_ori"].to(device)      # [B, 2]
+    obs_pos = batch.get("obs_current_state_pos", batch["gt_current_state_pos"]).to(device)
+    obs_siz = batch.get("obs_current_state_siz", batch["gt_current_state_siz"]).to(device)
+    obs_ori = batch.get("obs_current_state_ori", batch["gt_current_state_ori"]).to(device)
     gt_future_pos = batch["gt_future_pos"].to(device)      # [B, K, 3]
     gt_future_siz = batch["gt_future_siz"].to(device)      # [B, K, 3]
     gt_future_ori = batch["gt_future_ori"].to(device)      # [B, K, 1]
+    obs_future_pos = batch.get("obs_future_pos", None)
+    obs_future_siz = batch.get("obs_future_siz", None)
+    obs_future_ori = batch.get("obs_future_ori", None)
+    obs_future_match = batch.get("obs_future_match", None)
+    if obs_future_pos is not None:
+        obs_future_pos = obs_future_pos.to(device)
+    if obs_future_siz is not None:
+        obs_future_siz = obs_future_siz.to(device)
+    if obs_future_ori is not None:
+        obs_future_ori = obs_future_ori.to(device)
+    if obs_future_match is not None:
+        obs_future_match = obs_future_match.to(device)
     delta_ts_future = batch["delta_ts_future"].to(device)  # [B, K]
     instance_tokens = batch["instance_token"]              # list of B strings
     categories = batch["category"]                          # list of B strings
+    current_range = batch.get("current_range", torch.zeros(B)).to(device)
+    detection_driven_mask = batch.get("is_detection_driven", torch.zeros(B, dtype=torch.bool)).to(device)
+    history_mask = batch.get("history_mask", torch.ones(history.shape[:2], dtype=torch.bool)).to(device)
+    history_match_mask = batch.get("history_match_mask", history_mask).to(device)
+    use_det_update = bool((base_noise_cfg or {}).get("DETECTION_UPDATE", {}).get("ENABLED", True))
+    miss_r_scale = float((base_noise_cfg or {}).get("DETECTION_UPDATE", {}).get("MISS_R_SCALE", 1000.0))
 
-    # Map nuScenes category names to integer class IDs for size embeddings
-    _CAT_ID_MAP = {"car": 0, "pedestrian": 1, "bicycle": 2, "motorcycle": 3,
-                   "bus": 4, "trailer": 5, "truck": 6}
-    class_ids = torch.tensor(
-        [_CAT_ID_MAP.get(c.split(".")[-1], 0) for c in categories],
-        dtype=torch.long, device=device)                   # [B]
+    class_ids = categories_to_class_ids(categories, device=device)  # [B]
 
     # ---- Step 1: TemporalMamba forward (ONCE) → Q/R/embedding ----
-    mamba_out = mamba(history, class_ids=class_ids)
+    mamba_out = mamba(
+        history,
+        class_ids=class_ids,
+        current_range=current_range,
+        detection_driven_mask=detection_driven_mask,
+        history_mask=history_mask,
+        history_match_mask=history_match_mask,
+    )
 
     # ---- Step 2: Init KF from GT state at frame T (+ noise) ----
     if noise_cfg is None:
@@ -141,48 +173,26 @@ def training_step(
             "ORI_STD": [0.50, 0.91, 0.86, 0.96, 0.48, 0.53, 0.45],
             "MEAS_MULTIPLIER": 0.7
         }
-
-    def _std_xy_map(cfg: dict, key_xy: str, key_scalar: str):
-        vals = cfg.get(key_xy, None)
-        if isinstance(vals, list) and len(vals) > 0 and isinstance(vals[0], (list, tuple)):
-            return [[float(v[0]), float(v[1])] for v in vals]
-        sc = cfg.get(key_scalar, None)
-        if isinstance(sc, list) and len(sc) > 0:
-            return [[float(v), float(v)] for v in sc]
-        raise KeyError(f"Missing {key_xy}/{key_scalar} in NOISE_MAP")
-
-    # Category-specific noise mapped from yaml config
-    # [Car, Pedestrian, Bicycle, Motorcycle, Bus, Trailer, Truck]
-    pos_std_xy_map = torch.tensor(
-        _std_xy_map(noise_cfg, "POS_STD_XY", "POS_STD"), device=device
-    )  # [C,2]
-    siz_std_lw_map = torch.tensor(
-        _std_xy_map(noise_cfg, "SIZ_STD_LW", "SIZ_STD"), device=device
-    )  # [C,2]
-    vel_std_xy_map = torch.tensor(
-        _std_xy_map(noise_cfg, "VEL_STD_XY", "VEL_STD"), device=device
-    )  # [C,2]
-    ori_std_map = torch.tensor(noise_cfg["ORI_STD"], device=device)  # [C]
-
-    # Broadcast category-specific noise to batch
-    max_cat = int(min(
-        pos_std_xy_map.shape[0] - 1,
-        siz_std_lw_map.shape[0] - 1,
-        vel_std_xy_map.shape[0] - 1,
-        ori_std_map.shape[0] - 1,
-    ))
-    safe_class_ids = torch.clamp(class_ids, min=0, max=max_cat)
-
-    pos_std_xy = pos_std_xy_map[safe_class_ids]            # [B,2]
-    pos_std_z = pos_std_xy.mean(dim=1, keepdim=True)       # [B,1]
-    noise_scale_pos_xyz = torch.cat([pos_std_xy, pos_std_z], dim=1)  # [B,3]
-
-    siz_std_lw = siz_std_lw_map[safe_class_ids]            # [B,2]
-    siz_std_h = siz_std_lw.mean(dim=1, keepdim=True)       # [B,1]
-    noise_scale_siz_lwh = torch.cat([siz_std_lw, siz_std_h], dim=1)  # [B,3]
-
-    noise_scale_vel_xy = vel_std_xy_map[safe_class_ids]    # [B,2]
-    noise_scale_ori = ori_std_map[safe_class_ids].view(B, 1, 1)  # [B,1,1]
+    train_noise_cfg = {
+        "Q": (base_noise_cfg or {}).get("Q", {"POS": [0.5, 0.5, 0.5, 1.5, 1.5, 1.5], "SIZ": [0.05, 0.05, 0.05], "ORI": [0.1]}),
+        "R": noise_cfg,
+        "CONDITIONAL_NOISE": (base_noise_cfg or {}).get("CONDITIONAL_NOISE", {}),
+    }
+    noise_bundle = build_base_covariances(
+        base_noise_cfg=train_noise_cfg,
+        class_ids=class_ids,
+        dtype=history.dtype,
+        device=device,
+        track_history=history,
+        current_range=current_range,
+        detection_driven_mask=detection_driven_mask,
+        history_mask=history_mask,
+        history_match_mask=history_match_mask,
+    )
+    noise_scale_pos_xyz = noise_bundle["pos_std_xyz"]
+    noise_scale_siz_lwh = noise_bundle["siz_std_lwh"]
+    noise_scale_vel_xy = noise_bundle["vel_std_xy"]
+    noise_scale_ori = noise_bundle["ori_std"].view(B, 1, 1)
 
     # delta_pos gives Mamba a direct gradient path through loss_pos,
     # not only through R_pos via the KF update.
@@ -191,9 +201,9 @@ def training_step(
     if epoch < warmup_epochs:
         delta_pos = delta_pos.detach()
 
-    pos_x0 = gt_pos.unsqueeze(-1) + delta_pos                        # [B, 6, 1]
-    siz_x0 = gt_siz.unsqueeze(-1)                                    # [B, 3, 1]
-    ori_x0 = gt_ori.unsqueeze(-1)                                    # [B, 2, 1]
+    pos_x0 = obs_pos.unsqueeze(-1) + delta_pos                       # [B, 6, 1]
+    siz_x0 = obs_siz.unsqueeze(-1)                                   # [B, 3, 1]
+    ori_x0 = obs_ori.unsqueeze(-1)                                   # [B, 2, 1]
 
     # Category noise (added on top of delta, as extra perturbation)
     pos_noise_std_6 = torch.cat(
@@ -313,19 +323,54 @@ def training_step(
             mamba_out["delta_pos"].norm(dim=-1).mean().item()
 
         # Noisy teacher forcing with category-aware measurement noise
-        gt_vel_xy = gt_pos[:, 3:5]  # [B, 2] — GT velocity
-        z_pos_k = torch.cat([
-            gt_future_pos[:, k, :]                      # [B, 3]
-            + torch.randn(B, 3, device=device) * meas_noise_pos.squeeze(-1),
-            gt_vel_xy                                    # [B, 2]
-            + torch.randn(B, 2, device=device) * meas_noise_vel.squeeze(-1),
-        ], dim=1).unsqueeze(-1)  # [B, 5, 1]
-        z_siz_k = gt_future_siz[:, k, :].unsqueeze(-1) \
-            + torch.randn(B, 3, 1, device=device) * meas_noise_siz
-        z_ori_k = gt_future_ori[:, k, :].unsqueeze(-1) \
-            + torch.randn(B, 1, 1, device=device) * meas_noise_ori
-        kf.update(z_pos_k, z_siz_k, z_ori_k,
-                  R_pos=R_pos, R_siz=R_siz, R_ori=R_ori)
+        if use_det_update and obs_future_pos is not None and obs_future_match is not None:
+            match_k = obs_future_match[:, k].bool()  # [B]
+
+            pred_obs_pos = torch.cat([
+                pos_x_pred[:, 0:3, 0],
+                pos_x_pred[:, 3:5, 0],
+            ], dim=1)  # [B,5]
+            pred_obs_siz = siz_x_pred[:, :, 0]       # [B,3]
+            pred_obs_ori = ori_x_pred[:, 0:1, 0]     # [B,1]
+
+            z_pos_vals = pred_obs_pos.clone()
+            z_siz_vals = pred_obs_siz.clone()
+            z_ori_vals = pred_obs_ori.clone()
+
+            if match_k.any():
+                z_pos_vals[match_k] = obs_future_pos[:, k, :][match_k]
+                z_siz_vals[match_k] = obs_future_siz[:, k, :][match_k]
+                z_ori_vals[match_k] = obs_future_ori[:, k, :][match_k]
+
+            z_pos_k = z_pos_vals.unsqueeze(-1)
+            z_siz_k = z_siz_vals.unsqueeze(-1)
+            z_ori_k = z_ori_vals.unsqueeze(-1)
+
+            R_pos_step = R_pos.clone()
+            R_siz_step = R_siz.clone()
+            R_ori_step = R_ori.clone()
+            miss_k = ~match_k
+            if miss_k.any():
+                R_pos_step[miss_k] = R_pos_step[miss_k] * miss_r_scale
+                R_siz_step[miss_k] = R_siz_step[miss_k] * miss_r_scale
+                R_ori_step[miss_k] = R_ori_step[miss_k] * miss_r_scale
+
+            kf.update(z_pos_k, z_siz_k, z_ori_k,
+                      R_pos=R_pos_step, R_siz=R_siz_step, R_ori=R_ori_step)
+        else:
+            gt_vel_xy = gt_pos[:, 3:5]  # [B, 2] — GT velocity
+            z_pos_k = torch.cat([
+                gt_future_pos[:, k, :]                      # [B, 3]
+                + torch.randn(B, 3, device=device) * meas_noise_pos.squeeze(-1),
+                gt_vel_xy                                    # [B, 2]
+                + torch.randn(B, 2, device=device) * meas_noise_vel.squeeze(-1),
+            ], dim=1).unsqueeze(-1)  # [B, 5, 1]
+            z_siz_k = gt_future_siz[:, k, :].unsqueeze(-1) \
+                + torch.randn(B, 3, 1, device=device) * meas_noise_siz
+            z_ori_k = gt_future_ori[:, k, :].unsqueeze(-1) \
+                + torch.randn(B, 1, 1, device=device) * meas_noise_ori
+            kf.update(z_pos_k, z_siz_k, z_ori_k,
+                      R_pos=R_pos, R_siz=R_siz, R_ori=R_ori)
 
     # ---- Logging detail (uses .item() floats, no gradient impact) ----
     detail = {k: v / K for k, v in detail_accum.items()}
@@ -356,6 +401,11 @@ def training_step(
             detail[f"std_{name}"] = diag.std(dim=0).mean().item()
         detail["std_kappa"] = mamba_out["kappa_ori_unc"].std(dim=0).mean().item()
         detail["mean_kappa"] = mamba_out["kappa_ori_unc"].mean().item()
+        detail["cond_pos_scale"] = noise_bundle["scales"]["pos"].mean().item()
+        detail["cond_vel_scale"] = noise_bundle["scales"]["vel"].mean().item()
+        detail["cond_ori_scale"] = noise_bundle["scales"]["ori"].mean().item()
+        detail["cond_siz_scale"] = noise_bundle["scales"]["siz"].mean().item()
+        detail["matched_ratio"] = noise_bundle["scales"]["matched_ratio"].mean().item()
 
     # ---- Backward loss: total_loss_tensor already contains
     #      physics_scale × state_NLL + lambda × contrast + kappa_var_reg
@@ -376,6 +426,7 @@ def validate(
     loss_fn: JointLoss,
     device: torch.device,
     noise_cfg: dict = None,
+    base_noise_cfg: dict = None,
 ) -> dict:
     """Run validation and return average losses."""
     mamba.eval()
@@ -383,7 +434,7 @@ def validate(
     n_batches = 0
 
     for batch in val_loader:
-        _, detail = training_step(mamba, batch, loss_fn, device, noise_cfg,
+        _, detail = training_step(mamba, batch, loss_fn, device, noise_cfg, base_noise_cfg,
                                   epoch=999, warmup_epochs=0, transition_epochs=0)  # fully unfrozen
         for k, v in detail.items():
             totals[k] = totals.get(k, 0.0) + v
@@ -436,20 +487,32 @@ def main():
 
     # ---- Extract GT tracklets ----
     data_cfg = cfg["DATA"]
-    train_pkl = extract_gt_tracklets_nuscenes(
-        nusc_version=data_cfg["NUSC_VERSION"],
-        nusc_dataroot=data_cfg["NUSC_DATAROOT"],
-        split=data_cfg["TRAIN_SPLIT"],
-        output_dir=data_cfg["TRACKLET_CACHE_DIR"],
-        category_filter=data_cfg.get("CATEGORY_FILTER", None),
-    )
-    val_pkl = extract_gt_tracklets_nuscenes(
-        nusc_version=data_cfg["NUSC_VERSION"],
-        nusc_dataroot=data_cfg["NUSC_DATAROOT"],
-        split=data_cfg["VAL_SPLIT"],
-        output_dir=data_cfg["TRACKLET_CACHE_DIR"],
-        category_filter=data_cfg.get("CATEGORY_FILTER", None),
-    )
+    train_source = data_cfg.get("TRAIN_SOURCE", "gt")
+    val_source = data_cfg.get("VAL_SOURCE", train_source)
+    train_pkl = data_cfg.get("TRAIN_TRACKLET_PKL", None)
+    val_pkl = data_cfg.get("VAL_TRACKLET_PKL", None)
+
+    if train_source == "gt":
+        train_pkl = extract_gt_tracklets_nuscenes(
+            nusc_version=data_cfg["NUSC_VERSION"],
+            nusc_dataroot=data_cfg["NUSC_DATAROOT"],
+            split=data_cfg["TRAIN_SPLIT"],
+            output_dir=data_cfg["TRACKLET_CACHE_DIR"],
+            category_filter=data_cfg.get("CATEGORY_FILTER", None),
+        )
+    elif not train_pkl:
+        raise ValueError("DATA.TRAIN_TRACKLET_PKL is required when TRAIN_SOURCE=det")
+
+    if val_source == "gt":
+        val_pkl = extract_gt_tracklets_nuscenes(
+            nusc_version=data_cfg["NUSC_VERSION"],
+            nusc_dataroot=data_cfg["NUSC_DATAROOT"],
+            split=data_cfg["VAL_SPLIT"],
+            output_dir=data_cfg["TRACKLET_CACHE_DIR"],
+            category_filter=data_cfg.get("CATEGORY_FILTER", None),
+        )
+    elif not val_pkl:
+        raise ValueError("DATA.VAL_TRACKLET_PKL is required when VAL_SOURCE=det")
 
     if args.extract_only:
         logger.info("Extraction complete. Exiting.")
@@ -461,17 +524,40 @@ def main():
     train_cfg = cfg["TRAINING"]
     rollout_steps = train_cfg.get("ROLLOUT_STEPS", 1)
 
-    train_dataset = TrackletDataset(train_pkl, history_len=history_len,
-                                    rollout_steps=rollout_steps)
-    val_dataset = TrackletDataset(val_pkl, history_len=history_len,
-                                  rollout_steps=rollout_steps)
+    if train_source == "det":
+        train_dataset = DetectionTrackletDataset(
+            train_pkl,
+            history_len=history_len,
+            rollout_steps=rollout_steps,
+            require_current_match=bool(data_cfg.get("REQUIRE_CURRENT_MATCH", True)),
+            min_history_match_ratio=float(data_cfg.get("MIN_HISTORY_MATCH_RATIO", 0.25)),
+        )
+        train_collate_fn = detection_tracklet_collate_fn
+    else:
+        train_dataset = TrackletDataset(train_pkl, history_len=history_len,
+                                        rollout_steps=rollout_steps)
+        train_collate_fn = tracklet_collate_fn
+
+    if val_source == "det":
+        val_dataset = DetectionTrackletDataset(
+            val_pkl,
+            history_len=history_len,
+            rollout_steps=rollout_steps,
+            require_current_match=bool(data_cfg.get("REQUIRE_CURRENT_MATCH", True)),
+            min_history_match_ratio=float(data_cfg.get("MIN_HISTORY_MATCH_RATIO", 0.25)),
+        )
+        val_collate_fn = detection_tracklet_collate_fn
+    else:
+        val_dataset = TrackletDataset(val_pkl, history_len=history_len,
+                                      rollout_steps=rollout_steps)
+        val_collate_fn = tracklet_collate_fn
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=train_cfg["BATCH_SIZE"],
         shuffle=True,
         num_workers=train_cfg.get("NUM_WORKERS", 4),
-        collate_fn=tracklet_collate_fn,
+        collate_fn=train_collate_fn,
         pin_memory=True,
         drop_last=True,
     )
@@ -480,12 +566,16 @@ def main():
         batch_size=train_cfg["BATCH_SIZE"],
         shuffle=False,
         num_workers=train_cfg.get("NUM_WORKERS", 4),
-        collate_fn=tracklet_collate_fn,
+        collate_fn=val_collate_fn,
         pin_memory=True,
     )
 
-    logger.info(f"Train: {len(train_dataset)} samples, {len(train_loader)} batches (K={rollout_steps})")
-    logger.info(f"Val:   {len(val_dataset)} samples, {len(val_loader)} batches (K={rollout_steps})")
+    logger.info(
+        f"Train: {len(train_dataset)} samples, {len(train_loader)} batches (K={rollout_steps}, source={train_source})"
+    )
+    logger.info(
+        f"Val:   {len(val_dataset)} samples, {len(val_loader)} batches (K={rollout_steps}, source={val_source})"
+    )
 
     # ---- Model: only TemporalMamba is trained ----
     mamba = TemporalMamba(
@@ -500,6 +590,7 @@ def main():
         num_classes=model_cfg.get("NUM_CLASSES", 10),
         min_diag_siz=model_cfg.get("MIN_DIAG_SIZ", 0.05),
         min_kappa=model_cfg.get("MIN_KAPPA", 0.1),
+        base_noise_cfg=cfg.get("BASE_NOISE", None),
     ).to(device)
 
     n_params = sum(p.numel() for p in mamba.parameters() if p.requires_grad)
@@ -601,6 +692,7 @@ def main():
         nan_count = 0
         t0 = time.time()
         noise_cfg = train_cfg.get("NOISE_MAP", None)
+        base_noise_cfg = cfg.get("BASE_NOISE", None)
         warmup_epochs = train_cfg.get("WARMUP_UNCERTAINTY_EPOCHS", 0)
         transition_epochs = train_cfg.get("WARMUP_TRANSITION_EPOCHS", 0)
 
@@ -608,7 +700,7 @@ def main():
             optimizer.zero_grad()
 
             loss, detail = training_step(
-                mamba, batch, loss_fn, device, noise_cfg,
+                mamba, batch, loss_fn, device, noise_cfg, base_noise_cfg,
                 epoch=epoch, warmup_epochs=warmup_epochs,
                 transition_epochs=transition_epochs,
                 vel_warmup_epochs=vel_warmup_epochs)
@@ -666,7 +758,7 @@ def main():
         avg_train = {k: v / max(n_batches, 1) for k, v in epoch_detail.items()}
 
         # ---- Validation ----
-        avg_val = validate(mamba, val_loader, loss_fn, device, noise_cfg)
+        avg_val = validate(mamba, val_loader, loss_fn, device, noise_cfg, base_noise_cfg)
 
         logger.info(
             f"Epoch {epoch+1}/{epochs} ({dt_epoch:.1f}s) | "

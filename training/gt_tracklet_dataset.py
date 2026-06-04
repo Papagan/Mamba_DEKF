@@ -297,6 +297,10 @@ class TrackletDataset(Dataset):
         gt_future_pos = np.zeros((K, 3), dtype=np.float32)
         gt_future_siz = np.zeros((K, 3), dtype=np.float32)
         gt_future_ori = np.zeros((K, 1), dtype=np.float32)
+        obs_future_pos = np.zeros((K, 5), dtype=np.float32)
+        obs_future_siz = np.zeros((K, 3), dtype=np.float32)
+        obs_future_ori = np.zeros((K, 1), dtype=np.float32)
+        obs_future_match = np.ones(K, dtype=np.bool_)
         delta_ts_future = np.zeros(K, dtype=np.float32)
 
         prev_ts = cur["timestamp"]
@@ -304,6 +308,12 @@ class TrackletDataset(Dataset):
             gt_future_pos[k] = frm["global_xyz"]
             gt_future_siz[k] = frm["lwh"]
             gt_future_ori[k, 0] = frm["yaw"]
+            obs_future_pos[k] = np.array([
+                frm["global_xyz"][0], frm["global_xyz"][1], frm["global_xyz"][2],
+                frm["velocity"][0], frm["velocity"][1],
+            ], dtype=np.float32)
+            obs_future_siz[k] = np.array(frm["lwh"], dtype=np.float32)
+            obs_future_ori[k, 0] = frm["yaw"]
             dt_k = frm["timestamp"] - prev_ts
             delta_ts_future[k] = max(dt_k, 1e-6)
             prev_ts = frm["timestamp"]
@@ -311,16 +321,35 @@ class TrackletDataset(Dataset):
         return {
             "track_history": torch.from_numpy(history),           # [T, 12]
             "history_mask": torch.from_numpy(mask),               # [T]
+            "history_match_mask": torch.from_numpy(mask.copy()),  # [T]
             "gt_current_state_pos": torch.from_numpy(gt_current_pos),  # [6]
             "gt_current_state_siz": torch.from_numpy(gt_current_siz),  # [3]
             "gt_current_state_ori": torch.from_numpy(gt_current_ori),  # [2]
+            "obs_current_state_pos": torch.from_numpy(gt_current_pos),  # [6]
+            "obs_current_state_siz": torch.from_numpy(gt_current_siz),  # [3]
+            "obs_current_state_ori": torch.from_numpy(gt_current_ori),  # [2]
             "gt_future_pos": torch.from_numpy(gt_future_pos),        # [K, 3]
             "gt_future_siz": torch.from_numpy(gt_future_siz),        # [K, 3]
             "gt_future_ori": torch.from_numpy(gt_future_ori),        # [K, 1]
+            "obs_future_pos": torch.from_numpy(obs_future_pos),      # [K, 5]
+            "obs_future_siz": torch.from_numpy(obs_future_siz),      # [K, 3]
+            "obs_future_ori": torch.from_numpy(obs_future_ori),      # [K, 1]
+            "obs_future_match": torch.from_numpy(obs_future_match),  # [K]
             "delta_ts_future": torch.from_numpy(delta_ts_future),    # [K]
             "delta_t": torch.tensor(s["delta_t"], dtype=torch.float32),
             "instance_token": s["instance_token"],
             "category": s["category"],
+            "current_det_score": torch.tensor(1.0, dtype=torch.float32),
+            "history_match_ratio": torch.tensor(1.0, dtype=torch.float32),
+            "current_range": torch.tensor(
+                float(np.linalg.norm(np.asarray(cur["global_xyz"][:2], dtype=np.float32))),
+                dtype=torch.float32,
+            ),
+            "current_speed": torch.tensor(
+                float(np.linalg.norm(np.asarray(cur["velocity"][:2], dtype=np.float32))),
+                dtype=torch.float32,
+            ),
+            "is_detection_driven": torch.tensor(False, dtype=torch.bool),
         }
 
 
