@@ -25,6 +25,7 @@ USEFUL_TRK_KEYS = (
     "status_0=",
     "stage1 ",
     "stage2 ",
+    "stage_rv ",
     "births=",
     "dead=",
 )

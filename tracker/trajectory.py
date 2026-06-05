@@ -167,7 +167,7 @@ class Trajectory:
 
         # status promotion
         # matched_score is an association cost: lower is better.
-        if self.track_length > self._confirmed_track_length or (
+        if self.track_length >= self._confirmed_track_length or (
             matched_score <= self._confirmed_match_score
             and self.bboxes[-1].det_score > self._confirmed_det_score
         ):
@@ -221,7 +221,7 @@ class Trajectory:
             self.bboxes.pop(0)
 
         # lifecycle state machine
-        if self.status_flag == 0 and self.track_length > self._confirmed_track_length:
+        if self.status_flag == 0 and self.track_length >= self._confirmed_track_length:
             self.status_flag = 4
 
         if self.status_flag == 1 and self.unmatch_length > self._max_unmatch_len:

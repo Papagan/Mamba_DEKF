@@ -19,12 +19,14 @@ import torch
 from typing import Dict, List, Tuple, Optional
 
 from tracker.matching import (
+    match_trajs_and_dets,
     match_trajs_and_dets_uncertainty_aware,
 )
 from tracker.trajectory import Trajectory
 from tracker.bbox import BBox
 from kalmanfilter.mamba_adaptive_kf import MambaDecoupledEKF
 from utils.debug_log import emit_debug_line
+from utils.utils import norm_realative_radian
 
 
 # ---- Mamba config defaults (can be overridden via cfg) ----
@@ -344,6 +346,39 @@ class Base3DTracker:
         px = pos_x.squeeze().cpu().numpy()   # [6]
         sx = siz_x.squeeze().cpu().numpy()   # [3]
         ox = ori_x.squeeze().cpu().numpy()   # [2]
+        dt = getattr(self, "_cur_delta_t", 1.0 / self.frame_rate)
+
+        def _safe_vec2(vec):
+            arr = np.asarray(vec, dtype=np.float32).reshape(-1)
+            if arr.shape[0] < 2 or not np.all(np.isfinite(arr[:2])):
+                return np.array([0.0, 0.0], dtype=np.float32)
+            return arr[:2]
+
+        def _choose_stable_velocity() -> np.ndarray:
+            kf_vel = _safe_vec2([px[3], px[4]])
+            diff_vel = _safe_vec2(getattr(bbox, "global_velocity_diff", [0.0, 0.0]))
+            curve_vel = _safe_vec2(getattr(bbox, "global_velocity_curve", [0.0, 0.0]))
+            det_vel = _safe_vec2(getattr(bbox, "global_velocity", [0.0, 0.0]))
+
+            geom_vel = curve_vel if np.linalg.norm(curve_vel) > 1e-3 else diff_vel
+            if np.linalg.norm(geom_vel) <= 1e-3:
+                geom_vel = det_vel
+
+            cls_name = traj.bboxes[-1].category
+            agile_cls = {"pedestrian", "bicycle", "motorcycle"}
+            disagreement = float(np.linalg.norm(kf_vel - geom_vel))
+            kf_speed = float(np.linalg.norm(kf_vel))
+            geom_speed = float(np.linalg.norm(geom_vel))
+
+            if cls_name in agile_cls and traj.track_length >= 3:
+                if geom_speed > 1e-3 and (disagreement > 2.5 or kf_speed > 25.0):
+                    return geom_vel
+                if geom_speed > 1e-3:
+                    return 0.5 * kf_vel + 0.5 * geom_vel
+
+            if geom_speed > 1e-3 and (disagreement > 4.0 or kf_speed > 35.0):
+                return geom_vel
+            return kf_vel
 
         # ---- Sanity check: anomalous position jumps (>10 m) ----
         # When the KF produces an extreme jump (divergent Q), fall back to
@@ -364,14 +399,31 @@ class Base3DTracker:
             )
             kf_jump_ok = displacement <= 10.0
 
-        # Use KF prediction for mature tracks; detection position for new tracks
-        # or when KF prediction is anomalous.
-        if traj.track_length <= 1 or not kf_jump_ok:
+        stable_vel = _choose_stable_velocity()
+        prev_bbox = traj.bboxes[-2] if len(traj.bboxes) > 1 else bbox
+        prev_pos_src = (
+            prev_bbox.global_xyz_lwh_yaw_fusion[:3]
+            if hasattr(prev_bbox, "global_xyz_lwh_yaw_fusion")
+            and prev_bbox.global_xyz_lwh_yaw_fusion is not None
+            else prev_bbox.global_xyz
+        )
+        motion_xyz = [
+            float(prev_pos_src[0] + stable_vel[0] * dt),
+            float(prev_pos_src[1] + stable_vel[1] * dt),
+            float(px[2]),
+        ]
+
+        # Use KF prediction for mature stable tracks; otherwise fall back to a
+        # MCTrack-style CV extrapolation from recent geometric velocity.
+        if traj.track_length <= 1:
             predict_xyz = bbox.global_xyz
-            vel_x, vel_y = 0.0, 0.0
+            vel_x, vel_y = float(stable_vel[0]), float(stable_vel[1])
+        elif not kf_jump_ok:
+            predict_xyz = motion_xyz
+            vel_x, vel_y = float(stable_vel[0]), float(stable_vel[1])
         else:
             predict_xyz = [px[0], px[1], px[2]]
-            vel_x, vel_y = px[3], px[4]
+            vel_x, vel_y = float(stable_vel[0]), float(stable_vel[1])
         predict_lwh = [sx[0], sx[1], sx[2]]
         predict_yaw = float(ox[0])
 
@@ -588,7 +640,7 @@ class Base3DTracker:
                 info["has_real_det"] += 1
             else:
                 info["no_real_det_yet"] += 1
-            if traj.track_length <= traj._confirmed_track_length:
+            if traj.track_length < traj._confirmed_track_length:
                 info["need_more_hits"] += 1
             last_real_score = max((b.det_score for b in real_bboxes), default=0.0)
             if last_real_score <= traj._confirmed_det_score:
@@ -651,6 +703,48 @@ class Base3DTracker:
                     f"no_real_det_yet={pending_info.get('no_real_det_yet', 0)}"
                 )
 
+    def _rv_rescue_match(
+        self,
+        frame_info,
+        unmatched_trajs: List[Trajectory],
+        unmatched_det_indices: List[int],
+    ) -> List[Tuple[int, int, BBox, float]]:
+        if not self.cfg.get("IS_RV_MATCHING", False):
+            return []
+        if len(unmatched_trajs) == 0 or len(unmatched_det_indices) == 0:
+            return []
+
+        unmatched_dets = [frame_info.bboxes[i] for i in unmatched_det_indices]
+        match_res_rv, costs_rv = match_trajs_and_dets(
+            unmatched_trajs,
+            unmatched_dets,
+            self.cfg,
+            frame_info.transform_matrix,
+            is_rv=True,
+        )
+
+        rescued: List[Tuple[int, int, BBox, float]] = []
+        for match_idx, row in enumerate(match_res_rv if len(match_res_rv) > 0 else []):
+            traj_sub_idx = int(row[0])
+            det_sub_idx = int(row[1])
+            track_id = unmatched_trajs[traj_sub_idx].track_id
+            trk_bbox = self.all_trajs[track_id].bboxes[-1]
+            det_bbox = unmatched_dets[det_sub_idx]
+            diff_rot = (
+                abs(norm_realative_radian(trk_bbox.global_yaw - det_bbox.global_yaw))
+                * 180.0
+                / np.pi
+            )
+            dist = np.linalg.norm(
+                np.array(trk_bbox.global_xyz) - np.array(det_bbox.global_xyz)
+            )
+            if diff_rot > 90 or dist > 5:
+                continue
+            global_det_idx = unmatched_det_indices[det_sub_idx]
+            match_cost = float(costs_rv[match_idx]) if match_idx < len(costs_rv) else float("inf")
+            rescued.append((traj_sub_idx, global_det_idx, det_bbox, match_cost))
+        return rescued
+
     # ==================================================================
     # Main entry: track a single frame
     # ==================================================================
@@ -675,6 +769,7 @@ class Base3DTracker:
         """
         # ---- delta_t from real timestamps ----
         delta_t = self._compute_delta_t(frame_info.timestamp)
+        self._cur_delta_t = delta_t
         self.last_timestamp = frame_info.timestamp
 
         for det in frame_info.bboxes:
@@ -797,6 +892,8 @@ class Base3DTracker:
             matched_track_ids: List[int] = []
             matched_bboxes: List[BBox] = []
             matched_traj_full_set: set = set()
+            matched_det_global_set: set = set()
+            high_global_to_sub = {g: s for s, g in enumerate(high_det_indices)}
 
             # ---- Stage 1: all active trajs vs high-score dets (strict) ----
             if trajs_cnt > 0 and len(high_dets) > 0:
@@ -827,6 +924,7 @@ class Base3DTracker:
                 matched_bboxes.append(det_bbox)
                 matched_traj_full_set.add(traj_idx)
                 matched_high_sub_set.add(high_sub_idx)
+                matched_det_global_set.add(det_global_idx)
                 if _dbg_small and det_bbox.category in matched_counts:
                     matched_counts[det_bbox.category] += 1
                     assoc_cost = float(costs_1[match_idx]) if match_idx < len(costs_1) else float("nan")
@@ -892,6 +990,7 @@ class Base3DTracker:
                 matched_track_ids.append(track_id)
                 matched_bboxes.append(det_bbox)
                 matched_traj_full_set.add(traj_full_idx)
+                matched_det_global_set.add(det_global_idx)
                 if _dbg_small and det_bbox.category in matched_counts:
                     matched_counts[det_bbox.category] += 1
                     assoc_cost = float(costs_2[match_idx]) if match_idx < len(costs_2) else float("nan")
@@ -907,7 +1006,51 @@ class Base3DTracker:
                     f"low_dets={len(low_dets)} matched={len(match_res_2)}"
                 )
 
-            # ---- coast: trajectories that missed both stages ----
+            # ---- Optional MCTrack-style RV rescue on remaining unmatched pairs ----
+            rv_matched = 0
+            remaining_traj_full_indices = [
+                i for i in range(trajs_cnt) if i not in matched_traj_full_set
+            ]
+            remaining_det_global_indices = [
+                i for i in range(dets_cnt) if i not in matched_det_global_set
+            ]
+            if self.cfg.get("IS_RV_MATCHING", False):
+                rescued_matches = self._rv_rescue_match(
+                    frame_info,
+                    [trajs[i] for i in remaining_traj_full_indices],
+                    remaining_det_global_indices,
+                )
+                for traj_sub_idx, det_global_idx, det_bbox, match_cost in rescued_matches:
+                    traj_full_idx = remaining_traj_full_indices[traj_sub_idx]
+                    track_id = trajs[traj_full_idx].track_id
+                    cat_num = self.cfg["CATEGORY_MAP_TO_NUMBER"].get(det_bbox.category, 0)
+                    birth_thre = birth_cfg.get(cat_num, 0.4)
+                    if det_bbox.det_score < birth_thre:
+                        det_bbox.is_low_score_match = True
+                    self.all_trajs[track_id].update(det_bbox, match_cost)
+                    matched_track_ids.append(track_id)
+                    matched_bboxes.append(det_bbox)
+                    matched_traj_full_set.add(traj_full_idx)
+                    matched_det_global_set.add(det_global_idx)
+                    if det_global_idx in high_global_to_sub:
+                        matched_high_sub_set.add(high_global_to_sub[det_global_idx])
+                    rv_matched += 1
+                    if _dbg_small and det_bbox.category in matched_counts:
+                        matched_counts[det_bbox.category] += 1
+                        emit_debug_line(
+                            f"[TRK-SMALL] frame={frame_info.frame_id} cls={det_bbox.category} "
+                            f"stage=rv event=match tid={track_id} det_score={det_bbox.det_score:.4f} "
+                            f"assoc_cost={match_cost:.4f} track_len={self.all_trajs[track_id].track_length} "
+                            f"status={self.all_trajs[track_id].status_flag}"
+                        )
+                if _dbg and (len(remaining_traj_full_indices) > 0 or len(remaining_det_global_indices) > 0):
+                    emit_debug_line(
+                        f"[TRK] frame={frame_info.frame_id} stage_rv "
+                        f"candidate_trajs={len(remaining_traj_full_indices)} "
+                        f"candidate_dets={len(remaining_det_global_indices)} matched={rv_matched}"
+                    )
+
+            # ---- coast: trajectories that missed all stages ----
             for i in range(trajs_cnt):
                 if i not in matched_traj_full_set:
                     track_id = trajs[i].track_id
@@ -990,6 +1133,44 @@ class Base3DTracker:
                         f"stage=single event=match tid={track_id} det_score={det_bbox.det_score:.4f} "
                         f"assoc_cost={assoc_cost:.4f} track_len={self.all_trajs[track_id].track_length} "
                         f"status={self.all_trajs[track_id].status_flag}"
+                    )
+
+            # ---- Optional MCTrack-style RV rescue on remaining unmatched pairs ----
+            rv_matched = 0
+            remaining_traj_indices = [
+                i for i in range(trajs_cnt) if i not in matched_traj_indices
+            ]
+            remaining_det_indices = [
+                i for i in range(dets_cnt) if i not in matched_det_indices
+            ]
+            if self.cfg.get("IS_RV_MATCHING", False):
+                rescued_matches = self._rv_rescue_match(
+                    frame_info,
+                    [trajs[i] for i in remaining_traj_indices],
+                    remaining_det_indices,
+                )
+                for traj_sub_idx, det_global_idx, det_bbox, match_cost in rescued_matches:
+                    traj_idx = remaining_traj_indices[traj_sub_idx]
+                    track_id = trajs[traj_idx].track_id
+                    self.all_trajs[track_id].update(det_bbox, match_cost)
+                    matched_track_ids.append(track_id)
+                    matched_bboxes.append(det_bbox)
+                    matched_traj_indices.add(traj_idx)
+                    matched_det_indices.add(det_global_idx)
+                    rv_matched += 1
+                    if _dbg_small and det_bbox.category in matched_counts:
+                        matched_counts[det_bbox.category] += 1
+                        emit_debug_line(
+                            f"[TRK-SMALL] frame={frame_info.frame_id} cls={det_bbox.category} "
+                            f"stage=rv event=match tid={track_id} det_score={det_bbox.det_score:.4f} "
+                            f"assoc_cost={match_cost:.4f} track_len={self.all_trajs[track_id].track_length} "
+                            f"status={self.all_trajs[track_id].status_flag}"
+                        )
+                if _dbg and (len(remaining_traj_indices) > 0 or len(remaining_det_indices) > 0):
+                    emit_debug_line(
+                        f"[TRK] frame={frame_info.frame_id} stage_rv "
+                        f"candidate_trajs={len(remaining_traj_indices)} "
+                        f"candidate_dets={len(remaining_det_indices)} matched={rv_matched}"
                     )
 
             # ---- coast: unmatched trajectories ----
