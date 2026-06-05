@@ -206,6 +206,13 @@ def estimate_training_samples(tracklets: List[dict], history_len: int, rollout_s
     return total
 
 
+def estimate_training_samples_for_length(tracklet_len: int, history_len: int, rollout_steps: int) -> int:
+    min_len = history_len + rollout_steps
+    if tracklet_len < min_len:
+        return 0
+    return tracklet_len - min_len + 1
+
+
 def resolve_class_min_window(
     category: str,
     history_len: int,
@@ -240,7 +247,7 @@ def estimate_training_samples_adaptive(
             min_rollout_steps=min_rollout_steps,
             class_window_cfg=class_window_cfg,
         )
-        total += estimate_training_samples(len(trk["frames"]), hist_min, roll_min)
+        total += estimate_training_samples_for_length(len(trk["frames"]), hist_min, roll_min)
     return total
 
 
