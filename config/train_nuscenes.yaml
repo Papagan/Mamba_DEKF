@@ -60,12 +60,12 @@ TRAINING:
   BATCH_SIZE: 128
   NUM_WORKERS: 4
   EPOCHS: 100
-  LR: 1.0e-3                # base LR for projection/head layers
+  LR: 5.0e-4                # base LR for projection/head layers; slightly lower to stabilise head/noise coupling
   MAMBA_LR: 3.0e-5          # lower LR for Mamba SSM backbone (3e-5 for 5 layers)
   WEIGHT_DECAY: 1.0e-4
   WARMUP_EPOCHS: 3             # LR scheduler warmup
-  WARMUP_UNCERTAINTY_EPOCHS: 5 # detach Q/R/kappa, use L2 angle loss
-  WARMUP_TRANSITION_EPOCHS: 5  # smooth unfreeze (alpha ramp 0->1) after uncertainty warmup
+  WARMUP_UNCERTAINTY_EPOCHS: 8 # detach Q/R/kappa longer so state backbone stabilises before uncertainty learning
+  WARMUP_TRANSITION_EPOCHS: 8  # slower smooth unfreeze (alpha ramp 0->1) after uncertainty warmup
   GRAD_CLIP_NORM: 1.0
   LOG_EVERY: 50
   SAVE_EVERY: 10

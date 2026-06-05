@@ -407,6 +407,36 @@ Notes:
 - This is a **mini cache built from `val.json`**, suitable for pipeline verification and detection-driven dataset development.
 - It is **not** a replacement for a real `train.json`. For formal training, generate CenterPoint detections on the nuScenes `train` split as well.
 
+### 5.5.1 Audit a Detection-Driven Cache
+
+Before changing loss weights or training longer, it is useful to check whether the detection-driven cache itself is already biased toward:
+
+- too many short tracklets
+- too many miss frames
+- poor matched ratio for `bicycle` / `motorcycle`
+- score distributions that are too low to support stable confirmation
+
+Tool:
+
+```bash
+python tools/audit_det_tracklet_cache.py \
+  --input /root/autodl-tmp/data/training_cache/nuscenes/centerpoint_mini_train_from_val.pkl \
+  --train-config config/train_nuscenes.yaml \
+  --output debug/cache_audit.json
+```
+
+What it reports:
+
+- overall `tracklets`, `frames`, `matched_frames`, `miss_frames`
+- overall `estimated_samples`
+- per-class `tracklets`, `frames`, `matched_ratio`
+- per-class `tracklet_len_mean/min/max`
+- per-class `score_all_*` and `score_matched_*`
+- per-class `short_tracklets_lt_need`
+- per-class `low_match_ratio_tracklets_lt_0_5`
+
+This is especially important for `bicycle` and `motorcycle`: if these classes already have low matched ratio or too few usable rollout samples in the cache, training-side tuning alone usually will not recover tracking performance.
+
 ### 5.6 Conditional Noise + Residual Covariance
 
 `config/train_nuscenes.yaml` now splits noise handling into three layers:

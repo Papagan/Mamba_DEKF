@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""
+Audit a detection-driven training cache.
+
+Focus:
+  - per-class tracklet/frame/sample volume
+  - matched vs miss ratio
+  - detection score distribution
+  - short-track / low-match-ratio concentration
+
+Usage:
+  python tools/audit_det_tracklet_cache.py \
+    --input /root/autodl-tmp/data/training_cache/nuscenes/centerpoint_mini_train_from_val.pkl \
+    --train-config config/train_nuscenes.yaml
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import pickle
+from collections import defaultdict
+from pathlib import Path
+from typing import Any, Dict, List
+
+import yaml
+
+
+def load_pickle(path: str) -> List[dict]:
+    with open(path, "rb") as f:
+        obj = pickle.load(f)
+    if not isinstance(obj, list):
+        raise TypeError(f"Expected list tracklets in {path}, got {type(obj).__name__}")
+    return obj
+
+
+def load_train_cfg(path: str | None) -> Dict[str, Any]:
+    if not path:
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def safe_mean(vals: List[float]) -> float:
+    return float(sum(vals) / len(vals)) if vals else 0.0
+
+
+def safe_min(vals: List[float]) -> float:
+    return float(min(vals)) if vals else 0.0
+
+
+def safe_max(vals: List[float]) -> float:
+    return float(max(vals)) if vals else 0.0
+
+
+def estimate_samples(tracklet_len: int, history_len: int, rollout_steps: int) -> int:
+    need = history_len + rollout_steps
+    if tracklet_len < need:
+        return 0
+    return tracklet_len - need + 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Audit a detection-driven training cache.")
+    parser.add_argument("--input", required=True, help="Tracklet cache .pkl file")
+    parser.add_argument("--train-config", default=None, help="Optional training config yaml")
+    parser.add_argument("--output", default=None, help="Optional summary json path")
+    args = parser.parse_args()
+
+    tracklets = load_pickle(args.input)
+    train_cfg = load_train_cfg(args.train_config)
+    model_cfg = train_cfg.get("MODEL", {})
+    train_subcfg = train_cfg.get("TRAINING", {})
+    history_len = int(model_cfg.get("HISTORY_LEN", 8))
+    rollout_steps = int(train_subcfg.get("ROLLOUT_STEPS", 4))
+
+    overall = {
+        "tracklets": len(tracklets),
+        "frames": 0,
+        "matched_frames": 0,
+        "miss_frames": 0,
+        "estimated_samples": 0,
+        "history_len": history_len,
+        "rollout_steps": rollout_steps,
+    }
+
+    per_class: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
+        "tracklets": 0,
+        "frames": 0,
+        "matched_frames": 0,
+        "miss_frames": 0,
+        "estimated_samples": 0,
+        "short_tracklets_lt_need": 0,
+        "low_match_ratio_tracklets_lt_0_5": 0,
+        "tracklet_lengths": [],
+        "tracklet_match_ratios": [],
+        "matched_scores": [],
+        "all_scores": [],
+    })
+
+    need = history_len + rollout_steps
+    for trk in tracklets:
+        cls = trk.get("category", "unknown")
+        frames = trk.get("frames", [])
+        cls_stat = per_class[cls]
+        cls_stat["tracklets"] += 1
+        cls_stat["tracklet_lengths"].append(len(frames))
+
+        matched_cnt = 0
+        score_vals = []
+        matched_score_vals = []
+        for fr in frames:
+            cls_stat["frames"] += 1
+            overall["frames"] += 1
+            is_matched = bool(fr.get("is_matched", False))
+            if is_matched:
+                cls_stat["matched_frames"] += 1
+                overall["matched_frames"] += 1
+                matched_cnt += 1
+            else:
+                cls_stat["miss_frames"] += 1
+                overall["miss_frames"] += 1
+
+            obs = fr.get("obs_feature_12", None)
+            score = None
+            if isinstance(obs, list) and len(obs) >= 12:
+                score = obs[11]
+            elif "det_score" in fr:
+                score = fr["det_score"]
+            if isinstance(score, (int, float)) and math.isfinite(score):
+                score_vals.append(float(score))
+                if is_matched:
+                    matched_score_vals.append(float(score))
+
+        match_ratio = float(matched_cnt / len(frames)) if frames else 0.0
+        cls_stat["tracklet_match_ratios"].append(match_ratio)
+        if len(frames) < need:
+            cls_stat["short_tracklets_lt_need"] += 1
+        if match_ratio < 0.5:
+            cls_stat["low_match_ratio_tracklets_lt_0_5"] += 1
+
+        samples = estimate_samples(len(frames), history_len, rollout_steps)
+        cls_stat["estimated_samples"] += samples
+        overall["estimated_samples"] += samples
+
+        cls_stat["all_scores"].extend(score_vals)
+        cls_stat["matched_scores"].extend(matched_score_vals)
+
+    summary = {
+        "overall": {
+            **overall,
+            "matched_ratio": float(overall["matched_frames"] / overall["frames"]) if overall["frames"] else 0.0,
+        },
+        "per_class": {},
+    }
+
+    for cls, stat in sorted(per_class.items()):
+        frames = stat["frames"]
+        matched_frames = stat["matched_frames"]
+        summary["per_class"][cls] = {
+            "tracklets": stat["tracklets"],
+            "frames": frames,
+            "matched_frames": matched_frames,
+            "miss_frames": stat["miss_frames"],
+            "matched_ratio": float(matched_frames / frames) if frames else 0.0,
+            "estimated_samples": stat["estimated_samples"],
+            "short_tracklets_lt_need": stat["short_tracklets_lt_need"],
+            "low_match_ratio_tracklets_lt_0_5": stat["low_match_ratio_tracklets_lt_0_5"],
+            "tracklet_len_mean": safe_mean(stat["tracklet_lengths"]),
+            "tracklet_len_min": safe_min(stat["tracklet_lengths"]),
+            "tracklet_len_max": safe_max(stat["tracklet_lengths"]),
+            "tracklet_match_ratio_mean": safe_mean(stat["tracklet_match_ratios"]),
+            "score_all_min": safe_min(stat["all_scores"]),
+            "score_all_mean": safe_mean(stat["all_scores"]),
+            "score_all_max": safe_max(stat["all_scores"]),
+            "score_matched_min": safe_min(stat["matched_scores"]),
+            "score_matched_mean": safe_mean(stat["matched_scores"]),
+            "score_matched_max": safe_max(stat["matched_scores"]),
+        }
+
+    out_text = json.dumps(summary, indent=2, ensure_ascii=False)
+    print(out_text)
+
+    if args.output:
+        out_path = Path(args.output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(out_text + "\n", encoding="utf-8")
+        print(f"[SAVE] {out_path}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
