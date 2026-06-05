@@ -5,6 +5,7 @@ Keep only tracker/association debug lines from a log.
 Default keep tokens:
   - [TRK]
   - [ASSOC]
+  - [TRK-SMALL]
 
 Usage:
   python tools/clean_trk_assoc_log.py -i raw.log -o filtered.log
@@ -19,7 +20,7 @@ import sys
 from typing import Iterable, List
 
 
-DEFAULT_KEEP = ["[TRK]", "[ASSOC]"]
+DEFAULT_KEEP = ["[TRK]", "[ASSOC]", "[TRK-SMALL]"]
 USEFUL_TRK_KEYS = (
     "status_0=",
     "stage1 ",
@@ -51,6 +52,8 @@ def should_keep_line(line: str) -> bool:
         return True
     if line.startswith("[TRK]"):
         return any(key in line for key in USEFUL_TRK_KEYS)
+    if line.startswith("[TRK-SMALL]"):
+        return True
     return False
 
 
@@ -89,7 +92,7 @@ def main() -> int:
         "--keep",
         nargs="+",
         default=DEFAULT_KEEP,
-        help="Tokens to keep. Default: [TRK] [ASSOC].",
+        help="Tokens to keep. Default: [TRK] [ASSOC] [TRK-SMALL].",
     )
     parser.add_argument(
         "--no-minimal",

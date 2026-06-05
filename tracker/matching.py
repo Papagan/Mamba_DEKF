@@ -8,6 +8,7 @@ import os
 
 from tracker.cost_function import *
 from utils.utils import mask_tras_dets
+from utils.debug_log import emit_debug_line
 
 
 def Greedy(cost_matrix, thresholds):
@@ -404,11 +405,10 @@ def match_trajs_and_dets_uncertainty_aware(
                 finite_min = float("inf")
                 finite_max = float("inf")
                 finite_mean = float("inf")
-            print(
+            emit_debug_line(
                 f"[ASSOC] mode={matching_mode} trajs={len(trajs)} dets={len(dets)} "
                 f"finite={finite_count}/{total_count} all_inf_rows={all_inf_rows} "
-                f"cost_min={finite_min:.4f} cost_mean={finite_mean:.4f} cost_max={finite_max:.4f}",
-                flush=True,
+                f"cost_min={finite_min:.4f} cost_mean={finite_mean:.4f} cost_max={finite_max:.4f}"
             )
 
         # ---- Uncertainty-adaptive matching gate ----
@@ -435,13 +435,11 @@ def match_trajs_and_dets_uncertainty_aware(
                     continue
                 cls_good = int(np.sum(cls_cost[cls_finite] <= thr))
                 cls_hits.append(f"c{cls_idx}:{cls_good}/{cls_total}@{thr:.2f}")
-            print(
-                f"[ASSOC] unc_scale={unc_scale:.3f} thresholds={adaptive_thresholds}",
-                flush=True,
+            emit_debug_line(
+                f"[ASSOC] unc_scale={unc_scale:.3f} thresholds={adaptive_thresholds}"
             )
-            print(
-                "[ASSOC] below-threshold " + " ".join(cls_hits),
-                flush=True,
+            emit_debug_line(
+                "[ASSOC] below-threshold " + " ".join(cls_hits)
             )
 
         # Safety fallback:
@@ -463,10 +461,9 @@ def match_trajs_and_dets_uncertainty_aware(
         if feasible_pairs == 0 or exploded:
             if dbg_assoc:
                 reason = "no-feasible-pairs" if feasible_pairs == 0 else "cost-exploded"
-                print(
+                emit_debug_line(
                     f"[ASSOC] fallback=geometric reason={reason} "
-                    f"min_cost={float(np.min(finite_vals)) if finite_vals.size else float('inf'):.4f}",
-                    flush=True,
+                    f"min_cost={float(np.min(finite_vals)) if finite_vals.size else float('inf'):.4f}"
                 )
             return match_trajs_and_dets(trajs, dets, cfg)
 

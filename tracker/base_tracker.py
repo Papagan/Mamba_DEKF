@@ -24,6 +24,7 @@ from tracker.matching import (
 from tracker.trajectory import Trajectory
 from tracker.bbox import BBox
 from kalmanfilter.mamba_adaptive_kf import MambaDecoupledEKF
+from utils.debug_log import emit_debug_line
 
 
 # ---- Mamba config defaults (can be overridden via cfg) ----
@@ -632,24 +633,22 @@ class Base3DTracker:
         for cls_name in target_classes:
             alive_info = alive_by_cls[cls_name]
             pending_info = pending_summary.get(cls_name, {})
-            print(
+            emit_debug_line(
                 f"[TRK-SMALL] frame={frame_id} cls={cls_name} "
                 f"dets={det_counts.get(cls_name, 0)} matched={matched_counts.get(cls_name, 0)} "
                 f"births={birth_counts.get(cls_name, 0)} coasts={coast_counts.get(cls_name, 0)} "
                 f"dead={dead_counts.get(cls_name, 0)} output={output_counts.get(cls_name, 0)} "
                 f"alive_init={alive_info['init']} alive_confirmed={alive_info['confirmed']} "
-                f"alive_obscured={alive_info['obscured']}",
-                flush=True,
+                f"alive_obscured={alive_info['obscured']}"
             )
             if pending_info:
-                print(
+                emit_debug_line(
                     f"[TRK-SMALL] frame={frame_id} cls={cls_name} pending={pending_info.get('pending', 0)} "
                     f"need_more_hits={pending_info.get('need_more_hits', 0)} "
                     f"low_det_score={pending_info.get('low_det_score', 0)} "
                     f"low_match_score={pending_info.get('low_match_score', 0)} "
                     f"has_real_det={pending_info.get('has_real_det', 0)} "
-                    f"no_real_det_yet={pending_info.get('no_real_det_yet', 0)}",
-                    flush=True,
+                    f"no_real_det_yet={pending_info.get('no_real_det_yet', 0)}"
                 )
 
     # ==================================================================
@@ -690,11 +689,12 @@ class Base3DTracker:
         _dbg_small = os.environ.get("DEBUG_SMALL_CLASSES", "")
         if _dbg:
             _statuses = [t.status_flag for t in trajs]
-            print(f"[TRK] frame={frame_info.frame_id} dets={dets_cnt} "
-                  f"trajs={trajs_cnt} status_0={_statuses.count(0)} "
-                  f"status_1={_statuses.count(1)} status_2={_statuses.count(2)} "
-                  f"dt={delta_t:.4f}s",
-                  flush=True)
+            emit_debug_line(
+                f"[TRK] frame={frame_info.frame_id} dets={dets_cnt} "
+                f"trajs={trajs_cnt} status_0={_statuses.count(0)} "
+                f"status_1={_statuses.count(1)} status_2={_statuses.count(2)} "
+                f"dt={delta_t:.4f}s"
+            )
         debug_target_classes = {"bicycle", "motorcycle"}
         det_counts = {cls_name: 0 for cls_name in debug_target_classes}
         matched_counts = {cls_name: 0 for cls_name in debug_target_classes}
@@ -829,18 +829,16 @@ class Base3DTracker:
                 if _dbg_small and det_bbox.category in matched_counts:
                     matched_counts[det_bbox.category] += 1
                     assoc_cost = float(costs_1[match_idx]) if match_idx < len(costs_1) else float("nan")
-                    print(
+                    emit_debug_line(
                         f"[TRK-SMALL] frame={frame_info.frame_id} cls={det_bbox.category} "
                         f"stage=1 event=match tid={track_id} det_score={det_bbox.det_score:.4f} "
                         f"assoc_cost={assoc_cost:.4f} track_len={self.all_trajs[track_id].track_length} "
-                        f"status={self.all_trajs[track_id].status_flag}",
-                        flush=True,
+                        f"status={self.all_trajs[track_id].status_flag}"
                     )
             if _dbg:
-                print(
+                emit_debug_line(
                     f"[TRK] frame={frame_info.frame_id} stage1 "
-                    f"high_dets={len(high_dets)} matched={len(match_res_1)}",
-                    flush=True,
+                    f"high_dets={len(high_dets)} matched={len(match_res_1)}"
                 )
 
             # ---- Stage 2: unmatched trajs vs low-score dets (relaxed) ----
@@ -895,18 +893,16 @@ class Base3DTracker:
                 if _dbg_small and det_bbox.category in matched_counts:
                     matched_counts[det_bbox.category] += 1
                     assoc_cost = float(costs_2[match_idx]) if match_idx < len(costs_2) else float("nan")
-                    print(
+                    emit_debug_line(
                         f"[TRK-SMALL] frame={frame_info.frame_id} cls={det_bbox.category} "
                         f"stage=2 event=match tid={track_id} det_score={det_bbox.det_score:.4f} "
                         f"assoc_cost={assoc_cost:.4f} track_len={self.all_trajs[track_id].track_length} "
-                        f"status={self.all_trajs[track_id].status_flag}",
-                        flush=True,
+                        f"status={self.all_trajs[track_id].status_flag}"
                     )
             if _dbg:
-                print(
+                emit_debug_line(
                     f"[TRK] frame={frame_info.frame_id} stage2 "
-                    f"low_dets={len(low_dets)} matched={len(match_res_2)}",
-                    flush=True,
+                    f"low_dets={len(low_dets)} matched={len(match_res_2)}"
                 )
 
             # ---- coast: trajectories that missed both stages ----
@@ -937,18 +933,16 @@ class Base3DTracker:
                     self.track_id_counter += 1
                     if _dbg_small and det_bbox.category in birth_counts:
                         birth_counts[det_bbox.category] += 1
-                        print(
+                        emit_debug_line(
                             f"[TRK-SMALL] frame={frame_info.frame_id} cls={det_bbox.category} "
-                            f"event=birth tid={self.track_id_counter - 1} det_score={det_bbox.det_score:.4f}",
-                            flush=True,
+                            f"event=birth tid={self.track_id_counter - 1} det_score={det_bbox.det_score:.4f}"
                         )
             if _dbg:
                 births = len(high_dets) - len(matched_high_sub_set)
                 coasts = trajs_cnt - len(matched_traj_full_set)
-                print(
+                emit_debug_line(
                     f"[TRK] frame={frame_info.frame_id} births={births} coasts={coasts} "
-                    f"matched_total={len(matched_track_ids)}",
-                    flush=True,
+                    f"matched_total={len(matched_track_ids)}"
                 )
 
         else:
@@ -988,12 +982,11 @@ class Base3DTracker:
                 if _dbg_small and det_bbox.category in matched_counts:
                     matched_counts[det_bbox.category] += 1
                     assoc_cost = float(costs[match_idx]) if match_idx < len(costs) else float("nan")
-                    print(
+                    emit_debug_line(
                         f"[TRK-SMALL] frame={frame_info.frame_id} cls={det_bbox.category} "
                         f"stage=single event=match tid={track_id} det_score={det_bbox.det_score:.4f} "
                         f"assoc_cost={assoc_cost:.4f} track_len={self.all_trajs[track_id].track_length} "
-                        f"status={self.all_trajs[track_id].status_flag}",
-                        flush=True,
+                        f"status={self.all_trajs[track_id].status_flag}"
                     )
 
             # ---- coast: unmatched trajectories ----
@@ -1024,10 +1017,9 @@ class Base3DTracker:
                     self.track_id_counter += 1
                     if _dbg_small and det_bbox.category in birth_counts:
                         birth_counts[det_bbox.category] += 1
-                        print(
+                        emit_debug_line(
                             f"[TRK-SMALL] frame={frame_info.frame_id} cls={det_bbox.category} "
-                            f"event=birth tid={self.track_id_counter - 1} det_score={det_bbox.det_score:.4f}",
-                            flush=True,
+                            f"event=birth tid={self.track_id_counter - 1} det_score={det_bbox.det_score:.4f}"
                         )
 
         # ---- death: remove dead tracks ----
@@ -1053,9 +1045,10 @@ class Base3DTracker:
                 output_trajs,
             )
         if _dbg:
-            print(f"[TRK] frame={frame_info.frame_id} dead={_n_dead} "
-                  f"alive={len(self.all_trajs)} output={len(output_trajs)}",
-                  flush=True)
+            emit_debug_line(
+                f"[TRK] frame={frame_info.frame_id} dead={_n_dead} "
+                f"alive={len(self.all_trajs)} output={len(output_trajs)}"
+            )
         return output_trajs
 
     # ==================================================================
