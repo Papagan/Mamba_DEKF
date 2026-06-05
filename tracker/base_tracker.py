@@ -594,7 +594,7 @@ class Base3DTracker:
             if last_real_score <= traj._confirmed_det_score:
                 info["low_det_score"] += 1
             last_match_score = traj.matched_scores[-1] if traj.matched_scores else 0.0
-            if last_match_score <= traj._confirmed_match_score:
+            if last_match_score > traj._confirmed_match_score:
                 info["low_match_score"] += 1
         return summary
 
@@ -821,7 +821,8 @@ class Base3DTracker:
                 det_global_idx = high_det_indices[high_sub_idx]
                 track_id = trajs[traj_idx].track_id
                 det_bbox = frame_info.bboxes[det_global_idx]
-                self.all_trajs[track_id].update(det_bbox, 0.0)
+                match_cost = float(costs_1[match_idx]) if match_idx < len(costs_1) else float("inf")
+                self.all_trajs[track_id].update(det_bbox, match_cost)
                 matched_track_ids.append(track_id)
                 matched_bboxes.append(det_bbox)
                 matched_traj_full_set.add(traj_idx)
@@ -886,7 +887,8 @@ class Base3DTracker:
                 # Mark Stage-2 rescue matches so they help continuity
                 # without inflating final trajectory confidence.
                 det_bbox.is_low_score_match = True
-                self.all_trajs[track_id].update(det_bbox, 0.0)
+                match_cost = float(costs_2[match_idx]) if match_idx < len(costs_2) else float("inf")
+                self.all_trajs[track_id].update(det_bbox, match_cost)
                 matched_track_ids.append(track_id)
                 matched_bboxes.append(det_bbox)
                 matched_traj_full_set.add(traj_full_idx)
@@ -974,7 +976,8 @@ class Base3DTracker:
                 det_idx = int(row[1])
                 track_id = trajs[traj_idx].track_id
                 det_bbox = frame_info.bboxes[det_idx]
-                self.all_trajs[track_id].update(det_bbox, 0.0)
+                match_cost = float(costs[match_idx]) if match_idx < len(costs) else float("inf")
+                self.all_trajs[track_id].update(det_bbox, match_cost)
                 matched_track_ids.append(track_id)
                 matched_bboxes.append(det_bbox)
                 matched_traj_indices.add(traj_idx)

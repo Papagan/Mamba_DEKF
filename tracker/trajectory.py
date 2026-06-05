@@ -166,8 +166,9 @@ class Trajectory:
         self.bboxes[-1].matched_score = matched_score
 
         # status promotion
+        # matched_score is an association cost: lower is better.
         if self.track_length > self._confirmed_track_length or (
-            matched_score > self._confirmed_match_score
+            matched_score <= self._confirmed_match_score
             and self.bboxes[-1].det_score > self._confirmed_det_score
         ):
             self.status_flag = 1
