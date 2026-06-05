@@ -8,11 +8,11 @@ DATA:
   NUSC_DATAROOT: /root/autodl-tmp/data/nuscenes/datasets/
   TRAIN_SPLIT: train
   VAL_SPLIT: val
-  TRAIN_SOURCE: gt          # gt / det
-  VAL_SOURCE: gt            # gt / det
+  TRAIN_SOURCE: det         # gt / det
+  VAL_SOURCE: det           # gt / det
   TRACKLET_CACHE_DIR: /root/autodl-tmp/data/training_cache/nuscenes/
-  TRAIN_TRACKLET_PKL: null  # required when TRAIN_SOURCE=det
-  VAL_TRACKLET_PKL: null    # required when VAL_SOURCE=det
+  TRAIN_TRACKLET_PKL: /root/autodl-tmp/data/training_cache/nuscenes/mini/train.pkl  # temporary val-derived cache for pipeline verification
+  VAL_TRACKLET_PKL: /root/autodl-tmp/data/training_cache/nuscenes/mini/train.pkl    # temporary val-derived cache for pipeline verification
   REQUIRE_CURRENT_MATCH: true
   MIN_HISTORY_MATCH_RATIO: 0.25
   TRAIN_ADAPTIVE_WINDOWS: true
