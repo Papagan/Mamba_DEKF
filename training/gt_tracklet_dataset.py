@@ -12,10 +12,13 @@
 
 import os
 import pickle
+import random
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 from typing import Dict, List, Optional, Tuple
+
+from kalmanfilter.noise_priors import category_to_tracking_name
 
 
 def _quat_to_yaw(rotation: list) -> float:
@@ -30,6 +33,28 @@ def _quat_to_yaw(rotation: list) -> float:
 def _wrap_to_pi(angle: float) -> float:
     """Wrap angle to [-pi, pi]."""
     return angle - 2.0 * np.pi * round(angle / (2.0 * np.pi))
+
+
+def _resolve_class_window(
+    category: str,
+    history_len: int,
+    rollout_steps: int,
+    min_history_len: int,
+    min_rollout_steps: int,
+    class_window_cfg: Dict | None,
+) -> Tuple[str, int, int, int, int]:
+    track_name = category_to_tracking_name(category)
+    cfg = (class_window_cfg or {}).get(track_name, {})
+    hist_min = int(cfg.get("MIN_HISTORY_LEN", min_history_len))
+    hist_max = int(cfg.get("MAX_HISTORY_LEN", history_len))
+    roll_min = int(cfg.get("MIN_ROLLOUT_STEPS", min_rollout_steps))
+    roll_max = int(cfg.get("MAX_ROLLOUT_STEPS", rollout_steps))
+
+    hist_max = max(1, min(history_len, hist_max))
+    roll_max = max(1, min(rollout_steps, roll_max))
+    hist_min = max(1, min(hist_min, hist_max))
+    roll_min = max(1, min(roll_min, roll_max))
+    return track_name, hist_min, hist_max, roll_min, roll_max
 
 
 def extract_gt_tracklets_nuscenes(
@@ -216,31 +241,46 @@ class TrackletDataset(Dataset):
         history_len: int = 10,
         min_track_len: int = 3,
         rollout_steps: int = 1,
+        adaptive_windows: bool = False,
+        min_history_len: int | None = None,
+        min_rollout_steps: int | None = None,
+        class_window_cfg: Dict | None = None,
     ) -> None:
         with open(tracklet_pkl_path, "rb") as f:
             tracklets = pickle.load(f)
 
         self.history_len = history_len
         self.rollout_steps = rollout_steps
+        self.adaptive_windows = bool(adaptive_windows)
+        self.min_history_len = int(min_history_len or history_len)
+        self.min_rollout_steps = int(min_rollout_steps or rollout_steps)
+        self.class_window_cfg = class_window_cfg or {}
         self.samples: List[Dict] = []
-
-        min_len = max(min_track_len, rollout_steps + history_len)
 
         for trk in tracklets:
             frames = trk["frames"]
             n = len(frames)
-            if n < min_len:
-                continue
 
             inst_token = trk["instance_token"]
             category = trk["category"]
+            track_name, hist_min, hist_max, roll_min, roll_max = _resolve_class_window(
+                category=category,
+                history_len=history_len,
+                rollout_steps=rollout_steps,
+                min_history_len=self.min_history_len,
+                min_rollout_steps=self.min_rollout_steps,
+                class_window_cfg=self.class_window_cfg,
+            )
+            class_min_len = max(min_track_len, hist_min + roll_min)
+            if n < class_min_len:
+                continue
 
             # Sliding window with K future frames for rollout
-            for i in range(history_len - 1, n - rollout_steps):
-                start = max(0, i - history_len + 1)
+            for i in range(hist_min - 1, n - roll_min):
+                start = max(0, i - hist_max + 1)
                 history_frames = frames[start:i + 1]
                 current_frame = frames[i]
-                future_frames = frames[i + 1 : i + 1 + rollout_steps]
+                future_frames = frames[i + 1 : i + 1 + roll_max]
 
                 # delta_t from current to first future frame
                 dt = future_frames[0]["timestamp"] - current_frame["timestamp"]
@@ -251,9 +291,14 @@ class TrackletDataset(Dataset):
                     "history_frames": history_frames,
                     "current_frame": current_frame,
                     "future_frames": future_frames,
+                    "history_min": hist_min,
+                    "history_max": hist_max,
+                    "rollout_min": roll_min,
+                    "rollout_max": roll_max,
                     "delta_t": dt,
                     "instance_token": inst_token,
                     "category": category,
+                    "tracking_category": track_name,
                 })
 
         print(f"[TrackletDataset] {len(self.samples)} samples from "
@@ -266,6 +311,19 @@ class TrackletDataset(Dataset):
         s = self.samples[idx]
         T = self.history_len
         K = self.rollout_steps
+        hist_max = int(s.get("history_max", T))
+        roll_min = int(s.get("rollout_min", self.min_rollout_steps))
+        roll_max = int(s.get("rollout_max", self.rollout_steps))
+        if self.adaptive_windows:
+            eff_history_len = random.randint(
+                int(s.get("history_min", self.min_history_len)), min(T, hist_max, len(s["history_frames"]))
+            )
+            eff_rollout_steps = random.randint(
+                roll_min, min(K, roll_max, len(s["future_frames"]))
+            )
+        else:
+            eff_history_len = min(T, hist_max, len(s["history_frames"]))
+            eff_rollout_steps = min(K, roll_max, len(s["future_frames"]))
 
         # ---- Build history [T, 12] (right-aligned, zero-padded) ----
         # x, y are made relative to the current frame's position to match
@@ -275,8 +333,9 @@ class TrackletDataset(Dataset):
         mask = np.zeros(T, dtype=np.bool_)
         cur = s["current_frame"]
         ref_xyz = cur["global_xyz"]  # [x, y, z] reference for relative coords
-        n_frames = len(s["history_frames"])
-        for t_idx, frame in enumerate(s["history_frames"]):
+        selected_history_frames = s["history_frames"][-eff_history_len:]
+        n_frames = len(selected_history_frames)
+        for t_idx, frame in enumerate(selected_history_frames):
             offset = T - n_frames + t_idx
             feat = frame["feature_12"]
             history[offset, 0] = feat[0] - ref_xyz[0]   # Δx
@@ -300,11 +359,12 @@ class TrackletDataset(Dataset):
         obs_future_pos = np.zeros((K, 5), dtype=np.float32)
         obs_future_siz = np.zeros((K, 3), dtype=np.float32)
         obs_future_ori = np.zeros((K, 1), dtype=np.float32)
-        obs_future_match = np.ones(K, dtype=np.bool_)
+        obs_future_match = np.zeros(K, dtype=np.bool_)
+        future_mask = np.zeros(K, dtype=np.bool_)
         delta_ts_future = np.zeros(K, dtype=np.float32)
 
         prev_ts = cur["timestamp"]
-        for k, frm in enumerate(s["future_frames"]):
+        for k, frm in enumerate(s["future_frames"][:eff_rollout_steps]):
             gt_future_pos[k] = frm["global_xyz"]
             gt_future_siz[k] = frm["lwh"]
             gt_future_ori[k, 0] = frm["yaw"]
@@ -314,6 +374,8 @@ class TrackletDataset(Dataset):
             ], dtype=np.float32)
             obs_future_siz[k] = np.array(frm["lwh"], dtype=np.float32)
             obs_future_ori[k, 0] = frm["yaw"]
+            obs_future_match[k] = True
+            future_mask[k] = True
             dt_k = frm["timestamp"] - prev_ts
             delta_ts_future[k] = max(dt_k, 1e-6)
             prev_ts = frm["timestamp"]
@@ -335,6 +397,7 @@ class TrackletDataset(Dataset):
             "obs_future_siz": torch.from_numpy(obs_future_siz),      # [K, 3]
             "obs_future_ori": torch.from_numpy(obs_future_ori),      # [K, 1]
             "obs_future_match": torch.from_numpy(obs_future_match),  # [K]
+            "future_mask": torch.from_numpy(future_mask),            # [K]
             "delta_ts_future": torch.from_numpy(delta_ts_future),    # [K]
             "delta_t": torch.tensor(s["delta_t"], dtype=torch.float32),
             "instance_token": s["instance_token"],
@@ -349,6 +412,8 @@ class TrackletDataset(Dataset):
                 float(np.linalg.norm(np.asarray(cur["velocity"][:2], dtype=np.float32))),
                 dtype=torch.float32,
             ),
+            "effective_history_len": torch.tensor(eff_history_len, dtype=torch.int64),
+            "effective_rollout_steps": torch.tensor(eff_rollout_steps, dtype=torch.int64),
             "is_detection_driven": torch.tensor(False, dtype=torch.bool),
         }
 

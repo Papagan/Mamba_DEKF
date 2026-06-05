@@ -110,6 +110,7 @@ def training_step(
     obs_future_siz = batch.get("obs_future_siz", None)
     obs_future_ori = batch.get("obs_future_ori", None)
     obs_future_match = batch.get("obs_future_match", None)
+    future_mask = batch.get("future_mask", None)
     if obs_future_pos is not None:
         obs_future_pos = obs_future_pos.to(device)
     if obs_future_siz is not None:
@@ -118,6 +119,8 @@ def training_step(
         obs_future_ori = obs_future_ori.to(device)
     if obs_future_match is not None:
         obs_future_match = obs_future_match.to(device)
+    if future_mask is not None:
+        future_mask = future_mask.to(device)
     delta_ts_future = batch["delta_ts_future"].to(device)  # [B, K]
     instance_tokens = batch["instance_token"]              # list of B strings
     categories = batch["category"]                          # list of B strings
@@ -276,11 +279,20 @@ def training_step(
     total_contrast_loss = 0.0
     detail_accum = {}
     detail_contrastive = {"loss_contrastive": 0.0, "n_valid_anchors": 0}
+    total_weight = 0.0
 
     # Accumulate loss tensors across rollout steps for proper gradient flow.
     for k in range(K):
+        active_k = future_mask[:, k].bool() if future_mask is not None else torch.ones(B, dtype=torch.bool, device=device)
+        active_count = int(active_k.sum().item())
+        if active_count == 0:
+            continue
+        step_weight = active_count / float(max(B, 1))
+        total_weight += step_weight
+
         # Per-sample delta_t preserves individual object dynamics
-        dt_k = delta_ts_future[:, k]                          # [B]
+        dt_k = delta_ts_future[:, k].clone()                  # [B]
+        dt_k[~active_k] = 1e-6
 
         # KF predict with same Q for all steps
         pos_x_pred, pos_P_pred, siz_x_pred, siz_P_pred, ori_x_pred, ori_P_pred = \
@@ -288,24 +300,26 @@ def training_step(
 
         # NLL vs GT at this rollout step
         loss_k, detail_k = loss_fn(
-            pos_x_pred, pos_P_pred, siz_x_pred, siz_P_pred, ori_x_pred, ori_P_pred,
-            gt_future_pos[:, k, :], gt_future_siz[:, k, :], gt_future_ori[:, k, :],
-            mamba_out["embedding"] if k == 0 else None,
-            instance_tokens if k == 0 else None,
-            R_pos=R_pos, R_siz=R_siz, R_ori=R_ori,
-            kappa_ori=kappa_ori,
-            gt_next_vel=vel_gt if vel_active else None,
+            pos_x_pred[active_k], pos_P_pred[active_k],
+            siz_x_pred[active_k], siz_P_pred[active_k],
+            ori_x_pred[active_k], ori_P_pred[active_k],
+            gt_future_pos[:, k, :][active_k], gt_future_siz[:, k, :][active_k], gt_future_ori[:, k, :][active_k],
+            mamba_out["embedding"][active_k] if k == 0 else None,
+            [tok for idx, tok in enumerate(instance_tokens) if bool(active_k[idx].item())] if k == 0 else None,
+            R_pos=R_pos[active_k], R_siz=R_siz[active_k], R_ori=R_ori[active_k],
+            kappa_ori=kappa_ori[active_k],
+            gt_next_vel=vel_gt[active_k] if vel_active else None,
             in_warmup=in_warmup,
             ori_nll_alpha=unfreeze_alpha,
-            class_ids=class_ids,
+            class_ids=class_ids[active_k],
         )
 
-        total_state_loss += detail_k["loss_state"]   # for logging only
+        total_state_loss += detail_k["loss_state"] * step_weight   # for logging only
         if k == 0:
-            total_loss_tensor = loss_k               # preserve full compute graph
+            total_loss_tensor = loss_k * step_weight
             total_contrast_loss = detail_k["loss_contrastive"]
         else:
-            total_loss_tensor = total_loss_tensor + loss_k
+            total_loss_tensor = total_loss_tensor + loss_k * step_weight
         for key, val in detail_k.items():
             if key == "loss_contrastive":
                 detail_contrastive["loss_contrastive"] = max(
@@ -316,15 +330,15 @@ def training_step(
             elif key == "loss_total":
                 pass
             else:
-                detail_accum[key] = detail_accum.get(key, 0.0) + val
+                detail_accum[key] = detail_accum.get(key, 0.0) + val * step_weight
 
         # Monitor delta_pos norm (per-step, tracked inside rollout).
         detail_accum["delta_pos_norm"] = detail_accum.get("delta_pos_norm", 0.0) + \
-            mamba_out["delta_pos"].norm(dim=-1).mean().item()
+            mamba_out["delta_pos"].norm(dim=-1).mean().item() * step_weight
 
         # Noisy teacher forcing with category-aware measurement noise
         if use_det_update and obs_future_pos is not None and obs_future_match is not None:
-            match_k = obs_future_match[:, k].bool()  # [B]
+            match_k = obs_future_match[:, k].bool() & active_k  # [B]
 
             pred_obs_pos = torch.cat([
                 pos_x_pred[:, 0:3, 0],
@@ -358,22 +372,39 @@ def training_step(
             kf.update(z_pos_k, z_siz_k, z_ori_k,
                       R_pos=R_pos_step, R_siz=R_siz_step, R_ori=R_ori_step)
         else:
+            pred_obs_pos = torch.cat([
+                pos_x_pred[:, 0:3, 0],
+                pos_x_pred[:, 3:5, 0],
+            ], dim=1)  # [B,5]
+            pred_obs_siz = siz_x_pred[:, :, 0]
+            pred_obs_ori = ori_x_pred[:, 0:1, 0]
             gt_vel_xy = gt_pos[:, 3:5]  # [B, 2] — GT velocity
-            z_pos_k = torch.cat([
-                gt_future_pos[:, k, :]                      # [B, 3]
-                + torch.randn(B, 3, device=device) * meas_noise_pos.squeeze(-1),
-                gt_vel_xy                                    # [B, 2]
-                + torch.randn(B, 2, device=device) * meas_noise_vel.squeeze(-1),
-            ], dim=1).unsqueeze(-1)  # [B, 5, 1]
-            z_siz_k = gt_future_siz[:, k, :].unsqueeze(-1) \
-                + torch.randn(B, 3, 1, device=device) * meas_noise_siz
-            z_ori_k = gt_future_ori[:, k, :].unsqueeze(-1) \
-                + torch.randn(B, 1, 1, device=device) * meas_noise_ori
+            z_pos_vals = torch.cat([
+                gt_future_pos[:, k, :] + torch.randn(B, 3, device=device) * meas_noise_pos.squeeze(-1),
+                gt_vel_xy + torch.randn(B, 2, device=device) * meas_noise_vel.squeeze(-1),
+            ], dim=1)
+            z_siz_vals = gt_future_siz[:, k, :] + torch.randn(B, 3, device=device) * meas_noise_siz.squeeze(-1)
+            z_ori_vals = gt_future_ori[:, k, :] + torch.randn(B, 1, device=device) * meas_noise_ori.squeeze(-1)
+            if (~active_k).any():
+                z_pos_vals[~active_k] = pred_obs_pos[~active_k]
+                z_siz_vals[~active_k] = pred_obs_siz[~active_k]
+                z_ori_vals[~active_k] = pred_obs_ori[~active_k]
+            z_pos_k = z_pos_vals.unsqueeze(-1)
+            z_siz_k = z_siz_vals.unsqueeze(-1)
+            z_ori_k = z_ori_vals.unsqueeze(-1)
+            R_pos_step = R_pos.clone()
+            R_siz_step = R_siz.clone()
+            R_ori_step = R_ori.clone()
+            if (~active_k).any():
+                R_pos_step[~active_k] = R_pos_step[~active_k] * miss_r_scale
+                R_siz_step[~active_k] = R_siz_step[~active_k] * miss_r_scale
+                R_ori_step[~active_k] = R_ori_step[~active_k] * miss_r_scale
             kf.update(z_pos_k, z_siz_k, z_ori_k,
-                      R_pos=R_pos, R_siz=R_siz, R_ori=R_ori)
+                      R_pos=R_pos_step, R_siz=R_siz_step, R_ori=R_ori_step)
 
     # ---- Logging detail (uses .item() floats, no gradient impact) ----
-    detail = {k: v / K for k, v in detail_accum.items()}
+    norm = max(total_weight, 1e-6)
+    detail = {k: v / norm for k, v in detail_accum.items()}
     detail["loss_contrastive"] = detail_contrastive["loss_contrastive"]
     detail["n_valid_anchors"] = detail_contrastive["n_valid_anchors"]
     detail["loss_total"] = (
@@ -409,9 +440,10 @@ def training_step(
 
     # ---- Backward loss: total_loss_tensor already contains
     #      physics_scale × state_NLL + lambda × contrast + kappa_var_reg
-    real_loss = total_loss_tensor / K + kappa_reg + delta_pos_reg
+    real_loss = total_loss_tensor / norm + kappa_reg + delta_pos_reg
     detail["loss_real"] = real_loss.item()
     detail["unfreeze_alpha"] = unfreeze_alpha
+    detail["effective_rollout_weight"] = float(total_weight)
     return real_loss, detail
 
 
@@ -523,6 +555,11 @@ def main():
     history_len = model_cfg.get("HISTORY_LEN", 10)
     train_cfg = cfg["TRAINING"]
     rollout_steps = train_cfg.get("ROLLOUT_STEPS", 1)
+    train_adaptive_windows = bool(data_cfg.get("TRAIN_ADAPTIVE_WINDOWS", False))
+    val_adaptive_windows = bool(data_cfg.get("VAL_ADAPTIVE_WINDOWS", False))
+    min_history_len = int(data_cfg.get("MIN_HISTORY_LEN", history_len))
+    min_rollout_steps = int(data_cfg.get("MIN_ROLLOUT_STEPS", rollout_steps))
+    class_window_cfg = data_cfg.get("CLASS_WINDOW", {})
 
     if train_source == "det":
         train_dataset = DetectionTrackletDataset(
@@ -531,11 +568,19 @@ def main():
             rollout_steps=rollout_steps,
             require_current_match=bool(data_cfg.get("REQUIRE_CURRENT_MATCH", True)),
             min_history_match_ratio=float(data_cfg.get("MIN_HISTORY_MATCH_RATIO", 0.25)),
+            adaptive_windows=train_adaptive_windows,
+            min_history_len=min_history_len,
+            min_rollout_steps=min_rollout_steps,
+            class_window_cfg=class_window_cfg if train_adaptive_windows else {},
         )
         train_collate_fn = detection_tracklet_collate_fn
     else:
         train_dataset = TrackletDataset(train_pkl, history_len=history_len,
-                                        rollout_steps=rollout_steps)
+                                        rollout_steps=rollout_steps,
+                                        adaptive_windows=train_adaptive_windows,
+                                        min_history_len=min_history_len,
+                                        min_rollout_steps=min_rollout_steps,
+                                        class_window_cfg=class_window_cfg if train_adaptive_windows else {})
         train_collate_fn = tracklet_collate_fn
 
     if val_source == "det":
@@ -545,11 +590,19 @@ def main():
             rollout_steps=rollout_steps,
             require_current_match=bool(data_cfg.get("REQUIRE_CURRENT_MATCH", True)),
             min_history_match_ratio=float(data_cfg.get("MIN_HISTORY_MATCH_RATIO", 0.25)),
+            adaptive_windows=val_adaptive_windows,
+            min_history_len=min_history_len,
+            min_rollout_steps=min_rollout_steps,
+            class_window_cfg=class_window_cfg if val_adaptive_windows else {},
         )
         val_collate_fn = detection_tracklet_collate_fn
     else:
         val_dataset = TrackletDataset(val_pkl, history_len=history_len,
-                                      rollout_steps=rollout_steps)
+                                      rollout_steps=rollout_steps,
+                                      adaptive_windows=val_adaptive_windows,
+                                      min_history_len=min_history_len,
+                                      min_rollout_steps=min_rollout_steps,
+                                      class_window_cfg=class_window_cfg if val_adaptive_windows else {})
         val_collate_fn = tracklet_collate_fn
 
     train_loader = DataLoader(
@@ -571,10 +624,14 @@ def main():
     )
 
     logger.info(
-        f"Train: {len(train_dataset)} samples, {len(train_loader)} batches (K={rollout_steps}, source={train_source})"
+        f"Train: {len(train_dataset)} samples, {len(train_loader)} batches "
+        f"(Tmax={history_len}, Kmax={rollout_steps}, adaptive={train_adaptive_windows}, "
+        f"Tmin={min_history_len}, Kmin={min_rollout_steps}, source={train_source})"
     )
     logger.info(
-        f"Val:   {len(val_dataset)} samples, {len(val_loader)} batches (K={rollout_steps}, source={val_source})"
+        f"Val:   {len(val_dataset)} samples, {len(val_loader)} batches "
+        f"(Tmax={history_len}, Kmax={rollout_steps}, adaptive={val_adaptive_windows}, "
+        f"Tmin={min_history_len}, Kmin={min_rollout_steps}, source={val_source})"
     )
 
     # ---- Model: only TemporalMamba is trained ----

@@ -265,6 +265,47 @@ The detection-driven path changes the supervision contract:
 
 This keeps the existing rollout loss but moves the input distribution much closer to real tracking.
 
+### 5.1.2 Small-sample training with adaptive windows
+
+When the detection-driven cache is small, fixed `HISTORY_LEN + ROLLOUT_STEPS` windows discard too many short tracklets. Training now supports **adaptive effective windows** while keeping tensor shapes fixed:
+
+- `MODEL.HISTORY_LEN`: maximum history length
+- `TRAINING.ROLLOUT_STEPS`: maximum rollout depth
+- `DATA.MIN_HISTORY_LEN`: minimum sampled history length
+- `DATA.MIN_ROLLOUT_STEPS`: minimum sampled rollout depth
+- `DATA.TRAIN_ADAPTIVE_WINDOWS`: enable random effective windows during training
+- `DATA.VAL_ADAPTIVE_WINDOWS`: keep validation fixed by default for comparability
+- `DATA.CLASS_WINDOW`: optional per-class overrides for min/max history and rollout
+
+Recommended config for small/noisy caches:
+
+```yaml
+DATA:
+  TRAIN_ADAPTIVE_WINDOWS: true
+  VAL_ADAPTIVE_WINDOWS: false
+  MIN_HISTORY_LEN: 4
+  MIN_ROLLOUT_STEPS: 1
+  CLASS_WINDOW:
+    bicycle: {MIN_HISTORY_LEN: 3, MAX_HISTORY_LEN: 6, MIN_ROLLOUT_STEPS: 1, MAX_ROLLOUT_STEPS: 2}
+    motorcycle: {MIN_HISTORY_LEN: 3, MAX_HISTORY_LEN: 6, MIN_ROLLOUT_STEPS: 1, MAX_ROLLOUT_STEPS: 2}
+
+MODEL:
+  HISTORY_LEN: 8
+
+TRAINING:
+  ROLLOUT_STEPS: 4
+```
+
+Behavior:
+
+- each sample still returns `[Tmax, 12]` history and `[Kmax, ...]` future tensors
+- only the sampled suffix/prefix is marked valid through `history_mask` and `future_mask`
+- short tracklets can enter training as long as they satisfy `MIN_HISTORY_LEN + MIN_ROLLOUT_STEPS`
+- per-class rules can force shorter windows for unstable/sparse categories while keeping cars on longer context
+- KF rollout loss ignores padded future steps and inflates `R` on invalid updates
+
+This is intended to improve sample efficiency for `bicycle` / `motorcycle` without changing inference-time `HISTORY_LEN`.
+
 ### 5.2 Loss design
 
 | Component | Loss | Purpose |
@@ -395,11 +436,12 @@ Each frame contains both GT labels and detector observations:
 
 Training-alignment statistics:
 
-- The script reads `MODEL.HISTORY_LEN`, `TRAINING.ROLLOUT_STEPS`, and `TRAINING.BATCH_SIZE` from `config/train_nuscenes.yaml`.
+- The script reads `MODEL.HISTORY_LEN`, `TRAINING.ROLLOUT_STEPS`, `TRAINING.BATCH_SIZE`, and adaptive-window settings from `config/train_nuscenes.yaml`.
 - It prints and saves:
   - total selected scenes
   - total saved tracklets
-  - estimated training samples under the current `history_len + rollout_steps` setting
+  - estimated training samples under the fixed `history_len + rollout_steps` setting
+  - estimated training samples under the adaptive `min_history_len + min_rollout_steps` setting
   - estimated batches per epoch under the current `BATCH_SIZE`
 
 Notes:
@@ -428,12 +470,13 @@ python tools/audit_det_tracklet_cache.py \
 What it reports:
 
 - overall `tracklets`, `frames`, `matched_frames`, `miss_frames`
-- overall `estimated_samples`
+- overall `estimated_samples` and `estimated_samples_adaptive`
 - per-class `tracklets`, `frames`, `matched_ratio`
 - per-class `tracklet_len_mean/min/max`
-- per-class `score_all_*` and `score_matched_*`
 - per-class `short_tracklets_lt_need`
+- per-class `short_tracklets_lt_adaptive_need`
 - per-class `low_match_ratio_tracklets_lt_0_5`
+- per-class `score_all_*` and `score_matched_*`
 
 This is especially important for `bicycle` and `motorcycle`: if these classes already have low matched ratio or too few usable rollout samples in the cache, training-side tuning alone usually will not recover tracking performance.
 

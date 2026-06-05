@@ -206,6 +206,44 @@ def estimate_training_samples(tracklets: List[dict], history_len: int, rollout_s
     return total
 
 
+def resolve_class_min_window(
+    category: str,
+    history_len: int,
+    rollout_steps: int,
+    min_history_len: int,
+    min_rollout_steps: int,
+    class_window_cfg: Dict,
+) -> Tuple[int, int]:
+    cfg = (class_window_cfg or {}).get(category, {})
+    hist_min = int(cfg.get("MIN_HISTORY_LEN", min_history_len))
+    roll_min = int(cfg.get("MIN_ROLLOUT_STEPS", min_rollout_steps))
+    hist_min = max(1, min(hist_min, history_len))
+    roll_min = max(1, min(roll_min, rollout_steps))
+    return hist_min, roll_min
+
+
+def estimate_training_samples_adaptive(
+    tracklets: List[dict],
+    history_len: int,
+    rollout_steps: int,
+    min_history_len: int,
+    min_rollout_steps: int,
+    class_window_cfg: Dict,
+) -> int:
+    total = 0
+    for trk in tracklets:
+        hist_min, roll_min = resolve_class_min_window(
+            category=trk.get("category", "car"),
+            history_len=history_len,
+            rollout_steps=rollout_steps,
+            min_history_len=min_history_len,
+            min_rollout_steps=min_rollout_steps,
+            class_window_cfg=class_window_cfg,
+        )
+        total += estimate_training_samples(len(trk["frames"]), hist_min, roll_min)
+    return total
+
+
 def build_mini_dataset(
     det_json_path: str,
     nusc_version: str,
@@ -400,11 +438,25 @@ def build_mini_dataset(
     train_cfg = load_training_config(train_config_path)
     model_cfg = train_cfg.get("MODEL", {})
     runtime_cfg = train_cfg.get("TRAINING", {})
+    data_cfg = train_cfg.get("DATA", {})
     history_len = int(model_cfg.get("HISTORY_LEN", 8))
     rollout_steps = int(runtime_cfg.get("ROLLOUT_STEPS", 1))
+    min_history_len = int(data_cfg.get("MIN_HISTORY_LEN", history_len))
+    min_rollout_steps = int(data_cfg.get("MIN_ROLLOUT_STEPS", rollout_steps))
+    adaptive_windows = bool(data_cfg.get("TRAIN_ADAPTIVE_WINDOWS", False))
+    class_window_cfg = data_cfg.get("CLASS_WINDOW", {})
     batch_size = int(runtime_cfg.get("BATCH_SIZE", 1))
     estimated_samples = estimate_training_samples(result, history_len, rollout_steps)
+    estimated_samples_adaptive = estimate_training_samples_adaptive(
+        result,
+        history_len=history_len,
+        rollout_steps=rollout_steps,
+        min_history_len=min_history_len,
+        min_rollout_steps=min_rollout_steps,
+        class_window_cfg=class_window_cfg,
+    )
     estimated_batches = int(math.ceil(estimated_samples / float(batch_size))) if batch_size > 0 else 0
+    estimated_batches_adaptive = int(math.ceil(estimated_samples_adaptive / float(batch_size))) if batch_size > 0 else 0
 
     summary_path = output_path.replace(".pkl", "_summary.json")
     category_counts = defaultdict(int)
@@ -418,10 +470,15 @@ def build_mini_dataset(
         "output_path": output_path,
         "tracklets": len(result),
         "estimated_samples": estimated_samples,
+        "estimated_samples_adaptive": estimated_samples_adaptive,
         "training_batch_size": batch_size,
         "estimated_batches_per_epoch": estimated_batches,
+        "estimated_batches_per_epoch_adaptive": estimated_batches_adaptive,
         "history_len": history_len,
         "rollout_steps": rollout_steps,
+        "min_history_len": min_history_len,
+        "min_rollout_steps": min_rollout_steps,
+        "adaptive_windows": adaptive_windows,
         "category_tracklets": dict(sorted(category_counts.items())),
         "category_matched_frames": dict(sorted(category_matched.items())),
         "config": {
@@ -449,8 +506,11 @@ def build_mini_dataset(
     print(
         "[mini-train] training alignment: "
         f"history_len={history_len} rollout_steps={rollout_steps} "
-        f"batch_size={batch_size} estimated_samples={estimated_samples} "
-        f"estimated_batches={estimated_batches}"
+        f"min_history_len={min_history_len} min_rollout_steps={min_rollout_steps} "
+        f"adaptive_windows={adaptive_windows} batch_size={batch_size} "
+        f"estimated_samples={estimated_samples} estimated_batches={estimated_batches} "
+        f"estimated_samples_adaptive={estimated_samples_adaptive} "
+        f"estimated_batches_adaptive={estimated_batches_adaptive}"
     )
     print(f"[mini-train] stats: {json.dumps(summary, indent=2, ensure_ascii=False)}")
     return summary

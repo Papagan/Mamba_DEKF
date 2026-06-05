@@ -1,11 +1,36 @@
 from __future__ import annotations
 
 import pickle
+import random
 from typing import Dict, List
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+
+from kalmanfilter.noise_priors import category_to_tracking_name
+
+
+def _resolve_class_window(
+    category: str,
+    history_len: int,
+    rollout_steps: int,
+    min_history_len: int,
+    min_rollout_steps: int,
+    class_window_cfg: Dict | None,
+) -> tuple[str, int, int, int, int]:
+    track_name = category_to_tracking_name(category)
+    cfg = (class_window_cfg or {}).get(track_name, {})
+    hist_min = int(cfg.get("MIN_HISTORY_LEN", min_history_len))
+    hist_max = int(cfg.get("MAX_HISTORY_LEN", history_len))
+    roll_min = int(cfg.get("MIN_ROLLOUT_STEPS", min_rollout_steps))
+    roll_max = int(cfg.get("MAX_ROLLOUT_STEPS", rollout_steps))
+
+    hist_max = max(1, min(history_len, hist_max))
+    roll_max = max(1, min(rollout_steps, roll_max))
+    hist_min = max(1, min(hist_min, hist_max))
+    roll_min = max(1, min(roll_min, roll_max))
+    return track_name, hist_min, hist_max, roll_min, roll_max
 
 
 class DetectionTrackletDataset(Dataset):
@@ -25,37 +50,64 @@ class DetectionTrackletDataset(Dataset):
         rollout_steps: int = 1,
         require_current_match: bool = True,
         min_history_match_ratio: float = 0.25,
+        adaptive_windows: bool = False,
+        min_history_len: int | None = None,
+        min_rollout_steps: int | None = None,
+        class_window_cfg: Dict | None = None,
     ) -> None:
         with open(tracklet_pkl_path, "rb") as f:
             tracklets = pickle.load(f)
 
         self.history_len = history_len
         self.rollout_steps = rollout_steps
+        self.adaptive_windows = bool(adaptive_windows)
+        self.min_history_len = int(min_history_len or history_len)
+        self.min_rollout_steps = int(min_rollout_steps or rollout_steps)
+        self.class_window_cfg = class_window_cfg or {}
         self.samples: List[Dict] = []
-
-        min_len = max(min_track_len, history_len + rollout_steps)
 
         for trk in tracklets:
             frames = trk["frames"]
             n = len(frames)
-            if n < min_len:
-                continue
 
             inst_token = trk["instance_token"]
             category = trk["category"]
+            track_name, hist_min, hist_max, roll_min, roll_max = _resolve_class_window(
+                category=category,
+                history_len=history_len,
+                rollout_steps=rollout_steps,
+                min_history_len=self.min_history_len,
+                min_rollout_steps=self.min_rollout_steps,
+                class_window_cfg=self.class_window_cfg,
+            )
+            class_min_len = max(min_track_len, hist_min + roll_min)
+            if n < class_min_len:
+                continue
 
-            for i in range(history_len - 1, n - rollout_steps):
-                start = max(0, i - history_len + 1)
+            for i in range(hist_min - 1, n - roll_min):
+                start = max(0, i - hist_max + 1)
                 history_frames = frames[start : i + 1]
                 current_frame = frames[i]
-                future_frames = frames[i + 1 : i + 1 + rollout_steps]
+                future_frames = frames[i + 1 : i + 1 + roll_max]
 
                 if require_current_match and not bool(current_frame["is_matched"]):
                     continue
 
-                matched_hist = sum(1 for fr in history_frames if bool(fr["is_matched"]))
-                hist_match_ratio = matched_hist / max(len(history_frames), 1)
-                if hist_match_ratio < min_history_match_ratio:
+                available_history = len(history_frames)
+                available_future = len(future_frames)
+                if available_history < hist_min or available_future < roll_min:
+                    continue
+
+                valid_history_lengths = []
+                valid_history_upper = min(available_history, hist_max)
+                for eff_h in range(hist_min, valid_history_upper + 1):
+                    hist_slice = history_frames[-eff_h:]
+                    matched_hist = sum(1 for fr in hist_slice if bool(fr["is_matched"]))
+                    hist_match_ratio = matched_hist / max(len(hist_slice), 1)
+                    if hist_match_ratio >= min_history_match_ratio:
+                        valid_history_lengths.append(eff_h)
+
+                if not valid_history_lengths:
                     continue
 
                 dt = future_frames[0]["timestamp"] - current_frame["timestamp"]
@@ -66,9 +118,15 @@ class DetectionTrackletDataset(Dataset):
                     "history_frames": history_frames,
                     "current_frame": current_frame,
                     "future_frames": future_frames,
+                    "valid_history_lengths": valid_history_lengths,
+                    "history_min": hist_min,
+                    "history_max": hist_max,
+                    "rollout_min": roll_min,
+                    "rollout_max": roll_max,
                     "delta_t": dt,
                     "instance_token": inst_token,
                     "category": category,
+                    "tracking_category": track_name,
                 })
 
         print(
@@ -83,6 +141,18 @@ class DetectionTrackletDataset(Dataset):
         s = self.samples[idx]
         T = self.history_len
         K = self.rollout_steps
+        valid_history_lengths = s.get("valid_history_lengths", [len(s["history_frames"])])
+        rollout_min = int(s.get("rollout_min", self.min_rollout_steps))
+        rollout_max = int(s.get("rollout_max", self.rollout_steps))
+        if self.adaptive_windows:
+            eff_history_len = random.choice(valid_history_lengths)
+            eff_rollout_steps = random.randint(
+                rollout_min,
+                min(K, rollout_max, len(s["future_frames"])),
+            )
+        else:
+            eff_history_len = min(T, int(s.get("history_max", T)), len(s["history_frames"]))
+            eff_rollout_steps = min(K, rollout_max, len(s["future_frames"]))
 
         history = np.zeros((T, 12), dtype=np.float32)
         history_mask = np.zeros(T, dtype=np.bool_)
@@ -94,8 +164,9 @@ class DetectionTrackletDataset(Dataset):
             dtype=np.float32,
         )
 
-        n_frames = len(s["history_frames"])
-        for t_idx, frame in enumerate(s["history_frames"]):
+        selected_history_frames = s["history_frames"][-eff_history_len:]
+        n_frames = len(selected_history_frames)
+        for t_idx, frame in enumerate(selected_history_frames):
             offset = T - n_frames + t_idx
             feat = np.asarray(frame["obs_feature_12"], dtype=np.float32)
             if bool(frame["is_matched"]):
@@ -132,10 +203,11 @@ class DetectionTrackletDataset(Dataset):
         obs_future_siz = np.zeros((K, 3), dtype=np.float32)
         obs_future_ori = np.zeros((K, 1), dtype=np.float32)
         obs_future_match = np.zeros(K, dtype=np.bool_)
+        future_mask = np.zeros(K, dtype=np.bool_)
         delta_ts_future = np.zeros(K, dtype=np.float32)
 
         prev_ts = cur["timestamp"]
-        for k, frm in enumerate(s["future_frames"]):
+        for k, frm in enumerate(s["future_frames"][:eff_rollout_steps]):
             gt_future_pos[k] = np.asarray(frm["gt_global_xyz"], dtype=np.float32)
             gt_future_siz[k] = np.asarray(frm["gt_lwh"], dtype=np.float32)
             gt_future_ori[k, 0] = float(frm["gt_yaw"])
@@ -147,6 +219,7 @@ class DetectionTrackletDataset(Dataset):
                 obs_future_siz[k] = np.asarray(frm["det_lwh"], dtype=np.float32)
                 obs_future_ori[k, 0] = float(frm["det_yaw"])
                 obs_future_match[k] = True
+            future_mask[k] = True
             dt_k = float(frm["timestamp"] - prev_ts)
             delta_ts_future[k] = max(dt_k, 1e-6)
             prev_ts = frm["timestamp"]
@@ -173,6 +246,7 @@ class DetectionTrackletDataset(Dataset):
             "obs_future_siz": torch.from_numpy(obs_future_siz),
             "obs_future_ori": torch.from_numpy(obs_future_ori),
             "obs_future_match": torch.from_numpy(obs_future_match),
+            "future_mask": torch.from_numpy(future_mask),
             "delta_ts_future": torch.from_numpy(delta_ts_future),
             "delta_t": torch.tensor(s["delta_t"], dtype=torch.float32),
             "instance_token": s["instance_token"],
@@ -181,6 +255,8 @@ class DetectionTrackletDataset(Dataset):
             "history_match_ratio": torch.tensor(matched_hist / max(n_frames, 1), dtype=torch.float32),
             "current_range": torch.tensor(current_range, dtype=torch.float32),
             "current_speed": torch.tensor(current_speed, dtype=torch.float32),
+            "effective_history_len": torch.tensor(eff_history_len, dtype=torch.int64),
+            "effective_rollout_steps": torch.tensor(eff_rollout_steps, dtype=torch.int64),
             "is_detection_driven": torch.tensor(True, dtype=torch.bool),
         }
 

@@ -27,6 +27,19 @@ from typing import Any, Dict, List
 import yaml
 
 
+def category_to_tracking_name(category: str) -> str:
+    if not isinstance(category, str):
+        return "car"
+    if category in {"car", "pedestrian", "bicycle", "motorcycle", "bus", "trailer", "truck"}:
+        return category
+    suffix = category.split(".")[-1]
+    if suffix in {"car", "pedestrian", "bicycle", "motorcycle", "bus", "trailer", "truck"}:
+        return suffix
+    if "pedestrian" in category:
+        return "pedestrian"
+    return "car"
+
+
 def load_pickle(path: str) -> List[dict]:
     with open(path, "rb") as f:
         obj = pickle.load(f)
@@ -61,6 +74,23 @@ def estimate_samples(tracklet_len: int, history_len: int, rollout_steps: int) ->
     return tracklet_len - need + 1
 
 
+def resolve_class_min_window(
+    category: str,
+    history_len: int,
+    rollout_steps: int,
+    min_history_len: int,
+    min_rollout_steps: int,
+    class_window_cfg: Dict[str, Any],
+) -> tuple[int, int]:
+    track_name = category_to_tracking_name(category)
+    cfg = (class_window_cfg or {}).get(track_name, {})
+    hist_min = int(cfg.get("MIN_HISTORY_LEN", min_history_len))
+    roll_min = int(cfg.get("MIN_ROLLOUT_STEPS", min_rollout_steps))
+    hist_min = max(1, min(hist_min, history_len))
+    roll_min = max(1, min(roll_min, rollout_steps))
+    return hist_min, roll_min
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Audit a detection-driven training cache.")
     parser.add_argument("--input", required=True, help="Tracklet cache .pkl file")
@@ -72,8 +102,13 @@ def main() -> int:
     train_cfg = load_train_cfg(args.train_config)
     model_cfg = train_cfg.get("MODEL", {})
     train_subcfg = train_cfg.get("TRAINING", {})
+    data_cfg = train_cfg.get("DATA", {})
     history_len = int(model_cfg.get("HISTORY_LEN", 8))
     rollout_steps = int(train_subcfg.get("ROLLOUT_STEPS", 4))
+    min_history_len = int(data_cfg.get("MIN_HISTORY_LEN", history_len))
+    min_rollout_steps = int(data_cfg.get("MIN_ROLLOUT_STEPS", rollout_steps))
+    adaptive_windows = bool(data_cfg.get("TRAIN_ADAPTIVE_WINDOWS", False))
+    class_window_cfg = data_cfg.get("CLASS_WINDOW", {})
 
     overall = {
         "tracklets": len(tracklets),
@@ -81,8 +116,12 @@ def main() -> int:
         "matched_frames": 0,
         "miss_frames": 0,
         "estimated_samples": 0,
+        "estimated_samples_adaptive": 0,
         "history_len": history_len,
         "rollout_steps": rollout_steps,
+        "min_history_len": min_history_len,
+        "min_rollout_steps": min_rollout_steps,
+        "adaptive_windows": adaptive_windows,
     }
 
     per_class: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
@@ -91,7 +130,9 @@ def main() -> int:
         "matched_frames": 0,
         "miss_frames": 0,
         "estimated_samples": 0,
+        "estimated_samples_adaptive": 0,
         "short_tracklets_lt_need": 0,
+        "short_tracklets_lt_adaptive_need": 0,
         "low_match_ratio_tracklets_lt_0_5": 0,
         "tracklet_lengths": [],
         "tracklet_match_ratios": [],
@@ -102,6 +143,15 @@ def main() -> int:
     need = history_len + rollout_steps
     for trk in tracklets:
         cls = trk.get("category", "unknown")
+        hist_min_cls, roll_min_cls = resolve_class_min_window(
+            category=cls,
+            history_len=history_len,
+            rollout_steps=rollout_steps,
+            min_history_len=min_history_len,
+            min_rollout_steps=min_rollout_steps,
+            class_window_cfg=class_window_cfg,
+        )
+        adaptive_need = hist_min_cls + roll_min_cls
         frames = trk.get("frames", [])
         cls_stat = per_class[cls]
         cls_stat["tracklets"] += 1
@@ -137,12 +187,17 @@ def main() -> int:
         cls_stat["tracklet_match_ratios"].append(match_ratio)
         if len(frames) < need:
             cls_stat["short_tracklets_lt_need"] += 1
+        if len(frames) < adaptive_need:
+            cls_stat["short_tracklets_lt_adaptive_need"] += 1
         if match_ratio < 0.5:
             cls_stat["low_match_ratio_tracklets_lt_0_5"] += 1
 
         samples = estimate_samples(len(frames), history_len, rollout_steps)
+        adaptive_samples = estimate_samples(len(frames), hist_min_cls, roll_min_cls)
         cls_stat["estimated_samples"] += samples
+        cls_stat["estimated_samples_adaptive"] += adaptive_samples
         overall["estimated_samples"] += samples
+        overall["estimated_samples_adaptive"] += adaptive_samples
 
         cls_stat["all_scores"].extend(score_vals)
         cls_stat["matched_scores"].extend(matched_score_vals)
@@ -165,7 +220,9 @@ def main() -> int:
             "miss_frames": stat["miss_frames"],
             "matched_ratio": float(matched_frames / frames) if frames else 0.0,
             "estimated_samples": stat["estimated_samples"],
+            "estimated_samples_adaptive": stat["estimated_samples_adaptive"],
             "short_tracklets_lt_need": stat["short_tracklets_lt_need"],
+            "short_tracklets_lt_adaptive_need": stat["short_tracklets_lt_adaptive_need"],
             "low_match_ratio_tracklets_lt_0_5": stat["low_match_ratio_tracklets_lt_0_5"],
             "tracklet_len_mean": safe_mean(stat["tracklet_lengths"]),
             "tracklet_len_min": safe_min(stat["tracklet_lengths"]),
