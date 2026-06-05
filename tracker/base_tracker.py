@@ -563,6 +563,95 @@ class Base3DTracker:
         for i, (tid, bbox) in enumerate(zip(matched_track_ids, matched_bboxes)):
             self._write_updated_state_to_bbox(bbox, ux[i:i+1], usx[i:i+1], uox[i:i+1])
 
+    def _summarize_small_class_pending_reasons(self) -> Dict[str, Dict[str, int]]:
+        summary: Dict[str, Dict[str, int]] = {}
+        target_classes = {"bicycle", "motorcycle"}
+        for traj in self.all_trajs.values():
+            cls_name = traj.bboxes[-1].category
+            if cls_name not in target_classes or traj.status_flag != 0:
+                continue
+            info = summary.setdefault(
+                cls_name,
+                {
+                    "pending": 0,
+                    "need_more_hits": 0,
+                    "low_det_score": 0,
+                    "low_match_score": 0,
+                    "has_real_det": 0,
+                    "no_real_det_yet": 0,
+                },
+            )
+            info["pending"] += 1
+            real_bboxes = [b for b in traj.bboxes if not getattr(b, "is_fake", False)]
+            if real_bboxes:
+                info["has_real_det"] += 1
+            else:
+                info["no_real_det_yet"] += 1
+            if traj.track_length <= traj._confirmed_track_length:
+                info["need_more_hits"] += 1
+            last_real_score = max((b.det_score for b in real_bboxes), default=0.0)
+            if last_real_score <= traj._confirmed_det_score:
+                info["low_det_score"] += 1
+            last_match_score = traj.matched_scores[-1] if traj.matched_scores else 0.0
+            if last_match_score <= traj._confirmed_match_score:
+                info["low_match_score"] += 1
+        return summary
+
+    def _print_small_class_debug(
+        self,
+        frame_id: int,
+        det_counts: Dict[str, int],
+        matched_counts: Dict[str, int],
+        birth_counts: Dict[str, int],
+        coast_counts: Dict[str, int],
+        dead_counts: Dict[str, int],
+        output_trajs: Dict,
+    ) -> None:
+        target_classes = ["bicycle", "motorcycle"]
+        alive_by_cls = {
+            cls_name: {"init": 0, "confirmed": 0, "obscured": 0}
+            for cls_name in target_classes
+        }
+        for traj in self.all_trajs.values():
+            cls_name = traj.bboxes[-1].category
+            if cls_name not in alive_by_cls:
+                continue
+            if traj.status_flag == 0:
+                alive_by_cls[cls_name]["init"] += 1
+            elif traj.status_flag == 1:
+                alive_by_cls[cls_name]["confirmed"] += 1
+            elif traj.status_flag == 2:
+                alive_by_cls[cls_name]["obscured"] += 1
+
+        output_counts = {cls_name: 0 for cls_name in target_classes}
+        for bbox in output_trajs.values():
+            if bbox.category in output_counts:
+                output_counts[bbox.category] += 1
+
+        pending_summary = self._summarize_small_class_pending_reasons()
+        for cls_name in target_classes:
+            alive_info = alive_by_cls[cls_name]
+            pending_info = pending_summary.get(cls_name, {})
+            print(
+                f"[TRK-SMALL] frame={frame_id} cls={cls_name} "
+                f"dets={det_counts.get(cls_name, 0)} matched={matched_counts.get(cls_name, 0)} "
+                f"births={birth_counts.get(cls_name, 0)} coasts={coast_counts.get(cls_name, 0)} "
+                f"dead={dead_counts.get(cls_name, 0)} output={output_counts.get(cls_name, 0)} "
+                f"alive_init={alive_info['init']} alive_confirmed={alive_info['confirmed']} "
+                f"alive_obscured={alive_info['obscured']}",
+                flush=True,
+            )
+            if pending_info:
+                print(
+                    f"[TRK-SMALL] frame={frame_id} cls={cls_name} pending={pending_info.get('pending', 0)} "
+                    f"need_more_hits={pending_info.get('need_more_hits', 0)} "
+                    f"low_det_score={pending_info.get('low_det_score', 0)} "
+                    f"low_match_score={pending_info.get('low_match_score', 0)} "
+                    f"has_real_det={pending_info.get('has_real_det', 0)} "
+                    f"no_real_det_yet={pending_info.get('no_real_det_yet', 0)}",
+                    flush=True,
+                )
+
     # ==================================================================
     # Main entry: track a single frame
     # ==================================================================
@@ -598,6 +687,7 @@ class Base3DTracker:
         dets_cnt = len(frame_info.bboxes)
 
         _dbg = os.environ.get("DEBUG_TRACKER", "")
+        _dbg_small = os.environ.get("DEBUG_SMALL_CLASSES", "")
         if _dbg:
             _statuses = [t.status_flag for t in trajs]
             print(f"[TRK] frame={frame_info.frame_id} dets={dets_cnt} "
@@ -605,6 +695,16 @@ class Base3DTracker:
                   f"status_1={_statuses.count(1)} status_2={_statuses.count(2)} "
                   f"dt={delta_t:.4f}s",
                   flush=True)
+        debug_target_classes = {"bicycle", "motorcycle"}
+        det_counts = {cls_name: 0 for cls_name in debug_target_classes}
+        matched_counts = {cls_name: 0 for cls_name in debug_target_classes}
+        birth_counts = {cls_name: 0 for cls_name in debug_target_classes}
+        coast_counts = {cls_name: 0 for cls_name in debug_target_classes}
+        dead_counts = {cls_name: 0 for cls_name in debug_target_classes}
+        if _dbg_small:
+            for det in frame_info.bboxes:
+                if det.category in det_counts:
+                    det_counts[det.category] += 1
 
         # ---- predict all active tracks (Module A + B) ----
         mamba_out, trk_embeddings = self.predict_before_associate(trajs, delta_t)
@@ -702,7 +802,7 @@ class Base3DTracker:
             if trajs_cnt > 0 and len(high_dets) > 0:
                 det_emb_high = det_embeddings_all[high_det_indices] \
                     if det_embeddings_all is not None else None
-                match_res_1, _ = match_trajs_and_dets_uncertainty_aware(
+                match_res_1, costs_1 = match_trajs_and_dets_uncertainty_aware(
                     trajs, high_dets, self.cfg,
                     trk_embeddings=trk_embeddings,
                     det_embeddings=det_emb_high,
@@ -712,9 +812,10 @@ class Base3DTracker:
                 )
             else:
                 match_res_1 = np.empty((0, 2), dtype=int)
+                costs_1 = np.empty((0,), dtype=float)
 
             matched_high_sub_set: set = set()
-            for row in (match_res_1 if len(match_res_1) > 0 else []):
+            for match_idx, row in enumerate(match_res_1 if len(match_res_1) > 0 else []):
                 traj_idx = int(row[0])
                 high_sub_idx = int(row[1])
                 det_global_idx = high_det_indices[high_sub_idx]
@@ -725,6 +826,16 @@ class Base3DTracker:
                 matched_bboxes.append(det_bbox)
                 matched_traj_full_set.add(traj_idx)
                 matched_high_sub_set.add(high_sub_idx)
+                if _dbg_small and det_bbox.category in matched_counts:
+                    matched_counts[det_bbox.category] += 1
+                    assoc_cost = float(costs_1[match_idx]) if match_idx < len(costs_1) else float("nan")
+                    print(
+                        f"[TRK-SMALL] frame={frame_info.frame_id} cls={det_bbox.category} "
+                        f"stage=1 event=match tid={track_id} det_score={det_bbox.det_score:.4f} "
+                        f"assoc_cost={assoc_cost:.4f} track_len={self.all_trajs[track_id].track_length} "
+                        f"status={self.all_trajs[track_id].status_flag}",
+                        flush=True,
+                    )
             if _dbg:
                 print(
                     f"[TRK] frame={frame_info.frame_id} stage1 "
@@ -755,7 +866,7 @@ class Base3DTracker:
                     v * 2.0 for v in orig_thre.values()
                 ]
 
-                match_res_2, _ = match_trajs_and_dets_uncertainty_aware(
+                match_res_2, costs_2 = match_trajs_and_dets_uncertainty_aware(
                     unmatched_trajs, low_dets, cfg_relaxed,
                     trk_embeddings=um_trk_emb,
                     det_embeddings=det_emb_low,
@@ -765,8 +876,9 @@ class Base3DTracker:
                 )
             else:
                 match_res_2 = np.empty((0, 2), dtype=int)
+                costs_2 = np.empty((0,), dtype=float)
 
-            for row in (match_res_2 if len(match_res_2) > 0 else []):
+            for match_idx, row in enumerate(match_res_2 if len(match_res_2) > 0 else []):
                 um_sub_idx = int(row[0])
                 low_sub_idx = int(row[1])
                 traj_full_idx = unmatched_traj_full_indices[um_sub_idx]
@@ -780,6 +892,16 @@ class Base3DTracker:
                 matched_track_ids.append(track_id)
                 matched_bboxes.append(det_bbox)
                 matched_traj_full_set.add(traj_full_idx)
+                if _dbg_small and det_bbox.category in matched_counts:
+                    matched_counts[det_bbox.category] += 1
+                    assoc_cost = float(costs_2[match_idx]) if match_idx < len(costs_2) else float("nan")
+                    print(
+                        f"[TRK-SMALL] frame={frame_info.frame_id} cls={det_bbox.category} "
+                        f"stage=2 event=match tid={track_id} det_score={det_bbox.det_score:.4f} "
+                        f"assoc_cost={assoc_cost:.4f} track_len={self.all_trajs[track_id].track_length} "
+                        f"status={self.all_trajs[track_id].status_flag}",
+                        flush=True,
+                    )
             if _dbg:
                 print(
                     f"[TRK] frame={frame_info.frame_id} stage2 "
@@ -792,6 +914,8 @@ class Base3DTracker:
                 if i not in matched_traj_full_set:
                     track_id = trajs[i].track_id
                     self.all_trajs[track_id].unmatch_update(frame_info.frame_id, timestamp=frame_info.timestamp)
+                    if _dbg_small and trajs[i].bboxes[-1].category in coast_counts:
+                        coast_counts[trajs[i].bboxes[-1].category] += 1
 
             # ---- batch KF update for all matched tracks ----
             if mamba_out is not None and len(matched_track_ids) > 0:
@@ -811,6 +935,13 @@ class Base3DTracker:
                     self.all_trajs[self.track_id_counter] = new_traj
                     self._init_kf_state(self.track_id_counter, det_bbox)
                     self.track_id_counter += 1
+                    if _dbg_small and det_bbox.category in birth_counts:
+                        birth_counts[det_bbox.category] += 1
+                        print(
+                            f"[TRK-SMALL] frame={frame_info.frame_id} cls={det_bbox.category} "
+                            f"event=birth tid={self.track_id_counter - 1} det_score={det_bbox.det_score:.4f}",
+                            flush=True,
+                        )
             if _dbg:
                 births = len(high_dets) - len(matched_high_sub_set)
                 coasts = trajs_cnt - len(matched_traj_full_set)
@@ -832,7 +963,7 @@ class Base3DTracker:
             matched_det_indices: set = set()
 
             if trajs_cnt > 0 and dets_cnt > 0:
-                match_res, _ = match_trajs_and_dets_uncertainty_aware(
+                match_res, costs = match_trajs_and_dets_uncertainty_aware(
                     trajs, frame_info.bboxes, self.cfg,
                     trk_embeddings=trk_embeddings,
                     det_embeddings=det_embeddings_all,
@@ -842,8 +973,9 @@ class Base3DTracker:
                 )
             else:
                 match_res = np.empty((0, 2), dtype=int)
+                costs = np.empty((0,), dtype=float)
 
-            for row in (match_res if len(match_res) > 0 else []):
+            for match_idx, row in enumerate(match_res if len(match_res) > 0 else []):
                 traj_idx = int(row[0])
                 det_idx = int(row[1])
                 track_id = trajs[traj_idx].track_id
@@ -853,12 +985,24 @@ class Base3DTracker:
                 matched_bboxes.append(det_bbox)
                 matched_traj_indices.add(traj_idx)
                 matched_det_indices.add(det_idx)
+                if _dbg_small and det_bbox.category in matched_counts:
+                    matched_counts[det_bbox.category] += 1
+                    assoc_cost = float(costs[match_idx]) if match_idx < len(costs) else float("nan")
+                    print(
+                        f"[TRK-SMALL] frame={frame_info.frame_id} cls={det_bbox.category} "
+                        f"stage=single event=match tid={track_id} det_score={det_bbox.det_score:.4f} "
+                        f"assoc_cost={assoc_cost:.4f} track_len={self.all_trajs[track_id].track_length} "
+                        f"status={self.all_trajs[track_id].status_flag}",
+                        flush=True,
+                    )
 
             # ---- coast: unmatched trajectories ----
             for i in range(trajs_cnt):
                 if i not in matched_traj_indices:
                     track_id = trajs[i].track_id
                     self.all_trajs[track_id].unmatch_update(frame_info.frame_id, timestamp=frame_info.timestamp)
+                    if _dbg_small and trajs[i].bboxes[-1].category in coast_counts:
+                        coast_counts[trajs[i].bboxes[-1].category] += 1
 
             # ---- batch KF update for all matched tracks ----
             if mamba_out is not None and len(matched_track_ids) > 0:
@@ -878,17 +1022,36 @@ class Base3DTracker:
                     self.all_trajs[self.track_id_counter] = new_traj
                     self._init_kf_state(self.track_id_counter, det_bbox)
                     self.track_id_counter += 1
+                    if _dbg_small and det_bbox.category in birth_counts:
+                        birth_counts[det_bbox.category] += 1
+                        print(
+                            f"[TRK-SMALL] frame={frame_info.frame_id} cls={det_bbox.category} "
+                            f"event=birth tid={self.track_id_counter - 1} det_score={det_bbox.det_score:.4f}",
+                            flush=True,
+                        )
 
         # ---- death: remove dead tracks ----
         _n_dead = 0
         for track_id in list(self.all_trajs.keys()):
             if self.all_trajs[track_id].status_flag == 4:
+                if _dbg_small and self.all_trajs[track_id].bboxes[-1].category in dead_counts:
+                    dead_counts[self.all_trajs[track_id].bboxes[-1].category] += 1
                 self.all_dead_trajs[track_id] = self.all_trajs[track_id]
                 del self.all_trajs[track_id]
                 self.kf_states.pop(track_id, None)
                 _n_dead += 1
 
         output_trajs = self.get_output_trajs(frame_info.frame_id)
+        if _dbg_small:
+            self._print_small_class_debug(
+                frame_info.frame_id,
+                det_counts,
+                matched_counts,
+                birth_counts,
+                coast_counts,
+                dead_counts,
+                output_trajs,
+            )
         if _dbg:
             print(f"[TRK] frame={frame_info.frame_id} dead={_n_dead} "
                   f"alive={len(self.all_trajs)} output={len(output_trajs)}",
@@ -907,12 +1070,13 @@ class Base3DTracker:
                 if bbox.det_score == self.all_trajs[track_id]._is_filter_predict_box:
                     continue
                 # Quality-gated scoring: mirrors filtering() in trajectory.py.
-                # Only high-confidence real detections (score >= 0.4) determine
-                # the output score. Stage 2 ByteTrack rescue dets (0.1-0.4) are
+                # Only real detections above the configured per-class OUTPUT_SCORE
+                # threshold determine the output score. Low-score rescue dets are
                 # excluded — they exist to maintain track continuity, not to
                 # represent object existence probability.
                 # This runs in both ONLINE and GLOBAL tracking modes.
                 traj = self.all_trajs[track_id]
+                output_score_thre = getattr(traj, "_output_score", 0.4)
                 real_scores = [
                     b.det_score for b in traj.bboxes
                     if not getattr(b, "is_fake", False)
@@ -922,7 +1086,7 @@ class Base3DTracker:
                     if (
                         not getattr(b, "is_fake", False)
                         and not getattr(b, "is_low_score_match", False)
-                        and b.det_score >= 0.4
+                        and b.det_score >= output_score_thre
                     )
                 ]
                 if quality_scores:

@@ -89,6 +89,10 @@ class Trajectory:
         self._confirmed_match_score: float = cfg["THRESHOLD"]["TRAJECTORY_THRE"][
             "CONFIRMED_MATCHED_SCORE"
         ][self.category_num]
+        self._output_score: float = cfg["THRESHOLD"]["TRAJECTORY_THRE"].get(
+            "OUTPUT_SCORE",
+            {}
+        ).get(self.category_num, 0.4)
         self._is_filter_predict_box: float = cfg["THRESHOLD"]["TRAJECTORY_THRE"][
             "IS_FILTER_PREDICT_BOX"
         ][self.category_num]
@@ -242,9 +246,9 @@ class Trajectory:
 
         Interpolation: linearly fills gaps in global_xyz_lwh_yaw_fusion for fake bboxes.
 
-        Score assignment: only high-confidence real detections (original score >= 0.4)
-        determine the final trajectory score. Stage 2 ByteTrack rescue dets (0.1-0.4)
-        and fake coasted bboxes are excluded — they exist to maintain track continuity
+        Score assignment: only real detections above the configured OUTPUT_SCORE
+        threshold determine the final trajectory score. Lower-score rescue dets and
+        fake coasted bboxes are excluded — they exist to maintain track continuity
         through occlusion, not to represent object existence probability.
         """
         # snapshot original scores before logit transform
@@ -284,10 +288,10 @@ class Trajectory:
                 if_has_unmatched = 0
             last_xyz_lwh_yaw_fusion = bbox.global_xyz_lwh_yaw_fusion
 
-        # ---- quality-aware score: only high-confidence real dets ----
+        # ---- quality-aware score: only configured high-confidence real dets ----
         quality_logit_scores = []
         for bbox, orig_score in zip(self.bboxes, original_scores):
-            if not bbox.is_fake and orig_score >= 0.4:
+            if not bbox.is_fake and orig_score >= self._output_score:
                 quality_logit_scores.append(bbox.det_score)
 
         if quality_logit_scores:
