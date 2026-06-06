@@ -75,6 +75,9 @@ MATCHING:
 # ----------------threshold------------
 THRESHOLD:
   INPUT_SCORE: 
+    # Recommended single-stage preset (USE_BYTETRACK=False):
+    #   ONLINE:  {0: 0.15, 1: 0.16, 2: 0.18, 3: 0.15, 4: 0.16, 5: 0.15, 6: 0.00}
+    #   OFFLINE: {0: 0.15, 1: 0.16, 2: 0.18, 3: 0.15, 4: 0.16, 5: 0.15, 6: 0.00}
     ONLINE: {0: 0.15, 1: 0.16, 2: 0.20, 3: 0.15, 4: 0.16, 5: 0.17, 6: 0.0}
     OFFLINE: {0: 0.15, 1: 0.16, 2: 0.20, 3: 0.15, 4: 0.16, 5: 0.17, 6: 0.0}
   COST_STATE_PREDICT_RATION: {0: 1.0, 1: 1.0, 2: 1.0, 3: 0.5, 4: 1.0, 5: 1.0, 6: 1.0}  # 3=motorcycle: 50/50 blend
@@ -96,6 +99,8 @@ THRESHOLD:
     #    usually less stable than track-history embedding.
     # 3. lower W_UNCERTAINTY first because it shifts an entire trajectory row up
     #    without improving pairwise discrimination.
+    # Recommended single-stage preset (USE_BYTETRACK=False):
+    # COST_THRE: {0: 1.20, 1: 1.85, 2: 1.70, 3: 1.65, 4: 1.30, 5: 1.50, 6: 1.25}
     COST_THRE: {0: 1.20, 1: 1.80, 2: 1.60, 3: 1.60, 4: 1.20, 5: 1.40, 6: 1.20}
     # COST_THRE:      {0: 1.45, 1: 2.00, 2: 1.85, 3: 1.85, 4: 1.45, 5: 1.65, 6: 1.45}
     COST_MODE: "geometric"   # "geometric" (early training) | "full" (converged)
@@ -130,11 +135,15 @@ THRESHOLD:
     PREDICT_BBOX_LENGTH: {0: 17, 1: 7, 2: 8, 3: 8, 4: 15, 5: 7, 6: 20}
 
     # Max unmatched frames before status → obscured (not output, but still matchable).
+    # Recommended single-stage preset (USE_BYTETRACK=False):
+    # MAX_UNMATCH_LENGTH: {0: 2, 1: 1, 2: 2, 3: 2, 4: 2, 5: 1, 6: 1}
     MAX_UNMATCH_LENGTH: {0: 2, 1: 1, 2: 1, 3: 1, 4: 2, 5: 1, 6: 1}
 
     # Min frames before a track is considered "confirmed" (status=1, output).
     # bicycle/motorcycle → 5: CenterPoint has high FP rate, need stricter gating.
     # trailer → 2: was 1, single-frame confirms caused excess FP.
+    # Recommended single-stage preset (USE_BYTETRACK=False):
+    # CONFIRMED_TRACK_LENGTH: {0: 1, 1: 1, 2: 4, 3: 4, 4: 1, 5: 1, 6: 1}
     CONFIRMED_TRACK_LENGTH: {0: 1, 1: 1, 2: 5, 3: 5, 4: 1, 5: 1, 6: 1}
 
     # Max frames out-of-view before death (0 = disabled)
@@ -142,26 +151,27 @@ THRESHOLD:
 
     # Detection score threshold for a track to become confirmed.
     # Mamba-DEKF's KF smooths lower-quality initial dets → set to 0.5 (vs MCTrack 0.7).
+    # Recommended single-stage preset (USE_BYTETRACK=False):
+    # CONFIRMED_DET_SCORE: {0: 0.40, 1: 0.44, 2: 0.42, 3: 0.45, 4: 0.50, 5: 0.45, 6: 0.40}
     CONFIRMED_DET_SCORE: {0: 0.45, 1: 0.45, 2: 0.50, 3: 0.52, 4: 0.5, 5: 0.5, 6: 0.5}
 
     # Detection score threshold to CREATE a new track (Strict Birth).
     # Higher for noisy categories (bicycle, motorcycle) to suppress false tracks.
     # CenterPoint produces many false bicycle detections at score 0.4-0.55.
     BIRTH_SCORE: {0: 0.40, 1: 0.50, 2: 0.45, 3: 0.50, 4: 0.35, 5: 0.45, 6: 0.4}
-    # Mid-score detections between TENTATIVE_BIRTH_SCORE and BIRTH_SCORE can
-    # start init-only tracks under ByteTrack. This recovers recall when the
-    # detector's score calibration is conservative, while still keeping strict
-    # confirmation gates for final output quality.
-    TENTATIVE_BIRTH_SCORE: {0: 0.25, 1: 0.30, 2: 0.30, 3: 0.32, 4: 0.25, 5: 0.30, 6: 0.25}
 
     # Detection score threshold used when aggregating a trajectory's final output score.
     # Only real detections above this threshold contribute to the quality-gated score.
+    # Recommended single-stage preset (USE_BYTETRACK=False):
+    # OUTPUT_SCORE: {0: 0.42, 1: 0.46, 2: 0.50, 3: 0.48, 4: 0.54, 5: 0.50, 6: 0.44}
     # OUTPUT_SCORE: {0: 0.40, 1: 0.40, 2: 0.35, 3: 0.35, 4: 0.40, 5: 0.40, 6: 0.40}
-    OUTPUT_SCORE: {0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0, 5: 0.0, 6: 0.0}
+    OUTPUT_SCORE: {0: 0.3, 1: 0.36, 2: 0.45, 3: 0.36, 4: 0.35, 5: 0.4, 6: 0.3}
     # Sentinel value for filter-predicted bboxes (excluded from output).
     IS_FILTER_PREDICT_BOX: {0: -1, 1: -1, 2: -1, 3: -1, 4: -1, 5: -1, 6: -1}
 
     # Matching cost threshold for track confirmation promotion.
+    # Recommended single-stage preset (USE_BYTETRACK=False):
+    # CONFIRMED_MATCHED_SCORE: {0: 0.35, 1: 0.35, 2: 0.38, 3: 0.38, 4: 0.32, 5: 0.35, 6: 0.33}
     CONFIRMED_MATCHED_SCORE:  {0: 0.3, 1: 0.3, 2: 0.3, 3: 0.3, 4: 0.3, 5: 0.3, 6: 0.3} 
 
 
