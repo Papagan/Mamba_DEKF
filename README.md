@@ -65,6 +65,8 @@ Detection (per frame)
 Mamba-DEKF/
 ├── config/
 │   ├── kitti.yaml / nuscenes.yaml / waymo.yaml      # Inference configs (MAMBA block)
+│   ├── nuscenes_bytetrack.yaml                       # nuScenes two-stage ByteTrack preset
+│   ├── nuscenes_single_stage.yaml                    # nuScenes single-stage preset
 │   ├── kitti_offline.yaml / nuscenes_offline.yaml
 │   ├── nuscenes_motion_eval.yaml                     # Motion-quality eval config
 │   └── train_nuscenes.yaml                           # Training config
@@ -104,6 +106,25 @@ Mamba-DEKF/
 ├── requirements.txt
 └── README.md  (this file)
 ```
+
+---
+
+## 2.1 Matching Presets
+
+For nuScenes you can now switch matching strategy by choosing the config file directly:
+
+```bash
+# Two-stage ByteTrack
+python main.py --dataset nuscenes --eval --config config/nuscenes_bytetrack.yaml
+
+# Single-stage matching
+python main.py --dataset nuscenes --eval --config config/nuscenes_single_stage.yaml
+```
+
+- `config/nuscenes_bytetrack.yaml`: keeps `USE_BYTETRACK=True` and enables `TENTATIVE_BIRTH_SCORE` for medium-score tentative births.
+- `config/nuscenes_single_stage.yaml`: fixes `USE_BYTETRACK=False` and activates the single-stage gate values that were previously kept only as recommendations.
+
+`config/nuscenes.yaml` remains the research/main config for further manual tuning.
 
 ---
 
