@@ -26,6 +26,11 @@ from tracker.bytetrack_utils import (
     classify_single_stage_birth,
     split_bytetrack_detections,
 )
+from tracker.compat_utils import (
+    allow_single_stage_birth_under_mode,
+    normalize_tracker_compat_mode,
+    select_output_tracking_score,
+)
 from tracker.trajectory import Trajectory
 from tracker.bbox import BBox
 from kalmanfilter.mamba_adaptive_kf import MambaDecoupledEKF
@@ -75,6 +80,9 @@ class Base3DTracker:
 
         # ---- Filter Mode (mamba, pure_dekf, fusion) ----
         self.filter_mode = str(cfg.get("FILTER_MODE", "mamba")).lower()
+        self.tracker_compat_mode = normalize_tracker_compat_mode(
+            cfg.get("TRACKER_COMPAT_MODE", "default")
+        )
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -417,6 +425,19 @@ class Base3DTracker:
             float(px[2]),
         ]
 
+        if self.tracker_compat_mode == "mctrack":
+            last_fused = getattr(bbox, "global_xyz_lwh_yaw_fusion", None)
+            if last_fused is None:
+                last_fused = bbox.global_xyz_lwh_yaw
+            predict_xyz = [float(px[0]), float(px[1]), float(last_fused[2])]
+            predict_lwh = [float(last_fused[3]), float(last_fused[4]), float(last_fused[5])]
+            predict_yaw = float(last_fused[6])
+            bbox.global_xyz_lwh_yaw_predict = predict_xyz + predict_lwh + [predict_yaw]
+            bbox.global_velocity_fusion = [float(stable_vel[0]), float(stable_vel[1])]
+            bbox.global_yaw_fusion = float(ox[0])
+            bbox.lwh_fusion = predict_lwh
+            return
+
         # Use KF prediction for mature stable tracks; otherwise fall back to a
         # MCTrack-style CV extrapolation from recent geometric velocity.
         if traj.track_length <= 1:
@@ -455,11 +476,18 @@ class Base3DTracker:
         bbox.global_velocity_fusion = [px[3], px[4]]
         bbox.global_yaw_fusion = float(ox[0])
         bbox.lwh_fusion = [sx[0], sx[1], sx[2]]
-        bbox.global_xyz_lwh_yaw_fusion = np.array([
-            px[0], px[1], px[2],
-            sx[0], sx[1], sx[2],
-            ox[0],
-        ])
+        if self.tracker_compat_mode == "mctrack":
+            bbox.global_xyz_lwh_yaw_fusion = np.array([
+                px[0], px[1], bbox.global_xyz_lwh_yaw[2],
+                bbox.global_xyz_lwh_yaw[3], bbox.global_xyz_lwh_yaw[4],
+                bbox.global_xyz_lwh_yaw[5], bbox.global_xyz_lwh_yaw[6],
+            ])
+        else:
+            bbox.global_xyz_lwh_yaw_fusion = np.array([
+                px[0], px[1], px[2],
+                sx[0], sx[1], sx[2],
+                ox[0],
+            ])
 
     # ==================================================================
     # Helpers
@@ -1238,11 +1266,15 @@ class Base3DTracker:
             for det_idx in range(dets_cnt):
                 if det_idx not in matched_det_indices:
                     det_bbox = frame_info.bboxes[det_idx]
-                    if not classify_single_stage_birth(
+                    gate_allowed = classify_single_stage_birth(
                         category=det_bbox.category,
                         score=det_bbox.det_score,
                         category_map=self.cfg["CATEGORY_MAP_TO_NUMBER"],
                         birth_gate_cfg=single_stage_birth_cfg,
+                    )
+                    if not allow_single_stage_birth_under_mode(
+                        compat_mode=self.tracker_compat_mode,
+                        gate_allowed=gate_allowed,
                     ):
                         if _dbg_small and det_bbox.category in birth_counts:
                             emit_debug_line(
@@ -1325,10 +1357,12 @@ class Base3DTracker:
                         and b.det_score >= output_score_thre
                     )
                 ]
-                if quality_scores:
-                    bbox.det_score = sum(quality_scores) / len(quality_scores)
-                elif real_scores:
-                    bbox.det_score = max(real_scores)
+                bbox.det_score = select_output_tracking_score(
+                    current_score=bbox.det_score,
+                    real_scores=real_scores,
+                    quality_scores=quality_scores,
+                    compat_mode=self.tracker_compat_mode,
+                )
                 output_trajs[track_id] = bbox
                 self.all_trajs[track_id].is_output = True
         return output_trajs

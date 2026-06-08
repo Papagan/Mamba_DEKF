@@ -14,6 +14,7 @@ DETECTIONS_ROOT: "/root/autodl-tmp/data/base_version/nuscenes/"
 SAVE_PATH: "/root/autodl-tmp/results/nuscenes/"
 TRACKING_MODE: 'ONLINE' # ONLINE / GLOBAL
 FILTER_MODE: 'mamba' # mamba / pure_dekf / fusion
+TRACKER_COMPAT_MODE: 'default' # default / mctrack
 IS_RV_MATCHING: False  # True / False
 FRAME_RATE: 2
 CATEGORY_LIST: ["car", "pedestrian", "bicycle", "motorcycle", "bus", "trailer", "truck"]

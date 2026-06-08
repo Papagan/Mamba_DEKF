@@ -16,6 +16,11 @@ import warnings
 from .bbox import BBox
 from typing import List
 from scipy.optimize import curve_fit, OptimizeWarning
+from .compat_utils import (
+    initial_status_flag_for_mode,
+    normalize_tracker_compat_mode,
+    score_for_unmatched_fake_bbox,
+)
 
 np.set_printoptions(formatter={"float": "{:0.4f}".format})
 
@@ -57,6 +62,9 @@ class Trajectory:
         self.first_updated_frame: int = init_bbox.frame_id
         self.last_updated_frame: int = init_bbox.frame_id
         self.cfg = cfg
+        self._tracker_compat_mode = normalize_tracker_compat_mode(
+            cfg.get("TRACKER_COMPAT_MODE", "default")
+        )
         self.bboxes: List[BBox] = [init_bbox]
         self.matched_scores: List[float] = []
 
@@ -98,7 +106,7 @@ class Trajectory:
         ][self.category_num]
 
         # 0: initialization / 1: confirmed / 2: obscured / 4: dead
-        self.status_flag: int = 0
+        self.status_flag: int = initial_status_flag_for_mode(self._tracker_compat_mode)
 
     # ------------------------------------------------------------------
     # Lifecycle methods (called by base_tracker.py)
@@ -200,10 +208,19 @@ class Trajectory:
             if not getattr(b, "is_fake", False):
                 last_real_score = b.det_score
                 break
-        decay = 0.8 ** self.unmatch_length
-        fake_bbox.det_score = last_real_score * decay
+        fake_bbox.det_score = score_for_unmatched_fake_bbox(
+            last_real_score,
+            self.unmatch_length,
+            self._tracker_compat_mode,
+        )
         fake_bbox.is_fake = True
         fake_bbox.frame_id = frame_id
+
+        if self._tracker_compat_mode == "mctrack":
+            pred_state = getattr(fake_bbox, "global_xyz_lwh_yaw_predict", None)
+            if pred_state is not None:
+                fake_bbox.global_xyz_lwh_yaw = list(pred_state)
+                fake_bbox.global_xyz_lwh_yaw_fusion = np.array(pred_state)
 
         # Note: the outer tracker should have already written predicted
         # xyz/lwh/yaw into fake_bbox fields via DecoupledAdaptiveKF output.
