@@ -1,6 +1,32 @@
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 
+def classify_single_stage_birth(
+    category: str,
+    score: float,
+    category_map: dict,
+    birth_gate_cfg: Optional[dict] = None,
+) -> bool:
+    """
+    Decide whether an unmatched detection may create a new track in
+    single-stage mode.
+
+    Behavior:
+      - If a class has no configured gate, keep legacy single-stage behavior
+        and always allow birth.
+      - If a class has a configured gate, require score >= gate.
+    """
+    birth_gate_cfg = birth_gate_cfg or {}
+    cat_num = category_map.get(category, None)
+    if cat_num is None:
+        return True
+
+    birth_gate = birth_gate_cfg.get(cat_num, None)
+    if birth_gate is None:
+        return True
+    return float(score) >= float(birth_gate)
+
+
 def classify_bytetrack_score(
     score: float,
     birth_score: float,

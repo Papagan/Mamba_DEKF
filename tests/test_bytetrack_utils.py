@@ -2,6 +2,7 @@ import unittest
 from types import SimpleNamespace
 
 from tracker.bytetrack_utils import (
+    classify_single_stage_birth,
     classify_bytetrack_score,
     split_bytetrack_detections,
 )
@@ -41,6 +42,43 @@ class ByteTrackUtilsTest(unittest.TestCase):
         self.assertEqual(high, [0])
         self.assertEqual(tentative, [1, 3])
         self.assertEqual(low, [4])
+
+    def test_single_stage_birth_gate_is_optional_per_class(self):
+        category_map = {"car": 0, "bicycle": 2, "truck": 6}
+        birth_gate_cfg = {0: 0.45, 6: 0.50}
+
+        self.assertFalse(
+            classify_single_stage_birth(
+                category="car",
+                score=0.40,
+                category_map=category_map,
+                birth_gate_cfg=birth_gate_cfg,
+            )
+        )
+        self.assertTrue(
+            classify_single_stage_birth(
+                category="car",
+                score=0.46,
+                category_map=category_map,
+                birth_gate_cfg=birth_gate_cfg,
+            )
+        )
+        self.assertTrue(
+            classify_single_stage_birth(
+                category="bicycle",
+                score=0.20,
+                category_map=category_map,
+                birth_gate_cfg=birth_gate_cfg,
+            )
+        )
+        self.assertFalse(
+            classify_single_stage_birth(
+                category="truck",
+                score=0.49,
+                category_map=category_map,
+                birth_gate_cfg=birth_gate_cfg,
+            )
+        )
 
 
 if __name__ == "__main__":

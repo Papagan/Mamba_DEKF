@@ -22,7 +22,10 @@ from tracker.matching import (
     match_trajs_and_dets,
     match_trajs_and_dets_uncertainty_aware,
 )
-from tracker.bytetrack_utils import split_bytetrack_detections
+from tracker.bytetrack_utils import (
+    classify_single_stage_birth,
+    split_bytetrack_detections,
+)
 from tracker.trajectory import Trajectory
 from tracker.bbox import BBox
 from kalmanfilter.mamba_adaptive_kf import MambaDecoupledEKF
@@ -1225,10 +1228,28 @@ class Base3DTracker:
                     matched_track_ids, matched_bboxes, mamba_out, traj_index_map,
                 )
 
-            # ---- Birth: ALL unmatched dets create new tracks ----
+            # ---- Birth: unmatched dets create new tracks.
+            # In mixed single-stage mode, classes listed in
+            # SINGLE_STAGE_BIRTH_SCORE must pass their per-class score gate;
+            # classes without a configured gate keep legacy MCTrack behavior.
+            single_stage_birth_cfg = self.cfg["THRESHOLD"]["TRAJECTORY_THRE"].get(
+                "SINGLE_STAGE_BIRTH_SCORE", {}
+            )
             for det_idx in range(dets_cnt):
                 if det_idx not in matched_det_indices:
                     det_bbox = frame_info.bboxes[det_idx]
+                    if not classify_single_stage_birth(
+                        category=det_bbox.category,
+                        score=det_bbox.det_score,
+                        category_map=self.cfg["CATEGORY_MAP_TO_NUMBER"],
+                        birth_gate_cfg=single_stage_birth_cfg,
+                    ):
+                        if _dbg_small and det_bbox.category in birth_counts:
+                            emit_debug_line(
+                                f"[TRK-SMALL] frame={frame_info.frame_id} cls={det_bbox.category} "
+                                f"event=birth_filtered det_score={det_bbox.det_score:.4f}"
+                            )
+                        continue
                     new_traj = Trajectory(
                         track_id=self.track_id_counter,
                         init_bbox=det_bbox,

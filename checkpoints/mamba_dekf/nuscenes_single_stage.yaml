@@ -85,7 +85,7 @@ THRESHOLD:
     # bus/pedestrian/motorcycle raised to align with their stable threshold bands.
     ONLINE: {0: 0.20, 1: 0.30, 2: 0.24, 3: 0.24, 4: 0.22, 5: 0.24, 6: 0.20}
     OFFLINE: {0: 0.20, 1: 0.30, 2: 0.24, 3: 0.24, 4: 0.22, 5: 0.24, 6: 0.20}
-  COST_STATE_PREDICT_RATION: {0: 1.0, 1: 1.0, 2: 1.0, 3: 0.5, 4: 1.0, 5: 1.0, 6: 1.0}  # 3=motorcycle: 50/50 blend
+  COST_STATE_PREDICT_RATION: {0: 1.0, 1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0, 5: 1.0, 6: 1.0}  # 3=motorcycle: 50/50 blend
   NMS_THRE: {0: 0.08, 1: 0.08, 2: 0.08, 3: 0.08, 4: 0.08, 5: 0.12, 6: 0.06}
   # Export/eval filter on final tracking_score.
   # Only results at or above these per-class floors are written to results.json.
@@ -171,13 +171,6 @@ THRESHOLD:
     # CenterPoint produces many false bicycle detections at score 0.4-0.55.
     # Unused in single-stage birth logic; kept only for reference.
     BIRTH_SCORE: {0: 0.40, 1: 0.50, 2: 0.45, 3: 0.50, 4: 0.35, 5: 0.45, 6: 0.4}
-
-    # Mixed single-stage birth gate:
-    # classes listed here require score >= threshold to birth when unmatched;
-    # classes omitted here keep legacy single-stage "always birth" behavior.
-    # This is intentionally applied to high-FP large-object classes first,
-    # while keeping bicycle / motorcycle / pedestrian wide-open for recall.
-    SINGLE_STAGE_BIRTH_SCORE: {0: 0.35, 4: 0.40, 5: 0.42, 6: 0.40}
 
     # Detection score threshold used when aggregating a trajectory's final output score.
     # Only real detections above this threshold contribute to the quality-gated score.
