@@ -82,6 +82,9 @@ THRESHOLD:
     OFFLINE: {0: 0.15, 1: 0.16, 2: 0.20, 3: 0.15, 4: 0.16, 5: 0.17, 6: 0.0}
   COST_STATE_PREDICT_RATION: {0: 1.0, 1: 1.0, 2: 1.0, 3: 0.5, 4: 1.0, 5: 1.0, 6: 1.0}  # 3=motorcycle: 50/50 blend
   NMS_THRE: {0: 0.04, 1: 0.08, 2: 0.08, 3: 0.06, 4: 0.08, 5: 0.12, 6: 0.05}
+  # Export/eval filter on final tracking_score.
+  # Only results at or above these per-class floors are written to results.json.
+  EVAL_MIN_TRACKING_SCORE: {0: 0.55, 1: 0.00, 2: 0.30, 3: 0.50, 4: 0.40, 5: 0.55, 6: 0.45}
   BEV:
     # Per-category matching cost thresholds (lower = stricter).
     # Uncertainty-adaptive gate scales these dynamically based on P trace.

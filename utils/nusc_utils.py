@@ -32,7 +32,35 @@ CLASS_STR_TO_SEG_CLASS = {
 }
 
 
-def save_results_nuscenes(tracking_results, result_path):
+def filter_nuscenes_sample_results_by_score(sample_results, score_cfg, category_map):
+    """
+    Keep only results whose tracking_score is above the configured per-class floor.
+    Classes missing from the config are left untouched.
+    """
+    if not score_cfg:
+        return sample_results
+
+    filtered = []
+    for item in sample_results:
+        cls_name = item.get("tracking_name")
+        cls_id = category_map.get(cls_name, None)
+        if cls_id is None:
+            filtered.append(item)
+            continue
+
+        min_score = score_cfg.get(cls_id, None)
+        if min_score is None:
+            filtered.append(item)
+            continue
+
+        score = item.get("tracking_score", float("-inf"))
+        if score >= min_score:
+            filtered.append(item)
+
+    return filtered
+
+
+def save_results_nuscenes(tracking_results, result_path, cfg=None):
     """
     Info: This function saves tracking results in the required NuScenes format as a JSON file.
     Parameters:
@@ -52,6 +80,11 @@ def save_results_nuscenes(tracking_results, result_path):
             "use_external": False,
         },
     }
+    score_cfg = {}
+    category_map = {}
+    if cfg is not None:
+        score_cfg = cfg.get("THRESHOLD", {}).get("EVAL_MIN_TRACKING_SCORE", {})
+        category_map = cfg.get("CATEGORY_MAP_TO_NUMBER", {})
 
     for scene_id, scene_trajs in tracking_results.items():
         for frame_id, frame_data in tqdm(scene_trajs.items(), desc="Converting"):
@@ -92,6 +125,12 @@ def save_results_nuscenes(tracking_results, result_path):
                     "tracking_score": bbox.det_score,
                 }
                 sample_results.append(box_result)
+
+            sample_results = filter_nuscenes_sample_results_by_score(
+                sample_results,
+                score_cfg=score_cfg,
+                category_map=category_map,
+            )
 
             if sample_token in result["results"]:
                 result["results"][sample_token] = (

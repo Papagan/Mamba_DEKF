@@ -243,7 +243,7 @@ if __name__ == "__main__":
         if args.eval:
             eval_kitti(cfg)
     if args.dataset == "nuscenes":
-        save_results_nuscenes(tracking_results, save_path)
+        save_results_nuscenes(tracking_results, save_path, cfg=cfg)
         # --- quick sanity: count saved boxes ---
         _res_file = os.path.join(save_path, "results.json")
         with open(_res_file) as _f:

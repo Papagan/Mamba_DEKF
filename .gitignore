@@ -10,3 +10,4 @@ data
 new_data/
 val.json
 waymo-od/
+docs/command.log
