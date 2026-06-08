@@ -60,7 +60,7 @@ MATCHING:
     #   Fusion      — weighted blend via COST_STATE_PREDICT_RATION
     # Final-result-oriented preset:
     # use Predict for bicycle/motorcycle as well to reduce sensitivity to noisy det velocity.
-    COST_STATE: {0: "Predict", 1: "BackPredict", 2: "Predict", 3: "Predict", 4: "Predict", 5: "Predict", 6: "Predict"}
+    COST_STATE: {0: "Predict", 1: "Predict", 2: "Predict", 3: "Predict", 4: "Predict", 5: "Predict", 6: "Predict"}
     # iou_3d, giou_3d, dist_3d, ro_gdiou_3d
     COST_MODE: {0: "RO_GDIOU_3D", 1: "RO_GDIOU_3D", 2: "RO_GDIOU_3D", 3: "RO_GDIOU_3D", 4: "RO_GDIOU_3D", 5: "RO_GDIOU_3D", 6: "RO_GDIOU_3D"} 
      # Hungarian, Greedy
@@ -83,13 +83,13 @@ THRESHOLD:
     # Tuned from docs/result.log sweet spots:
     # bicycle/trailer slightly higher to suppress low-score FPs;
     # bus/pedestrian/motorcycle raised to align with their stable threshold bands.
-    ONLINE: {0: 0.18, 1: 0.30, 2: 0.22, 3: 0.22, 4: 0.22, 5: 0.24, 6: 0.18}
-    OFFLINE: {0: 0.18, 1: 0.30, 2: 0.22, 3: 0.22, 4: 0.22, 5: 0.24, 6: 0.18}
+    ONLINE: {0: 0.20, 1: 0.30, 2: 0.24, 3: 0.24, 4: 0.22, 5: 0.24, 6: 0.20}
+    OFFLINE: {0: 0.20, 1: 0.30, 2: 0.24, 3: 0.24, 4: 0.22, 5: 0.24, 6: 0.20}
   COST_STATE_PREDICT_RATION: {0: 1.0, 1: 1.0, 2: 1.0, 3: 0.5, 4: 1.0, 5: 1.0, 6: 1.0}  # 3=motorcycle: 50/50 blend
   NMS_THRE: {0: 0.08, 1: 0.08, 2: 0.08, 3: 0.08, 4: 0.08, 5: 0.12, 6: 0.06}
   # Export/eval filter on final tracking_score.
   # Only results at or above these per-class floors are written to results.json.
-  EVAL_MIN_TRACKING_SCORE: {0: 0.55, 1: 0.00, 2: 0.30, 3: 0.50, 4: 0.40, 5: 0.55, 6: 0.45}
+  EVAL_MIN_TRACKING_SCORE: {0: 0.00, 1: 0.00, 2: 0.00, 3: 0.00, 4: 0.00, 5: 0.00, 6: 0.00}
   BEV:
     # Per-category matching cost thresholds (lower = stricter).
     # Uncertainty-adaptive gate scales these dynamically based on P trace.
@@ -152,7 +152,7 @@ THRESHOLD:
     # trailer → 2: was 1, single-frame confirms caused excess FP.
     # Recommended single-stage preset (USE_BYTETRACK=False):
     # CONFIRMED_TRACK_LENGTH: {0: 1, 1: 1, 2: 4, 3: 4, 4: 1, 5: 1, 6: 1}
-    CONFIRMED_TRACK_LENGTH: {0: 1, 1: 1, 2: 3, 3: 3, 4: 1, 5: 1, 6: 1}
+    CONFIRMED_TRACK_LENGTH: {0: 1, 1: 1, 2: 3, 3: 3, 4: 1, 5: 2, 6: 1}
 
     # Max frames out-of-view before death (0 = disabled)
     DELET_OUT_VIEW_LENGTH: {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0}
@@ -164,7 +164,7 @@ THRESHOLD:
     # Slightly relaxed from the previous "anti-low-threshold" setting:
     # keep car / truck / bus stable, but give bicycle / motorcycle /
     # pedestrian / trailer more room to confirm.
-    CONFIRMED_DET_SCORE: {0: 0.44, 1: 0.56, 2: 0.41, 3: 0.43, 4: 0.46, 5: 0.45, 6: 0.41}
+    CONFIRMED_DET_SCORE: {0: 0.44, 1: 0.56, 2: 0.44, 3: 0.45, 4: 0.46, 5: 0.48, 6: 0.41}
 
     # Detection score threshold to CREATE a new track (Strict Birth).
     # Higher for noisy categories (bicycle, motorcycle) to suppress false tracks.
@@ -179,7 +179,7 @@ THRESHOLD:
     # OUTPUT_SCORE: {0: 0.40, 1: 0.40, 2: 0.35, 3: 0.35, 4: 0.40, 5: 0.40, 6: 0.40}
     # Relax small / fragile classes slightly so final recall does not collapse
     # while still avoiding very low-score sweet spots.
-    OUTPUT_SCORE: {0: 0.48, 1: 0.58, 2: 0.45, 3: 0.46, 4: 0.48, 5: 0.47, 6: 0.45}
+    OUTPUT_SCORE: {0: 0.48, 1: 0.58, 2: 0.50, 3: 0.48, 4: 0.52, 5: 0.50, 6: 0.47}
     # Sentinel value for filter-predicted bboxes (excluded from output).
     IS_FILTER_PREDICT_BOX: {0: -1, 1: -1, 2: -1, 3: -1, 4: -1, 5: -1, 6: -1}
 
