@@ -75,7 +75,7 @@ MODEL:
   D_CONV: 4
   EXPAND: 2
   N_MAMBA_LAYERS: 6
-  EMBED_DIM: 32
+  EMBED_DIM: 64
   # ---- Scheme B: aggressive scale-up (higher MAMBA_LR risk → reduce to 2e-5) ----
   # D_MODEL: 96
   # D_STATE: 24

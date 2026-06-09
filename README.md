@@ -490,7 +490,7 @@ MAMBA:
   D_CONV: 4
   EXPAND: 2
   N_MAMBA_LAYERS: 3
-  EMBED_DIM: 32
+  EMBED_DIM: 64
   HISTORY_LEN: 5
   MAX_BATCH_SIZE: 256
   MIN_DIAG_Q: 0.1           # position Q Cholesky floor
