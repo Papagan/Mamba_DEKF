@@ -21,6 +21,7 @@ import json
 import math
 import os
 import pickle
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -28,6 +29,8 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import yaml
 from scipy.optimize import linear_sum_assignment
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 TRACKING_CLASSES = [

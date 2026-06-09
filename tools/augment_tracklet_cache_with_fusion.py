@@ -20,11 +20,15 @@ import argparse
 import copy
 import json
 import math
+import os
 import pickle
+import sys
 from pathlib import Path
 from typing import Dict, List, Tuple, TYPE_CHECKING
 
 import yaml
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 if TYPE_CHECKING:
     import torch
