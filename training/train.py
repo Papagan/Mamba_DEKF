@@ -560,6 +560,9 @@ def main():
     min_history_len = int(data_cfg.get("MIN_HISTORY_LEN", history_len))
     min_rollout_steps = int(data_cfg.get("MIN_ROLLOUT_STEPS", rollout_steps))
     class_window_cfg = data_cfg.get("CLASS_WINDOW", {})
+    history_source = str(data_cfg.get("HISTORY_SOURCE", "det")).strip().lower()
+    init_state_source = str(data_cfg.get("INIT_STATE_SOURCE", "det")).strip().lower()
+    train_tracker_compat_mode = str(data_cfg.get("TRAIN_TRACKER_COMPAT_MODE", "default")).strip().lower()
 
     if train_source == "det":
         train_dataset = DetectionTrackletDataset(
@@ -572,6 +575,8 @@ def main():
             min_history_len=min_history_len,
             min_rollout_steps=min_rollout_steps,
             class_window_cfg=class_window_cfg if train_adaptive_windows else {},
+            history_source=history_source,
+            init_state_source=init_state_source,
         )
         train_collate_fn = detection_tracklet_collate_fn
     else:
@@ -594,6 +599,8 @@ def main():
             min_history_len=min_history_len,
             min_rollout_steps=min_rollout_steps,
             class_window_cfg=class_window_cfg if val_adaptive_windows else {},
+            history_source=history_source,
+            init_state_source=init_state_source,
         )
         val_collate_fn = detection_tracklet_collate_fn
     else:
@@ -626,12 +633,16 @@ def main():
     logger.info(
         f"Train: {len(train_dataset)} samples, {len(train_loader)} batches "
         f"(Tmax={history_len}, Kmax={rollout_steps}, adaptive={train_adaptive_windows}, "
-        f"Tmin={min_history_len}, Kmin={min_rollout_steps}, source={train_source})"
+        f"Tmin={min_history_len}, Kmin={min_rollout_steps}, source={train_source}, "
+        f"history_source={history_source}, init_state_source={init_state_source}, "
+        f"tracker_compat={train_tracker_compat_mode})"
     )
     logger.info(
         f"Val:   {len(val_dataset)} samples, {len(val_loader)} batches "
         f"(Tmax={history_len}, Kmax={rollout_steps}, adaptive={val_adaptive_windows}, "
-        f"Tmin={min_history_len}, Kmin={min_rollout_steps}, source={val_source})"
+        f"Tmin={min_history_len}, Kmin={min_rollout_steps}, source={val_source}, "
+        f"history_source={history_source}, init_state_source={init_state_source}, "
+        f"tracker_compat={train_tracker_compat_mode})"
     )
 
     # ---- Model: only TemporalMamba is trained ----
@@ -737,9 +748,21 @@ def main():
             )
         start_epoch = ckpt.get("epoch", 0) + 1
         logger.info(f"Resumed from {args.resume}, epoch {start_epoch}")
+        runtime_contract = ckpt.get("runtime_contract", None)
+        if runtime_contract:
+            logger.info(f"Checkpoint runtime_contract: {runtime_contract}")
 
     # ---- Training loop ----
     best_val_loss = float("inf")
+    runtime_contract = {
+        "tracker_compat_mode": train_tracker_compat_mode,
+        "history_source": history_source,
+        "init_state_source": init_state_source,
+        "future_update_source": "det" if bool((cfg.get("BASE_NOISE", {}) or {}).get("DETECTION_UPDATE", {}).get("ENABLED", True)) else "gt_noisy",
+        "train_source": train_source,
+        "val_source": val_source,
+        "expected_bev_cost_mode": str(data_cfg.get("EXPECTED_BEV_COST_MODE", "geometric")).strip().lower(),
+    }
 
     for epoch in range(start_epoch, epochs):
         mamba.train()
@@ -877,6 +900,7 @@ def main():
                 "optimizer_state_dict": optimizer.state_dict(),
                 "train_loss": avg_train,
                 "val_loss": avg_val,
+                "runtime_contract": runtime_contract,
             }, ckpt_path)
             logger.info(f"  Saved checkpoint → {ckpt_path}")
 
@@ -887,6 +911,7 @@ def main():
                 "epoch": epoch,
                 "model_state_dict": mamba.state_dict(),
                 "val_loss": avg_val,
+                "runtime_contract": runtime_contract,
             }, best_path)
             logger.info(f"  New best model → {best_path} (val_loss={val_total:.4f})")
 

@@ -62,6 +62,44 @@ def allow_single_stage_birth_under_mode(compat_mode, gate_allowed: bool) -> bool
     return bool(gate_allowed)
 
 
+def use_mctrack_single_stage_flow(compat_mode, use_bytetrack: bool) -> bool:
+    compat_mode = normalize_tracker_compat_mode(compat_mode)
+    return compat_mode == "mctrack" and not bool(use_bytetrack)
+
+
+def extract_bbox_history_fields(bbox, compat_mode):
+    compat_mode = normalize_tracker_compat_mode(compat_mode)
+    if compat_mode == "mctrack":
+        xyz_fusion = getattr(bbox, "global_xyz_lwh_yaw_fusion", None)
+        vel_fusion = getattr(bbox, "global_velocity_fusion", None)
+        lwh_fusion = getattr(bbox, "lwh_fusion", None)
+        yaw_fusion = getattr(bbox, "global_yaw_fusion", None)
+        if xyz_fusion is not None:
+            xyz = [float(v) for v in xyz_fusion[:3]]
+        else:
+            xyz = [float(v) for v in bbox.global_xyz]
+        if vel_fusion is not None:
+            vel = [float(v) for v in vel_fusion[:2]]
+        else:
+            vel = [float(v) for v in bbox.global_velocity[:2]]
+        if lwh_fusion is not None:
+            lwh = [float(v) for v in lwh_fusion[:3]]
+        else:
+            lwh = [float(v) for v in bbox.lwh]
+        if yaw_fusion is not None:
+            yaw = float(yaw_fusion)
+        else:
+            yaw = float(bbox.global_yaw)
+        return xyz, vel, lwh, yaw
+
+    return (
+        [float(v) for v in bbox.global_xyz],
+        [float(v) for v in bbox.global_velocity[:2]],
+        [float(v) for v in bbox.lwh],
+        float(bbox.global_yaw),
+    )
+
+
 def sync_bbox_fields_from_state(
     bbox,
     state,

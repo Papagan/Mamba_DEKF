@@ -28,9 +28,11 @@ from tracker.bytetrack_utils import (
 )
 from tracker.compat_utils import (
     allow_single_stage_birth_under_mode,
+    extract_bbox_history_fields,
     normalize_tracker_compat_mode,
     select_output_tracking_score,
     sync_bbox_fields_from_state,
+    use_mctrack_single_stage_flow,
 )
 from tracker.trajectory import Trajectory
 from tracker.bbox import BBox
@@ -124,6 +126,7 @@ class Base3DTracker:
         if ckpt_path:
             if os.path.exists(ckpt_path):
                 ckpt = torch.load(ckpt_path, map_location=self.device)
+                runtime_contract = ckpt.get("runtime_contract", None)
                 # checkpoints saved by training/train.py contain "model_state_dict"
                 state_dict = ckpt.get("model_state_dict", ckpt)
                 # strip stale _tril_rows/_tril_cols keys from old checkpoints
@@ -139,6 +142,30 @@ class Base3DTracker:
                 if unexpected:
                     print(f"[Base3DTracker] WARNING: unexpected keys in checkpoint: {unexpected}")
                 print(f"[Base3DTracker] Loaded Mamba weights from {ckpt_path}")
+                if runtime_contract:
+                    expected_compat = str(
+                        runtime_contract.get("tracker_compat_mode", self.tracker_compat_mode)
+                    ).strip().lower()
+                    current_cost_mode = str(
+                        self.cfg.get("THRESHOLD", {}).get("BEV", {}).get("COST_MODE", "unknown")
+                    ).strip().lower()
+                    expected_cost_mode = str(
+                        runtime_contract.get("expected_bev_cost_mode", current_cost_mode)
+                    ).strip().lower()
+                    if expected_compat != self.tracker_compat_mode:
+                        print(
+                            "[Base3DTracker] WARNING: checkpoint runtime_contract expects "
+                            f"TRACKER_COMPAT_MODE={expected_compat}, but current config uses "
+                            f"{self.tracker_compat_mode}. Results may degrade due to history "
+                            "semantics mismatch."
+                        )
+                    if expected_cost_mode != current_cost_mode:
+                        print(
+                            "[Base3DTracker] WARNING: checkpoint runtime_contract expects "
+                            f"BEV COST_MODE={expected_cost_mode}, but current config uses "
+                            f"{current_cost_mode}. Results may degrade due to mismatched "
+                            "training/inference matching behavior."
+                        )
             else:
                 print(f"[Base3DTracker] WARNING: CHECKPOINT_PATH={ckpt_path} not found. "
                       f"Running with RANDOM Mamba weights — results will be poor.")
@@ -229,30 +256,34 @@ class Base3DTracker:
 
             # reference x, y from the latest frame → relative coords
             # avoids large absolute global coordinates causing gradient saturation
-            ref_xyz = recent[-1].global_xyz
+            ref_xyz, _, _, _ = extract_bbox_history_fields(
+                recent[-1], self.tracker_compat_mode
+            )
 
             for t_idx, bbox in enumerate(recent):
                 offset = T - n_frames + t_idx  # right-aligned padding
 
-                xyz = bbox.global_xyz           # [x, y, z]
-                vel = bbox.global_velocity      # [vx, vy] (2D)
-                lwh = bbox.lwh                  # [l, w, h]
-                yaw = bbox.global_yaw           # scalar
+                xyz, vel, lwh, yaw = extract_bbox_history_fields(
+                    bbox, self.tracker_compat_mode
+                )
 
                 # omega: finite-difference of yaw if possible
                 omega = 0.0
                 if t_idx > 0:
                     prev_bbox = recent[t_idx - 1]
+                    _, _, _, prev_yaw = extract_bbox_history_fields(
+                        prev_bbox, self.tracker_compat_mode
+                    )
                     dt = self._normalize_delta_t(bbox.timestamp - prev_bbox.timestamp)
                     if dt > 0:
-                        dy = yaw - prev_bbox.global_yaw
+                        dy = yaw - prev_yaw
                         # wrap to [-pi, pi]
                         dy = dy - 2.0 * np.pi * round(dy / (2.0 * np.pi))
                         omega = dy / dt
                     else:
                         dt_frames = bbox.frame_id - prev_bbox.frame_id
                         if dt_frames > 0:
-                            dy = yaw - prev_bbox.global_yaw
+                            dy = yaw - prev_yaw
                             dy = dy - 2.0 * np.pi * round(dy / (2.0 * np.pi))
                             omega = dy / (dt_frames / self.frame_rate)
 
@@ -789,6 +820,180 @@ class Base3DTracker:
             rescued.append((traj_sub_idx, global_det_idx, det_bbox, match_cost))
         return rescued
 
+    def _track_single_stage_mctrack_compat(
+        self,
+        frame_info,
+        trajs: List[Trajectory],
+        mamba_out: Optional[Dict],
+        traj_index_map: Dict[int, int],
+        det_counts: Dict[str, int],
+        matched_counts: Dict[str, int],
+        birth_counts: Dict[str, int],
+        coast_counts: Dict[str, int],
+        _dbg: str,
+        _dbg_small: str,
+    ) -> None:
+        trajs_cnt = len(trajs)
+        dets_cnt = len(frame_info.bboxes)
+        matched_track_ids: List[int] = []
+        matched_bboxes: List[BBox] = []
+
+        if trajs_cnt > 0 and dets_cnt > 0:
+            match_res, costs = match_trajs_and_dets(
+                trajs, frame_info.bboxes, self.cfg
+            )
+        else:
+            match_res = np.empty((0, 2), dtype=int)
+            costs = np.empty((0,), dtype=float)
+
+        matched_det_indices = set(int(i) for i in match_res[:, 1]) if len(match_res) > 0 else set()
+        unmatched_det_indices = np.array(
+            [i for i in range(dets_cnt) if i not in matched_det_indices],
+            dtype=int,
+        )
+
+        unmatched_trajs: Dict[int, Trajectory] = {}
+        matched_traj_indices: set = set()
+        for match_idx, row in enumerate(match_res if len(match_res) > 0 else []):
+            traj_idx = int(row[0])
+            det_idx = int(row[1])
+            track_id = trajs[traj_idx].track_id
+            det_bbox = frame_info.bboxes[det_idx]
+            match_cost = float(costs[match_idx]) if match_idx < len(costs) else float("inf")
+            self.all_trajs[track_id].update(det_bbox, match_cost)
+            matched_track_ids.append(track_id)
+            matched_bboxes.append(det_bbox)
+            matched_traj_indices.add(traj_idx)
+            if _dbg_small and det_bbox.category in matched_counts:
+                matched_counts[det_bbox.category] += 1
+                emit_debug_line(
+                    f"[TRK-SMALL] frame={frame_info.frame_id} cls={det_bbox.category} "
+                    f"stage=single_mc event=match tid={track_id} det_score={det_bbox.det_score:.4f} "
+                    f"assoc_cost={match_cost:.4f} track_len={self.all_trajs[track_id].track_length} "
+                    f"status={self.all_trajs[track_id].status_flag}"
+                )
+
+        if _dbg:
+            emit_debug_line(
+                f"[TRK] frame={frame_info.frame_id} stage_single_mc "
+                f"dets={dets_cnt} trajs={trajs_cnt} matched={len(match_res)}"
+            )
+
+        for i in range(trajs_cnt):
+            track_id = trajs[i].track_id
+            if i not in matched_traj_indices:
+                unmatched_trajs[track_id] = self.all_trajs[track_id]
+                if not self.cfg.get("IS_RV_MATCHING", False):
+                    self.all_trajs[track_id].unmatch_update(
+                        frame_info.frame_id, timestamp=frame_info.timestamp
+                    )
+                    if _dbg_small and trajs[i].bboxes[-1].category in coast_counts:
+                        coast_counts[trajs[i].bboxes[-1].category] += 1
+
+        init_bboxes = frame_info.bboxes
+        rv_matched = 0
+        if self.cfg.get("IS_RV_MATCHING", False):
+            unmatched_trajs_inbev = self.get_trajectory_bbox(unmatched_trajs)
+            dets_cnt_inbev = len(unmatched_det_indices)
+            unmatched_dets_inbev = (
+                np.array(frame_info.bboxes, dtype=object)[unmatched_det_indices].tolist()
+                if dets_cnt_inbev > 0
+                else []
+            )
+
+            if len(unmatched_trajs_inbev) > 0 and len(unmatched_dets_inbev) > 0:
+                match_res_inbev, cost_matrix_inbev = match_trajs_and_dets(
+                    unmatched_trajs_inbev,
+                    unmatched_dets_inbev,
+                    self.cfg,
+                    frame_info.transform_matrix,
+                    is_rv=True,
+                )
+            else:
+                match_res_inbev = np.empty((0, 2), dtype=int)
+                cost_matrix_inbev = np.empty((0,), dtype=float)
+
+            matched_det_indices_rv = set(int(i) for i in match_res_inbev[:, 1]) if len(match_res_inbev) > 0 else set()
+            for i in range(len(unmatched_trajs_inbev)):
+                track_id = unmatched_trajs_inbev[i].track_id
+                if i in match_res_inbev[:, 0]:
+                    indexes = np.where(match_res_inbev[:, 0] == i)[0]
+                    det_bbox = unmatched_dets_inbev[int(match_res_inbev[indexes, 1][0])]
+                    trk_bbox = self.all_trajs[track_id].bboxes[-1]
+                    diff_rot = (
+                        abs(norm_realative_radian(trk_bbox.global_yaw - det_bbox.global_yaw))
+                        * 180
+                        / np.pi
+                    )
+                    dist = np.linalg.norm(
+                        np.array(trk_bbox.global_xyz) - np.array(det_bbox.global_xyz)
+                    )
+                    if diff_rot > 90 or dist > 5:
+                        self.all_trajs[track_id].unmatch_update(
+                            frame_info.frame_id, timestamp=frame_info.timestamp
+                        )
+                        if _dbg_small and trk_bbox.category in coast_counts:
+                            coast_counts[trk_bbox.category] += 1
+                        continue
+                    match_cost = float(cost_matrix_inbev[indexes][0])
+                    self.all_trajs[track_id].update(det_bbox, match_cost)
+                    matched_track_ids.append(track_id)
+                    matched_bboxes.append(det_bbox)
+                    rv_matched += 1
+                    if _dbg_small and det_bbox.category in matched_counts:
+                        matched_counts[det_bbox.category] += 1
+                        emit_debug_line(
+                            f"[TRK-SMALL] frame={frame_info.frame_id} cls={det_bbox.category} "
+                            f"stage=rv_mc event=match tid={track_id} det_score={det_bbox.det_score:.4f} "
+                            f"assoc_cost={match_cost:.4f} track_len={self.all_trajs[track_id].track_length} "
+                            f"status={self.all_trajs[track_id].status_flag}"
+                        )
+                else:
+                    self.all_trajs[track_id].unmatch_update(
+                        frame_info.frame_id, timestamp=frame_info.timestamp
+                    )
+                    if _dbg_small and self.all_trajs[track_id].bboxes[-1].category in coast_counts:
+                        coast_counts[self.all_trajs[track_id].bboxes[-1].category] += 1
+
+            unmatched_det_indices = np.array(
+                [i for i in range(len(unmatched_dets_inbev)) if i not in matched_det_indices_rv],
+                dtype=int,
+            )
+            init_bboxes = unmatched_dets_inbev
+            if _dbg:
+                emit_debug_line(
+                    f"[TRK] frame={frame_info.frame_id} stage_rv_mc "
+                    f"candidate_trajs={len(unmatched_trajs_inbev)} "
+                    f"candidate_dets={len(unmatched_dets_inbev)} matched={rv_matched}"
+                )
+
+        if mamba_out is not None and len(matched_track_ids) > 0:
+            self._update_matched_tracks(
+                matched_track_ids, matched_bboxes, mamba_out, traj_index_map,
+            )
+
+        for i in unmatched_det_indices:
+            det_bbox = init_bboxes[int(i)]
+            self.all_trajs[self.track_id_counter] = Trajectory(
+                track_id=self.track_id_counter,
+                init_bbox=det_bbox,
+                cfg=self.cfg,
+            )
+            self._init_kf_state(self.track_id_counter, det_bbox)
+            self.track_id_counter += 1
+            if _dbg_small and det_bbox.category in birth_counts:
+                birth_counts[det_bbox.category] += 1
+                emit_debug_line(
+                    f"[TRK-SMALL] frame={frame_info.frame_id} cls={det_bbox.category} "
+                    f"event=birth_mc tid={self.track_id_counter - 1} det_score={det_bbox.det_score:.4f}"
+                )
+
+        if _dbg:
+            emit_debug_line(
+                f"[TRK] frame={frame_info.frame_id} births={len(unmatched_det_indices)} "
+                f"coasts={len(unmatched_trajs)} matched_total={len(matched_track_ids)}"
+            )
+
     # ==================================================================
     # Main entry: track a single frame
     # ==================================================================
@@ -911,7 +1116,21 @@ class Base3DTracker:
         else:
             cal_flags = []
 
-        if use_bytetrack:
+        if use_mctrack_single_stage_flow(self.tracker_compat_mode, use_bytetrack):
+            self._track_single_stage_mctrack_compat(
+                frame_info=frame_info,
+                trajs=trajs,
+                mamba_out=mamba_out,
+                traj_index_map=traj_index_map,
+                det_counts=det_counts,
+                matched_counts=matched_counts,
+                birth_counts=birth_counts,
+                coast_counts=coast_counts,
+                _dbg=_dbg,
+                _dbg_small=_dbg_small,
+            )
+
+        elif use_bytetrack:
             # ================================================================
             # ByteTrack ON: two-stage matching
             #   Stage 1: all trajs vs high-score dets (strict, can birth)

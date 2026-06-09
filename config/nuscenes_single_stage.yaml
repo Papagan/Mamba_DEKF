@@ -14,7 +14,7 @@ DETECTIONS_ROOT: "/root/autodl-tmp/data/base_version/nuscenes/"
 SAVE_PATH: "/root/autodl-tmp/results/nuscenes/"
 TRACKING_MODE: 'ONLINE' # ONLINE / GLOBAL
 FILTER_MODE: 'mamba' # mamba / pure_dekf / fusion
-TRACKER_COMPAT_MODE: 'default' # default / mctrack
+TRACKER_COMPAT_MODE: 'mctrack' # default / mctrack
 IS_RV_MATCHING: False  # True / False
 FRAME_RATE: 2
 CATEGORY_LIST: ["car", "pedestrian", "bicycle", "motorcycle", "bus", "trailer", "truck"]
@@ -60,7 +60,7 @@ MATCHING:
     #   BackPredict — use last fused bbox     (best when motion is erratic)
     #   Fusion      — weighted blend via COST_STATE_PREDICT_RATION
     # Baseline matching state used by docs/result0608.log (AMOTA=0.610).
-    COST_STATE: {0: "Predict", 1: "BackPredict", 2: "Predict", 3: "Predict", 4: "Predict", 5: "Predict", 6: "Predict"}
+    COST_STATE: {0: "Predict", 1: "Predict", 2: "Predict", 3: "Predict", 4: "Predict", 5: "Predict", 6: "Predict"}
     # iou_3d, giou_3d, dist_3d, ro_gdiou_3d
     COST_MODE: {0: "RO_GDIOU_3D", 1: "RO_GDIOU_3D", 2: "RO_GDIOU_3D", 3: "RO_GDIOU_3D", 4: "RO_GDIOU_3D", 5: "RO_GDIOU_3D", 6: "RO_GDIOU_3D"} 
      # Hungarian, Greedy
@@ -85,7 +85,7 @@ THRESHOLD:
     # bus/pedestrian/motorcycle raised to align with their stable threshold bands.
     ONLINE: {0: 0.18, 1: 0.30, 2: 0.22, 3: 0.22, 4: 0.22, 5: 0.24, 6: 0.18}
     OFFLINE: {0: 0.18, 1: 0.30, 2: 0.22, 3: 0.22, 4: 0.22, 5: 0.24, 6: 0.18}
-  COST_STATE_PREDICT_RATION: {0: 1.0, 1: 1.0, 2: 1.0, 3: 0.5, 4: 1.0, 5: 1.0, 6: 1.0}  # 3=motorcycle: 50/50 blend
+  COST_STATE_PREDICT_RATION: {0: 1.0, 1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0, 5: 1.0, 6: 1.0}  # 3=motorcycle: 50/50 blend
   NMS_THRE: {0: 0.08, 1: 0.08, 2: 0.08, 3: 0.08, 4: 0.08, 5: 0.12, 6: 0.06}
   # Export/eval filter on final tracking_score.
   # Only results at or above these per-class floors are written to results.json.

@@ -54,9 +54,19 @@ class DetectionTrackletDataset(Dataset):
         min_history_len: int | None = None,
         min_rollout_steps: int | None = None,
         class_window_cfg: Dict | None = None,
+        history_source: str = "det",
+        init_state_source: str = "det",
     ) -> None:
         with open(tracklet_pkl_path, "rb") as f:
             tracklets = pickle.load(f)
+
+        self.history_source = str(history_source).strip().lower()
+        self.init_state_source = str(init_state_source).strip().lower()
+        valid_sources = {"det", "fusion"}
+        if self.history_source not in valid_sources:
+            raise ValueError(f"Unsupported history_source={history_source!r}; expected one of {sorted(valid_sources)}")
+        if self.init_state_source not in valid_sources:
+            raise ValueError(f"Unsupported init_state_source={init_state_source!r}; expected one of {sorted(valid_sources)}")
 
         self.history_len = history_len
         self.rollout_steps = rollout_steps
@@ -65,6 +75,22 @@ class DetectionTrackletDataset(Dataset):
         self.min_rollout_steps = int(min_rollout_steps or rollout_steps)
         self.class_window_cfg = class_window_cfg or {}
         self.samples: List[Dict] = []
+
+        if tracklets and (self.history_source == "fusion" or self.init_state_source == "fusion"):
+            has_fusion = False
+            for trk in tracklets[: min(len(tracklets), 32)]:
+                for fr in trk.get("frames", [])[: min(len(trk.get("frames", [])), 32)]:
+                    if "fusion_feature_12" in fr and "fusion_valid" in fr:
+                        has_fusion = True
+                        break
+                if has_fusion:
+                    break
+            if not has_fusion:
+                raise ValueError(
+                    f"{tracklet_pkl_path} does not contain fusion history fields, "
+                    "but HISTORY_SOURCE/INIT_STATE_SOURCE requests fusion. "
+                    "Run tools/augment_tracklet_cache_with_fusion.py first."
+                )
 
         for trk in tracklets:
             frames = trk["frames"]
@@ -102,7 +128,13 @@ class DetectionTrackletDataset(Dataset):
                 valid_history_upper = min(available_history, hist_max)
                 for eff_h in range(hist_min, valid_history_upper + 1):
                     hist_slice = history_frames[-eff_h:]
-                    matched_hist = sum(1 for fr in hist_slice if bool(fr["is_matched"]))
+                    if self.history_source == "fusion":
+                        matched_hist = sum(
+                            1 for fr in hist_slice
+                            if bool(fr.get("fusion_valid", False)) and not bool(fr.get("fusion_is_fake", False))
+                        )
+                    else:
+                        matched_hist = sum(1 for fr in hist_slice if bool(fr["is_matched"]))
                     hist_match_ratio = matched_hist / max(len(hist_slice), 1)
                     if hist_match_ratio >= min_history_match_ratio:
                         valid_history_lengths.append(eff_h)
@@ -159,23 +191,36 @@ class DetectionTrackletDataset(Dataset):
         history_match_mask = np.zeros(T, dtype=np.bool_)
 
         cur = s["current_frame"]
-        ref_xyz = np.asarray(
-            cur["det_global_xyz"] if cur["is_matched"] and cur["det_global_xyz"] is not None else cur["gt_global_xyz"],
-            dtype=np.float32,
-        )
+        cur_fusion_valid = bool(cur.get("fusion_valid", False))
+        if self.init_state_source == "fusion" and cur_fusion_valid:
+            ref_xyz = np.asarray(cur["fusion_global_xyz"], dtype=np.float32)
+        else:
+            ref_xyz = np.asarray(
+                cur["det_global_xyz"] if cur["is_matched"] and cur["det_global_xyz"] is not None else cur["gt_global_xyz"],
+                dtype=np.float32,
+            )
 
         selected_history_frames = s["history_frames"][-eff_history_len:]
         n_frames = len(selected_history_frames)
         for t_idx, frame in enumerate(selected_history_frames):
             offset = T - n_frames + t_idx
-            feat = np.asarray(frame["obs_feature_12"], dtype=np.float32)
-            if bool(frame["is_matched"]):
-                feat = feat.copy()
-                feat[0] -= ref_xyz[0]
-                feat[1] -= ref_xyz[1]
-                history[offset] = feat
-                history_match_mask[offset] = True
-            history_mask[offset] = True
+            if self.history_source == "fusion":
+                if bool(frame.get("fusion_valid", False)):
+                    feat = np.asarray(frame["fusion_feature_12"], dtype=np.float32).copy()
+                    feat[0] -= ref_xyz[0]
+                    feat[1] -= ref_xyz[1]
+                    history[offset] = feat
+                    history_mask[offset] = True
+                    history_match_mask[offset] = not bool(frame.get("fusion_is_fake", False))
+            else:
+                feat = np.asarray(frame["obs_feature_12"], dtype=np.float32)
+                if bool(frame["is_matched"]):
+                    feat = feat.copy()
+                    feat[0] -= ref_xyz[0]
+                    feat[1] -= ref_xyz[1]
+                    history[offset] = feat
+                    history_match_mask[offset] = True
+                history_mask[offset] = True
 
         gt_current_pos = np.array([
             cur["gt_global_xyz"][0], cur["gt_global_xyz"][1], cur["gt_global_xyz"][2],
@@ -184,7 +229,15 @@ class DetectionTrackletDataset(Dataset):
         gt_current_siz = np.array(cur["gt_lwh"], dtype=np.float32)
         gt_current_ori = np.array([cur["gt_yaw"], cur["gt_feature_12"][10]], dtype=np.float32)
 
-        if cur["is_matched"] and cur["det_global_xyz"] is not None:
+        if self.init_state_source == "fusion" and cur_fusion_valid:
+            fusion_feat = np.asarray(cur["fusion_feature_12"], dtype=np.float32)
+            obs_current_pos = np.array([
+                cur["fusion_global_xyz"][0], cur["fusion_global_xyz"][1], cur["fusion_global_xyz"][2],
+                cur["fusion_velocity"][0], cur["fusion_velocity"][1], 0.0,
+            ], dtype=np.float32)
+            obs_current_siz = np.array(cur["fusion_lwh"], dtype=np.float32)
+            obs_current_ori = np.array([cur["fusion_yaw"], fusion_feat[10]], dtype=np.float32)
+        elif cur["is_matched"] and cur["det_global_xyz"] is not None:
             obs_current_pos = np.array([
                 cur["det_global_xyz"][0], cur["det_global_xyz"][1], cur["det_global_xyz"][2],
                 cur["det_velocity"][0], cur["det_velocity"][1], 0.0,
@@ -258,6 +311,8 @@ class DetectionTrackletDataset(Dataset):
             "effective_history_len": torch.tensor(eff_history_len, dtype=torch.int64),
             "effective_rollout_steps": torch.tensor(eff_rollout_steps, dtype=torch.int64),
             "is_detection_driven": torch.tensor(True, dtype=torch.bool),
+            "history_source": self.history_source,
+            "init_state_source": self.init_state_source,
         }
 
 

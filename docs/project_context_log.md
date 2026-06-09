@@ -155,6 +155,30 @@
 
 以后如果改 dataset 或 history 构造，不能再退回“全零即 miss/pad 通吃”的旧逻辑。
 
+### 3.4 `mctrack_compat` 重训契约
+
+当前已经确认：
+
+- `TRACKER_COMPAT_MODE=mctrack, FILTER_MODE=pure_dekf`
+  明显优于
+- `TRACKER_COMPAT_MODE=default, FILTER_MODE=pure_dekf`
+
+因此后续如果要继续训练 `mamba / fusion`，训练输入必须和 `mctrack` 推理壳子的历史语义一致。
+
+当前正确链路应为：
+
+1. 先用 [tools/build_centerpoint_mini_train_dataset.py](/home/alvin/demo/Mamba-DEKF/tools/build_centerpoint_mini_train_dataset.py) 从 `centerpoint/val.json` 生成 `train.pkl`
+2. 再用 [tools/augment_tracklet_cache_with_fusion.py](/home/alvin/demo/Mamba-DEKF/tools/augment_tracklet_cache_with_fusion.py) 生成 `train_fusion.pkl`
+3. 训练配置中使用：
+   - `HISTORY_SOURCE: fusion`
+   - `INIT_STATE_SOURCE: fusion`
+   - `TRAIN_TRACKER_COMPAT_MODE: mctrack`
+   - `EXPECTED_BEV_COST_MODE: geometric`
+4. 推理配置中使用：
+   - `TRACKER_COMPAT_MODE: mctrack`
+
+如果 `DetectionTrackletDataset` 配置成 `fusion`，但 cache 仍然是旧的 `train.pkl`，现在会直接报错，不允许静默退回错误语义。
+
 ---
 
 ## 4. 当前技术路线的真实含义
@@ -500,4 +524,3 @@
 - [docs/result.log](/home/alvin/demo/Mamba-DEKF/docs/result.log)
 - [docs/noise.log](/home/alvin/demo/Mamba-DEKF/docs/noise.log)
 - [README.md](/home/alvin/demo/Mamba-DEKF/README.md)
-

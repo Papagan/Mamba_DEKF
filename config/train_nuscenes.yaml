@@ -11,8 +11,13 @@ DATA:
   TRAIN_SOURCE: det         # gt / det
   VAL_SOURCE: det           # gt / det
   TRACKLET_CACHE_DIR: /root/autodl-tmp/data/training_cache/nuscenes/
-  TRAIN_TRACKLET_PKL: /root/autodl-tmp/data/training_cache/nuscenes/mini/train.pkl  # temporary val-derived cache for pipeline verification
-  VAL_TRACKLET_PKL: /root/autodl-tmp/data/training_cache/nuscenes/mini/train.pkl    # temporary val-derived cache for pipeline verification
+  TRAIN_TRACKLET_PKL: /root/autodl-tmp/data/training_cache/nuscenes/mini/train_fusion.pkl  # generated from val.json via build_centerpoint_mini_train_dataset.py + augment_tracklet_cache_with_fusion.py
+  VAL_TRACKLET_PKL: /root/autodl-tmp/data/training_cache/nuscenes/mini/train_fusion.pkl    # temporary val-derived cache for pipeline verification
+  HISTORY_SOURCE: fusion    # det / fusion
+  INIT_STATE_SOURCE: fusion # det / fusion
+  TRAIN_TRACKER_COMPAT_MODE: mctrack  # default / mctrack (saved into checkpoint runtime contract)
+  EXPECTED_BEV_COST_MODE: geometric   # saved into checkpoint runtime contract for inference-side consistency checks
+  FUSION_MAX_PREDICT_LEN: 3 # used by tools/augment_tracklet_cache_with_fusion.py for local coast rollout
   REQUIRE_CURRENT_MATCH: true
   MIN_HISTORY_MATCH_RATIO: 0.25
   TRAIN_ADAPTIVE_WINDOWS: true
