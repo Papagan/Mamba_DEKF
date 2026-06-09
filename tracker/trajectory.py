@@ -19,6 +19,7 @@ from scipy.optimize import curve_fit, OptimizeWarning
 from .compat_utils import (
     initial_status_flag_for_mode,
     normalize_tracker_compat_mode,
+    select_filtered_tracking_score,
     score_for_unmatched_fake_bbox,
 )
 
@@ -219,8 +220,15 @@ class Trajectory:
         if self._tracker_compat_mode == "mctrack":
             pred_state = getattr(fake_bbox, "global_xyz_lwh_yaw_predict", None)
             if pred_state is not None:
-                fake_bbox.global_xyz_lwh_yaw = list(pred_state)
+                pred_state = list(pred_state)
+                fake_bbox.global_xyz_lwh_yaw = pred_state
                 fake_bbox.global_xyz_lwh_yaw_fusion = np.array(pred_state)
+                fake_bbox.lwh_fusion = list(pred_state[3:6])
+                fake_bbox.global_yaw_fusion = float(pred_state[6])
+                if hasattr(fake_bbox, "global_velocity_fusion"):
+                    fake_bbox.global_velocity = list(fake_bbox.global_velocity_fusion)
+            else:
+                fake_bbox.global_xyz_lwh_yaw = list(fake_bbox.global_xyz_lwh_yaw_fusion)
 
         # Note: the outer tracker should have already written predicted
         # xyz/lwh/yaw into fake_bbox fields via DecoupledAdaptiveKF output.
@@ -306,17 +314,25 @@ class Trajectory:
                 if_has_unmatched = 0
             last_xyz_lwh_yaw_fusion = bbox.global_xyz_lwh_yaw_fusion
 
-        # ---- quality-aware score: only configured high-confidence real dets ----
+        # ---- score assignment ----
+        # default: quality-aware score using only high-confidence real detections
+        # mctrack: average all valid real-detection logits, matching MCTrack
+        transformed_scores = []
         quality_logit_scores = []
         for bbox, orig_score in zip(self.bboxes, original_scores):
+            if not bbox.is_fake:
+                transformed_scores.append(bbox.det_score)
             if not bbox.is_fake and orig_score >= self._output_score:
                 quality_logit_scores.append(bbox.det_score)
 
-        if quality_logit_scores:
-            final_score = sum(quality_logit_scores) / len(quality_logit_scores)
-        else:
-            best_orig = max(original_scores) if original_scores else 0.5
-            final_score = self.logit(best_orig)
+        best_orig = max(original_scores) if original_scores else 0.5
+        final_score = select_filtered_tracking_score(
+            compat_mode=self._tracker_compat_mode,
+            original_scores=original_scores,
+            transformed_scores=transformed_scores,
+            quality_scores=quality_logit_scores,
+            fallback_score=self.logit(best_orig),
+        )
 
         for bbox in self.bboxes:
             bbox.det_score = final_score

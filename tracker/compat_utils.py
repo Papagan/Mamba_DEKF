@@ -32,6 +32,26 @@ def select_output_tracking_score(
     return float(current_score)
 
 
+def select_filtered_tracking_score(
+    compat_mode,
+    original_scores,
+    transformed_scores,
+    quality_scores,
+    fallback_score: float,
+) -> float:
+    compat_mode = normalize_tracker_compat_mode(compat_mode)
+    if compat_mode == "mctrack":
+        detected_scores = [float(score) for score in transformed_scores if score > -10000]
+        if detected_scores:
+            return float(sum(detected_scores) / (len(detected_scores) + 1e-5))
+        return float(fallback_score)
+    if quality_scores:
+        return float(sum(quality_scores) / len(quality_scores))
+    if original_scores:
+        return float(fallback_score)
+    return float(fallback_score)
+
+
 def allow_single_stage_birth_under_mode(compat_mode, gate_allowed: bool) -> bool:
     compat_mode = normalize_tracker_compat_mode(compat_mode)
     if compat_mode == "mctrack":

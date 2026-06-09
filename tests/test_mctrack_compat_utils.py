@@ -3,6 +3,7 @@ import unittest
 from tracker.compat_utils import (
     allow_single_stage_birth_under_mode,
     initial_status_flag_for_mode,
+    select_filtered_tracking_score,
     score_for_unmatched_fake_bbox,
     select_output_tracking_score,
 )
@@ -52,6 +53,30 @@ class MCTrackCompatUtilsTest(unittest.TestCase):
                 compat_mode="mctrack",
                 gate_allowed=False,
             )
+        )
+
+    def test_filtered_score_selection_matches_mode(self):
+        transformed_scores = [-0.4, -0.1]
+        quality_scores = [-0.1]
+        self.assertAlmostEqual(
+            select_filtered_tracking_score(
+                compat_mode="mctrack",
+                original_scores=[0.4, 0.52],
+                transformed_scores=transformed_scores,
+                quality_scores=quality_scores,
+                fallback_score=0.52,
+            ),
+            sum(transformed_scores) / (len(transformed_scores) + 1e-5),
+        )
+        self.assertEqual(
+            select_filtered_tracking_score(
+                compat_mode="default",
+                original_scores=[0.4, 0.52],
+                transformed_scores=transformed_scores,
+                quality_scores=quality_scores,
+                fallback_score=0.52,
+            ),
+            -0.1,
         )
 
 
