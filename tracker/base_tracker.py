@@ -30,6 +30,7 @@ from tracker.compat_utils import (
     allow_single_stage_birth_under_mode,
     normalize_tracker_compat_mode,
     select_output_tracking_score,
+    sync_bbox_fields_from_state,
 )
 from tracker.trajectory import Trajectory
 from tracker.bbox import BBox
@@ -432,7 +433,13 @@ class Base3DTracker:
             predict_xyz = [float(px[0]), float(px[1]), float(last_fused[2])]
             predict_lwh = [float(last_fused[3]), float(last_fused[4]), float(last_fused[5])]
             predict_yaw = float(last_fused[6])
-            bbox.global_xyz_lwh_yaw_predict = predict_xyz + predict_lwh + [predict_yaw]
+            predict_state = predict_xyz + predict_lwh + [predict_yaw]
+            sync_bbox_fields_from_state(
+                bbox,
+                predict_state,
+                update_fusion=False,
+                update_predict=True,
+            )
             bbox.global_velocity_fusion = [float(stable_vel[0]), float(stable_vel[1])]
             bbox.global_yaw_fusion = float(ox[0])
             bbox.lwh_fusion = predict_lwh
@@ -477,11 +484,16 @@ class Base3DTracker:
         bbox.global_yaw_fusion = float(ox[0])
         bbox.lwh_fusion = [sx[0], sx[1], sx[2]]
         if self.tracker_compat_mode == "mctrack":
-            bbox.global_xyz_lwh_yaw_fusion = np.array([
-                px[0], px[1], bbox.global_xyz_lwh_yaw[2],
-                bbox.global_xyz_lwh_yaw[3], bbox.global_xyz_lwh_yaw[4],
-                bbox.global_xyz_lwh_yaw[5], bbox.global_xyz_lwh_yaw[6],
-            ])
+            sync_bbox_fields_from_state(
+                bbox,
+                [
+                    px[0], px[1], bbox.global_xyz_lwh_yaw[2],
+                    bbox.global_xyz_lwh_yaw[3], bbox.global_xyz_lwh_yaw[4],
+                    bbox.global_xyz_lwh_yaw[5], bbox.global_xyz_lwh_yaw[6],
+                ],
+                update_fusion=True,
+                update_predict=False,
+            )
         else:
             bbox.global_xyz_lwh_yaw_fusion = np.array([
                 px[0], px[1], px[2],

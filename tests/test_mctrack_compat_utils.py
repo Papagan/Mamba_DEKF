@@ -3,6 +3,7 @@ import unittest
 from tracker.compat_utils import (
     allow_single_stage_birth_under_mode,
     initial_status_flag_for_mode,
+    sync_bbox_fields_from_state,
     select_filtered_tracking_score,
     score_for_unmatched_fake_bbox,
     select_output_tracking_score,
@@ -78,6 +79,25 @@ class MCTrackCompatUtilsTest(unittest.TestCase):
             ),
             -0.1,
         )
+
+    def test_sync_bbox_fields_from_state_updates_split_fields(self):
+        class DummyBBox:
+            pass
+
+        bbox = DummyBBox()
+        bbox.global_xyz = [0.0, 0.0, 0.0]
+        bbox.lwh = [1.0, 1.0, 1.0]
+        bbox.global_yaw = 0.0
+        bbox.global_xyz_lwh_yaw = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0]
+        bbox.global_xyz_lwh_yaw_fusion = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0]
+
+        state = [2.0, 3.0, 1.5, 4.0, 1.8, 1.6, 0.4]
+        sync_bbox_fields_from_state(bbox, state, update_fusion=True, update_predict=False)
+
+        self.assertEqual(bbox.global_xyz, [2.0, 3.0, 1.5])
+        self.assertEqual(bbox.lwh, [4.0, 1.8, 1.6])
+        self.assertEqual(bbox.global_yaw, 0.4)
+        self.assertEqual(list(bbox.global_xyz_lwh_yaw_fusion), state)
 
 
 if __name__ == "__main__":

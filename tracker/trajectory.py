@@ -20,6 +20,7 @@ from .compat_utils import (
     initial_status_flag_for_mode,
     normalize_tracker_compat_mode,
     select_filtered_tracking_score,
+    sync_bbox_fields_from_state,
     score_for_unmatched_fake_bbox,
 )
 
@@ -221,14 +222,21 @@ class Trajectory:
             pred_state = getattr(fake_bbox, "global_xyz_lwh_yaw_predict", None)
             if pred_state is not None:
                 pred_state = list(pred_state)
-                fake_bbox.global_xyz_lwh_yaw = pred_state
-                fake_bbox.global_xyz_lwh_yaw_fusion = np.array(pred_state)
-                fake_bbox.lwh_fusion = list(pred_state[3:6])
-                fake_bbox.global_yaw_fusion = float(pred_state[6])
+                sync_bbox_fields_from_state(
+                    fake_bbox,
+                    pred_state,
+                    update_fusion=True,
+                    update_predict=True,
+                )
                 if hasattr(fake_bbox, "global_velocity_fusion"):
                     fake_bbox.global_velocity = list(fake_bbox.global_velocity_fusion)
             else:
-                fake_bbox.global_xyz_lwh_yaw = list(fake_bbox.global_xyz_lwh_yaw_fusion)
+                sync_bbox_fields_from_state(
+                    fake_bbox,
+                    list(fake_bbox.global_xyz_lwh_yaw_fusion),
+                    update_fusion=True,
+                    update_predict=False,
+                )
 
         # Note: the outer tracker should have already written predicted
         # xyz/lwh/yaw into fake_bbox fields via DecoupledAdaptiveKF output.
