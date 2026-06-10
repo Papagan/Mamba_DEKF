@@ -492,10 +492,39 @@ Important notes:
 - This calibration is a **post-hoc ranking tool**, not a replacement for fixing bad association.
 - For honest comparison, avoid fitting and reporting on exactly the same scene subset when possible.
 - A practical workflow is:
-  - export features from one validation run
-  - fit the calibrator
-  - write `results_calibrated.json`
-  - compare official nuScenes metrics between original and calibrated results
+- export features from one validation run
+- fit the calibrator
+- write `results_calibrated.json`
+- compare official nuScenes metrics between original and calibrated results
+
+### 5.5.3 Compare Original vs Calibrated Results
+
+You can evaluate the original and calibrated results in one command and print both aggregate and per-class deltas:
+
+```bash
+python tools/compare_nuscenes_results.py \
+  --orig-results /root/autodl-tmp/results/nuscenes/nuscenes/<run>/results.json \
+  --cal-results /root/autodl-tmp/results/nuscenes/nuscenes/<run>/results_calibrated.json \
+  --nusc-dataroot /root/autodl-tmp/data/nuscenes/datasets/ \
+  --output-dir /root/autodl-tmp/results/nuscenes/nuscenes/<run>/compare_calibrated
+```
+
+What it does:
+
+- runs official nuScenes tracking evaluation on the original results
+- runs official nuScenes tracking evaluation on the calibrated results
+- reads both `metrics_summary.json`
+- prints aggregate metric deltas and per-class metric deltas
+- saves `comparison_summary.json`
+
+Useful options:
+
+- `--reuse-existing`
+  - reuse `orig_eval/metrics_summary.json` and `cal_eval/metrics_summary.json` if they already exist
+- `--metrics amota,recall,mota`
+  - choose which metrics to compare
+- `--class-names bicycle,bus,car,motorcycle,pedestrian,trailer,truck`
+  - choose which classes to print
 
 ### 5.6 Conditional Noise + Residual Covariance
 
