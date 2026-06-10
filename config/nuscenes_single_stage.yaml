@@ -13,7 +13,7 @@ DATASET_ROOT: "/root/autodl-tmp/data/nuscenes/datasets/"
 DETECTIONS_ROOT: "/root/autodl-tmp/data/base_version/nuscenes/"
 SAVE_PATH: "/root/autodl-tmp/results/nuscenes/"
 TRACKING_MODE: 'ONLINE' # ONLINE / GLOBAL
-FILTER_MODE: 'mamba' # mamba / pure_dekf / fusion
+FILTER_MODE: 'fusion' # mamba / pure_dekf / fusion
 TRACKER_COMPAT_MODE: 'mctrack' # default / mctrack
 IS_RV_MATCHING: False  # True / False
 FRAME_RATE: 2
@@ -83,8 +83,8 @@ THRESHOLD:
     # Tuned from docs/result.log sweet spots:
     # bicycle/trailer slightly higher to suppress low-score FPs;
     # bus/pedestrian/motorcycle raised to align with their stable threshold bands.
-    ONLINE: {0: 0.18, 1: 0.30, 2: 0.22, 3: 0.22, 4: 0.22, 5: 0.24, 6: 0.18}
-    OFFLINE: {0: 0.18, 1: 0.30, 2: 0.22, 3: 0.22, 4: 0.22, 5: 0.24, 6: 0.18}
+    ONLINE: {0: 0.18, 1: 0.24, 2: 0.20, 3: 0.20, 4: 0.28, 5: 0.24, 6: 0.18}
+    OFFLINE: {0: 0.18, 1: 0.24, 2: 0.20, 3: 0.20, 4: 0.28, 5: 0.24, 6: 0.18}
   COST_STATE_PREDICT_RATION: {0: 1.0, 1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0, 5: 1.0, 6: 1.0}  # 3=motorcycle: 50/50 blend
   NMS_THRE: {0: 0.08, 1: 0.08, 2: 0.08, 3: 0.08, 4: 0.08, 5: 0.12, 6: 0.06}
   # Export/eval filter on final tracking_score.
@@ -161,7 +161,7 @@ THRESHOLD:
     # Recommended single-stage preset (USE_BYTETRACK=False):
     # CONFIRMED_DET_SCORE: {0: 0.40, 1: 0.44, 2: 0.42, 3: 0.45, 4: 0.50, 5: 0.45, 6: 0.40}
     # Baseline used by docs/result0608.log (AMOTA=0.610).
-    CONFIRMED_DET_SCORE: {0: 0.44, 1: 0.56, 2: 0.41, 3: 0.43, 4: 0.46, 5: 0.45, 6: 0.41}
+    CONFIRMED_DET_SCORE: {0: 0.44, 1: 0.50, 2: 0.39, 3: 0.41, 4: 0.52, 5: 0.43, 6: 0.40}
     # Next trial after enabling TRACK_SCORE.QUALITY_V1 (recommended from docs/last_result.log):
     # lower weak-class confirm gates slightly because track-level quality ranking
     # will now suppress dirty tracks downstream.
@@ -186,7 +186,7 @@ THRESHOLD:
     # OUTPUT_SCORE: {0: 0.42, 1: 0.46, 2: 0.50, 3: 0.48, 4: 0.54, 5: 0.50, 6: 0.44}
     # OUTPUT_SCORE: {0: 0.40, 1: 0.40, 2: 0.35, 3: 0.35, 4: 0.40, 5: 0.40, 6: 0.40}
     # Baseline used by docs/result0608.log (AMOTA=0.610).
-    OUTPUT_SCORE: {0: 0.48, 1: 0.58, 2: 0.45, 3: 0.46, 4: 0.48, 5: 0.47, 6: 0.45}
+    OUTPUT_SCORE: {0: 0.46, 1: 0.52, 2: 0.40, 3: 0.42, 4: 0.54, 5: 0.44, 6: 0.43}
     # Next trial after enabling TRACK_SCORE.QUALITY_V1 (recommended from docs/last_result.log):
     # weak classes (bicycle/motorcycle/trailer/truck) can consume slightly more
     # real detections in the score model without relying on raw-det-score ranking.
@@ -213,14 +213,14 @@ TRACK_SCORE:
   MAX_SCORE: 0.995
   DEFAULT_CURRENT_FAKE_SCALE: 0.75
   # [car, pedestrian, bicycle, motorcycle, bus, trailer, truck]
-  MATURE_LEN: {0: 6, 1: 5, 2: 4, 3: 4, 4: 6, 5: 5, 6: 6}
-  CURRENT_FAKE_SCALE: {0: 0.80, 1: 0.75, 2: 0.70, 3: 0.70, 4: 0.80, 5: 0.72, 6: 0.75}
+  MATURE_LEN: {0: 6, 1: 5, 2: 3, 3: 3, 4: 6, 5: 4, 6: 5}
+  CURRENT_FAKE_SCALE: {0: 0.78, 1: 0.76, 2: 0.82, 3: 0.82, 4: 0.78, 5: 0.68, 6: 0.68}
   # More association/continuity weight for weak classes seen in docs/last_result.log:
   # bicycle / motorcycle / trailer / truck.
-  W_DET:    {0: 0.35, 1: 0.32, 2: 0.28, 3: 0.28, 4: 0.35, 5: 0.30, 6: 0.32}
-  W_ASSOC:  {0: 0.22, 1: 0.22, 2: 0.28, 3: 0.28, 4: 0.20, 5: 0.25, 6: 0.24}
-  W_CONT:   {0: 0.23, 1: 0.26, 2: 0.26, 3: 0.26, 4: 0.23, 5: 0.25, 6: 0.24}
-  W_MATURE: {0: 0.20, 1: 0.20, 2: 0.18, 3: 0.18, 4: 0.22, 5: 0.20, 6: 0.20}
+  W_DET:    {0: 0.34, 1: 0.34, 2: 0.42, 3: 0.42, 4: 0.34, 5: 0.36, 6: 0.34}
+  W_ASSOC:  {0: 0.24, 1: 0.20, 2: 0.14, 3: 0.14, 4: 0.20, 5: 0.18, 6: 0.22}
+  W_CONT:   {0: 0.24, 1: 0.24, 2: 0.14, 3: 0.14, 4: 0.22, 5: 0.18, 6: 0.20}
+  W_MATURE: {0: 0.18, 1: 0.22, 2: 0.30, 3: 0.30, 4: 0.24, 5: 0.28, 6: 0.24}
 
 
 # DEKF baseline physical priors for Pure_DEKF and IMM Fusion Mode

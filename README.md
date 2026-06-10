@@ -407,6 +407,96 @@ Notes:
 - This is a **mini cache built from `val.json`**, suitable for pipeline verification and detection-driven dataset development.
 - It is **not** a replacement for a real `train.json`. For formal training, generate CenterPoint detections on the nuScenes `train` split as well.
 
+### 5.5.1 Export Track-Quality Features
+
+When manual threshold tuning becomes unstable, export per-track features and GT-aligned labels first, then calibrate `tracking_score` offline instead of repeatedly guessing YAML values.
+
+Tool:
+
+```bash
+python tools/export_track_quality_features.py \
+  --results /root/autodl-tmp/results/nuscenes/nuscenes/<run>/results.json \
+  --nusc-dataroot /root/autodl-tmp/data/nuscenes/datasets/ \
+  --output debug/track_quality_features.json
+```
+
+What it does:
+
+- Reads `results.json`
+- Aligns predicted boxes with nuScenes GT by class and center-distance threshold
+- Groups boxes into scene-level tracks using `scene_name + class_name + tracking_id`
+- Exports per-track statistics and labels for later calibration
+
+Main exported fields include:
+
+- `score_mean`, `score_last`, `score_std`
+- `num_frames`, `duration_sec`, `gap_count`
+- `tp_ratio`, `purity`, `dominant_recall`
+- `mean_match_dist`, `p90_match_dist`
+- `quality_target`
+- `is_good_track`
+
+The default GT matching threshold is `2.0m`. You can override it with:
+
+```bash
+python tools/export_track_quality_features.py \
+  --results /root/autodl-tmp/results/nuscenes/nuscenes/<run>/results.json \
+  --nusc-dataroot /root/autodl-tmp/data/nuscenes/datasets/ \
+  --dist-th 1.5 \
+  --output debug/track_quality_features_strict.json
+```
+
+### 5.5.2 Calibrate Track Score
+
+After exporting features, fit a lightweight post-hoc score calibrator:
+
+```bash
+python tools/calibrate_track_score.py \
+  --features debug/track_quality_features.json \
+  --output debug/track_score_calibration.json
+```
+
+By default it uses these features:
+
+- `score_mean`
+- `score_last`
+- `score_std`
+- `num_frames`
+- `duration_sec`
+- `tp_ratio`
+- `purity`
+- `dominant_recall`
+- `straightness`
+- `mean_match_dist`
+- `gap_count`
+
+The tool fits a small logistic model and writes:
+
+- feature normalization stats
+- learned weights
+- blended calibrated score per track
+
+You can also directly rewrite a new `results.json` with calibrated scores:
+
+```bash
+python tools/calibrate_track_score.py \
+  --features debug/track_quality_features.json \
+  --output debug/track_score_calibration.json \
+  --results /root/autodl-tmp/results/nuscenes/nuscenes/<run>/results.json \
+  --nusc-dataroot /root/autodl-tmp/data/nuscenes/datasets/ \
+  --output-results /root/autodl-tmp/results/nuscenes/nuscenes/<run>/results_calibrated.json
+```
+
+Important notes:
+
+- This calibration is a **post-hoc ranking tool**, not a replacement for fixing bad association.
+- For honest comparison, avoid fitting and reporting on exactly the same scene subset when possible.
+- A practical workflow is:
+  - export features from one validation run
+  - fit the calibrator
+  - write `results_calibrated.json`
+  - compare official nuScenes metrics between original and calibrated results
+
 ### 5.6 Conditional Noise + Residual Covariance
 
 `config/train_nuscenes.yaml` now splits noise handling into three layers:
