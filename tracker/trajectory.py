@@ -17,6 +17,7 @@ from .bbox import BBox
 from typing import List
 from scipy.optimize import curve_fit, OptimizeWarning
 from .compat_utils import (
+    compute_track_quality_score,
     initial_status_flag_for_mode,
     normalize_tracker_compat_mode,
     select_filtered_tracking_score,
@@ -286,7 +287,10 @@ class Trajectory:
         through occlusion, not to represent object existence probability.
         """
         # snapshot original scores before logit transform
-        original_scores = [bbox.det_score for bbox in self.bboxes]
+        original_scores = [
+            float(getattr(bbox, "raw_det_score", bbox.det_score))
+            for bbox in self.bboxes
+        ]
 
         if_has_unmatched = 0
         unmatch_bbox_sum = 0
@@ -333,14 +337,22 @@ class Trajectory:
             if not bbox.is_fake and orig_score >= self._output_score:
                 quality_logit_scores.append(bbox.det_score)
 
-        best_orig = max(original_scores) if original_scores else 0.5
-        final_score = select_filtered_tracking_score(
-            compat_mode=self._tracker_compat_mode,
-            original_scores=original_scores,
-            transformed_scores=transformed_scores,
-            quality_scores=quality_logit_scores,
-            fallback_score=self.logit(best_orig),
+        quality_score = compute_track_quality_score(
+            self,
+            raw_scores=original_scores,
+            current_score=max(original_scores) if original_scores else 0.5,
         )
+        if quality_score is None:
+            best_orig = max(original_scores) if original_scores else 0.5
+            final_score = select_filtered_tracking_score(
+                compat_mode=self._tracker_compat_mode,
+                original_scores=original_scores,
+                transformed_scores=transformed_scores,
+                quality_scores=quality_logit_scores,
+                fallback_score=self.logit(best_orig),
+            )
+        else:
+            final_score = quality_score
 
         for bbox in self.bboxes:
             bbox.det_score = final_score

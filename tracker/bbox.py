@@ -22,6 +22,7 @@ class BBox:
         self.is_interpolation = False
         self.category = bbox["category"]
         self.det_score = bbox["detection_score"]
+        self.raw_det_score = bbox["detection_score"]
         self.lwh = bbox["lwh"]
         self.global_xyz = bbox["global_xyz"]
         self.global_orientation = bbox["global_orientation"]

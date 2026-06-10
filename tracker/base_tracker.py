@@ -28,6 +28,7 @@ from tracker.bytetrack_utils import (
 )
 from tracker.compat_utils import (
     allow_single_stage_birth_under_mode,
+    compute_track_quality_score,
     extract_bbox_history_fields,
     normalize_tracker_compat_mode,
     select_output_tracking_score,
@@ -1577,23 +1578,29 @@ class Base3DTracker:
                 traj = self.all_trajs[track_id]
                 output_score_thre = getattr(traj, "_output_score", 0.4)
                 real_scores = [
-                    b.det_score for b in traj.bboxes
+                    float(getattr(b, "raw_det_score", b.det_score)) for b in traj.bboxes
                     if not getattr(b, "is_fake", False)
                 ]
                 quality_scores = [
-                    b.det_score for b in traj.bboxes
+                    float(getattr(b, "raw_det_score", b.det_score)) for b in traj.bboxes
                     if (
                         not getattr(b, "is_fake", False)
                         and not getattr(b, "is_low_score_match", False)
-                        and b.det_score >= output_score_thre
+                        and float(getattr(b, "raw_det_score", b.det_score)) >= output_score_thre
                     )
                 ]
-                bbox.det_score = select_output_tracking_score(
+                quality_score = compute_track_quality_score(
+                    traj,
                     current_score=bbox.det_score,
-                    real_scores=real_scores,
-                    quality_scores=quality_scores,
-                    compat_mode=self.tracker_compat_mode,
                 )
+                if quality_score is None:
+                    quality_score = select_output_tracking_score(
+                        current_score=bbox.det_score,
+                        real_scores=real_scores,
+                        quality_scores=quality_scores,
+                        compat_mode=self.tracker_compat_mode,
+                    )
+                bbox.det_score = quality_score
                 output_trajs[track_id] = bbox
                 self.all_trajs[track_id].is_output = True
         return output_trajs

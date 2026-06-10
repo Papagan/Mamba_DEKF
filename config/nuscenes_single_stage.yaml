@@ -162,6 +162,10 @@ THRESHOLD:
     # CONFIRMED_DET_SCORE: {0: 0.40, 1: 0.44, 2: 0.42, 3: 0.45, 4: 0.50, 5: 0.45, 6: 0.40}
     # Baseline used by docs/result0608.log (AMOTA=0.610).
     CONFIRMED_DET_SCORE: {0: 0.44, 1: 0.56, 2: 0.41, 3: 0.43, 4: 0.46, 5: 0.45, 6: 0.41}
+    # Next trial after enabling TRACK_SCORE.QUALITY_V1 (recommended from docs/last_result.log):
+    # lower weak-class confirm gates slightly because track-level quality ranking
+    # will now suppress dirty tracks downstream.
+    # CONFIRMED_DET_SCORE: {0: 0.42, 1: 0.54, 2: 0.38, 3: 0.40, 4: 0.45, 5: 0.42, 6: 0.39}
 
     # Detection score threshold to CREATE a new track (Strict Birth).
     # Higher for noisy categories (bicycle, motorcycle) to suppress false tracks.
@@ -183,6 +187,10 @@ THRESHOLD:
     # OUTPUT_SCORE: {0: 0.40, 1: 0.40, 2: 0.35, 3: 0.35, 4: 0.40, 5: 0.40, 6: 0.40}
     # Baseline used by docs/result0608.log (AMOTA=0.610).
     OUTPUT_SCORE: {0: 0.48, 1: 0.58, 2: 0.45, 3: 0.46, 4: 0.48, 5: 0.47, 6: 0.45}
+    # Next trial after enabling TRACK_SCORE.QUALITY_V1 (recommended from docs/last_result.log):
+    # weak classes (bicycle/motorcycle/trailer/truck) can consume slightly more
+    # real detections in the score model without relying on raw-det-score ranking.
+    # OUTPUT_SCORE: {0: 0.46, 1: 0.56, 2: 0.42, 3: 0.43, 4: 0.48, 5: 0.45, 6: 0.42}
     # Sentinel value for filter-predicted bboxes (excluded from output).
     IS_FILTER_PREDICT_BOX: {0: -1, 1: -1, 2: -1, 3: -1, 4: -1, 5: -1, 6: -1}
 
@@ -190,6 +198,29 @@ THRESHOLD:
     # Recommended single-stage preset (USE_BYTETRACK=False):
     # CONFIRMED_MATCHED_SCORE: {0: 0.35, 1: 0.35, 2: 0.38, 3: 0.38, 4: 0.32, 5: 0.35, 6: 0.33}
     CONFIRMED_MATCHED_SCORE: {0: 0.35, 1: 0.35, 2: 0.38, 3: 0.38, 4: 0.32, 5: 0.35, 6: 0.33}
+
+TRACK_SCORE:
+  ENABLED: true
+  MODE: quality_v1
+  # Track-quality score replaces raw detection-score aggregation using:
+  # 1. top-k / recent real detection confidence
+  # 2. association quality from matched_score
+  # 3. continuity penalties from fake/coast and low-score rescue frames
+  # 4. trajectory maturity
+  REAL_SCORE_TOPK: 5
+  RECENT_WINDOW: 5
+  MIN_SCORE: 0.01
+  MAX_SCORE: 0.995
+  DEFAULT_CURRENT_FAKE_SCALE: 0.75
+  # [car, pedestrian, bicycle, motorcycle, bus, trailer, truck]
+  MATURE_LEN: {0: 6, 1: 5, 2: 4, 3: 4, 4: 6, 5: 5, 6: 6}
+  CURRENT_FAKE_SCALE: {0: 0.80, 1: 0.75, 2: 0.70, 3: 0.70, 4: 0.80, 5: 0.72, 6: 0.75}
+  # More association/continuity weight for weak classes seen in docs/last_result.log:
+  # bicycle / motorcycle / trailer / truck.
+  W_DET:    {0: 0.35, 1: 0.32, 2: 0.28, 3: 0.28, 4: 0.35, 5: 0.30, 6: 0.32}
+  W_ASSOC:  {0: 0.22, 1: 0.22, 2: 0.28, 3: 0.28, 4: 0.20, 5: 0.25, 6: 0.24}
+  W_CONT:   {0: 0.23, 1: 0.26, 2: 0.26, 3: 0.26, 4: 0.23, 5: 0.25, 6: 0.24}
+  W_MATURE: {0: 0.20, 1: 0.20, 2: 0.18, 3: 0.18, 4: 0.22, 5: 0.20, 6: 0.20}
 
 
 # DEKF baseline physical priors for Pure_DEKF and IMM Fusion Mode
