@@ -526,6 +526,68 @@ Useful options:
 - `--class-names bicycle,bus,car,motorcycle,pedestrian,trailer,truck`
   - choose which classes to print
 
+### 5.5.4 Auto-Suggest Single-Stage Parameters
+
+After you have both:
+
+- `track_score_calibration.json`
+- `comparison_summary.json`
+
+you can automatically generate a suggested `nuscenes_single_stage.yaml` based on the calibrated-vs-original result pattern.
+
+Tool:
+
+```bash
+python tools/suggest_nuscenes_single_stage_params.py \
+  --calibration debug/track_score_calibration.json \
+  --comparison /root/autodl-tmp/results/nuscenes/nuscenes/<run>/compare_calibrated/comparison_summary.json \
+  --config config/nuscenes_single_stage.yaml \
+  --output config/nuscenes_single_stage.suggested.yaml \
+  --report debug/nuscenes_single_stage_suggestion.json
+```
+
+What it does:
+
+- reads the calibration weights and feature reliance
+- reads the original-vs-calibrated comparison summary
+- decides which layer is the main bottleneck:
+  - `global_track_score`
+  - `weak_class_track_score`
+  - `matching_lifecycle`
+  - `hybrid_light`
+- writes a suggested YAML config
+- writes a JSON report explaining every parameter change
+
+Current auto-adjusted parameter groups:
+
+- `THRESHOLD.INPUT_SCORE`
+- `THRESHOLD.BEV.COST_THRE`
+- `THRESHOLD.TRAJECTORY_THRE.CONFIRMED_DET_SCORE`
+- `THRESHOLD.TRAJECTORY_THRE.OUTPUT_SCORE`
+- `THRESHOLD.TRAJECTORY_THRE.SINGLE_STAGE_BIRTH_SCORE`
+- `TRACK_SCORE.W_DET`
+- `TRACK_SCORE.W_ASSOC`
+- `TRACK_SCORE.W_CONT`
+- `TRACK_SCORE.W_MATURE`
+- `TRACK_SCORE.CURRENT_FAKE_SCALE`
+- `TRACK_SCORE.MATURE_LEN`
+
+The generated report is meant to be human-readable and rule-explainable. It records:
+
+- which high-level strategy was selected
+- aggregate and weak/strong-class deltas
+- score / quality / association / continuity reliance inferred from calibration
+- every parameter change with old value, new value, and reason
+
+Recommended workflow:
+
+1. run a baseline evaluation
+2. export track-quality features
+3. calibrate track scores
+4. compare original vs calibrated results
+5. generate a suggested single-stage config
+6. run a new evaluation using the suggested config
+
 ### 5.6 Conditional Noise + Residual Covariance
 
 `config/train_nuscenes.yaml` now splits noise handling into three layers:
