@@ -27,6 +27,8 @@ def _base_cfg():
                 "COST_THRE": {0: 1.35, 1: 1.85, 2: 1.70, 3: 1.75, 4: 1.30, 5: 1.65, 6: 1.35},
             },
             "TRAJECTORY_THRE": {
+                "MAX_UNMATCH_LENGTH": {0: 3, 1: 1, 2: 2, 3: 3, 4: 2, 5: 2, 6: 2},
+                "CONFIRMED_TRACK_LENGTH": {0: 1, 1: 1, 2: 3, 3: 3, 4: 1, 5: 1, 6: 1},
                 "CONFIRMED_DET_SCORE": {0: 0.44, 1: 0.50, 2: 0.39, 3: 0.41, 4: 0.52, 5: 0.43, 6: 0.40},
                 "OUTPUT_SCORE": {0: 0.46, 1: 0.52, 2: 0.40, 3: 0.42, 4: 0.54, 5: 0.44, 6: 0.43},
                 "SINGLE_STAGE_BIRTH_SCORE": {},
@@ -115,6 +117,32 @@ class SuggestNuScenesSingleStageParamsTest(unittest.TestCase):
         self.assertEqual(new_cfg["TRACK_SCORE"]["W_DET"][0], cfg["TRACK_SCORE"]["W_DET"][0])
         self.assertEqual(new_cfg["TRACK_SCORE"]["W_DET"][4], cfg["TRACK_SCORE"]["W_DET"][4])
         self.assertTrue(any(item["group"] == "track_score" for item in report["changes"]))
+
+    def test_large_weak_gain_triggers_aggressive_strategy(self):
+        cfg = _base_cfg()
+        comparison = _comparison(agg_delta=0.08, weak_delta=0.18, strong_delta=0.03)
+        calibration = _calibration(score_weight=0.8, quality_weight=0.1)
+        diagnostics = compute_diagnostics(comparison, calibration)
+        self.assertEqual(diagnostics["strategy"], "aggressive_weak_class_track_score")
+
+        new_cfg, report = apply_suggestions(copy.deepcopy(cfg), comparison, calibration, diagnostics)
+
+        # weak classes should be adjusted much more aggressively than the mild strategy
+        self.assertGreater(new_cfg["TRACK_SCORE"]["W_DET"][2], cfg["TRACK_SCORE"]["W_DET"][2] + 0.08)
+        self.assertLess(new_cfg["TRACK_SCORE"]["W_ASSOC"][2], cfg["TRACK_SCORE"]["W_ASSOC"][2] - 0.05)
+        self.assertLess(new_cfg["THRESHOLD"]["INPUT_SCORE"]["ONLINE"][2], cfg["THRESHOLD"]["INPUT_SCORE"]["ONLINE"][2] - 0.03)
+        self.assertLess(
+            new_cfg["THRESHOLD"]["TRAJECTORY_THRE"]["CONFIRMED_DET_SCORE"][2],
+            cfg["THRESHOLD"]["TRAJECTORY_THRE"]["CONFIRMED_DET_SCORE"][2] - 0.04,
+        )
+        self.assertLess(
+            new_cfg["THRESHOLD"]["TRAJECTORY_THRE"]["OUTPUT_SCORE"][2],
+            cfg["THRESHOLD"]["TRAJECTORY_THRE"]["OUTPUT_SCORE"][2] - 0.05,
+        )
+        self.assertEqual(new_cfg["THRESHOLD"]["TRAJECTORY_THRE"]["CONFIRMED_TRACK_LENGTH"][2], 2)
+        self.assertEqual(new_cfg["THRESHOLD"]["TRAJECTORY_THRE"]["MAX_UNMATCH_LENGTH"][2], 3)
+        self.assertTrue(any(item["group"] == "track_score" for item in report["changes"]))
+        self.assertTrue(any(item["group"] == "aggressive_thresholds" for item in report["changes"]))
 
     def test_no_gain_prefers_matching_and_birth(self):
         cfg = _base_cfg()

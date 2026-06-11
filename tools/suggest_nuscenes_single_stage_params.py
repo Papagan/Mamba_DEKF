@@ -94,7 +94,9 @@ def compute_diagnostics(comparison: Dict, calibration: Dict) -> Dict:
     strong_mean_delta = mean([float(comparison["per_class"][cls]["amota"]["delta"]) for cls in STRONG_CLASSES if cls in comparison["per_class"]])
     rel = calibration_reliance(calibration)
 
-    if agg_amota_delta >= 0.01:
+    if agg_amota_delta >= 0.08 or weak_mean_delta >= 0.15:
+        strategy = "aggressive_weak_class_track_score"
+    elif agg_amota_delta >= 0.01:
         if weak_mean_delta >= 0.01 and strong_mean_delta < 0.005:
             strategy = "weak_class_track_score"
         else:
@@ -223,6 +225,59 @@ def _apply_matching_lifecycle_rules(cfg, comparison, report):
             _record(report, "matching_lifecycle", "THRESHOLD.TRAJECTORY_THRE.SINGLE_STAGE_BIRTH_SCORE", class_name, old, new_birth, reason)
 
 
+def _apply_aggressive_weak_thresholds(cfg, report):
+    input_online = cfg["THRESHOLD"]["INPUT_SCORE"]["ONLINE"]
+    input_offline = cfg["THRESHOLD"]["INPUT_SCORE"]["OFFLINE"]
+    traj = cfg["THRESHOLD"]["TRAJECTORY_THRE"]
+    confirmed = traj["CONFIRMED_DET_SCORE"]
+    output_score = traj["OUTPUT_SCORE"]
+    max_unmatch = traj["MAX_UNMATCH_LENGTH"]
+    confirmed_len = traj["CONFIRMED_TRACK_LENGTH"]
+    birth_score = traj["SINGLE_STAGE_BIRTH_SCORE"]
+    cmap = cfg["CATEGORY_MAP_TO_NUMBER"]
+
+    per_class_targets = {
+        "car": {"input": 0.18, "confirmed": 0.42, "output": 0.44, "birth": 0.28},
+        "pedestrian": {"input": 0.22, "confirmed": 0.48, "output": 0.50},
+        "bicycle": {"input": 0.14, "confirmed": 0.32, "output": 0.30, "max_unmatch": 3, "confirmed_len": 2},
+        "motorcycle": {"input": 0.16, "confirmed": 0.35, "output": 0.32, "max_unmatch": 4, "confirmed_len": 2},
+        "bus": {"input": 0.26, "confirmed": 0.50, "output": 0.52, "birth": 0.34},
+        "trailer": {"input": 0.20, "confirmed": 0.38, "output": 0.38, "max_unmatch": 3},
+        "truck": {"input": 0.16, "confirmed": 0.37, "output": 0.37, "max_unmatch": 3},
+    }
+    reason = "large calibrated gain indicates weak-class recall is suppressed by conservative score/lifecycle gates"
+
+    for class_name, target in per_class_targets.items():
+        class_id = cmap[class_name]
+        old = input_online[class_id]
+        input_online[class_id] = target["input"]
+        input_offline[class_id] = target["input"]
+        _record(report, "aggressive_thresholds", "THRESHOLD.INPUT_SCORE", class_name, old, input_online[class_id], reason)
+
+        old = confirmed[class_id]
+        confirmed[class_id] = target["confirmed"]
+        _record(report, "aggressive_thresholds", "THRESHOLD.TRAJECTORY_THRE.CONFIRMED_DET_SCORE", class_name, old, confirmed[class_id], reason)
+
+        old = output_score[class_id]
+        output_score[class_id] = target["output"]
+        _record(report, "aggressive_thresholds", "THRESHOLD.TRAJECTORY_THRE.OUTPUT_SCORE", class_name, old, output_score[class_id], reason)
+
+        if "max_unmatch" in target:
+            old = max_unmatch[class_id]
+            max_unmatch[class_id] = target["max_unmatch"]
+            _record(report, "aggressive_thresholds", "THRESHOLD.TRAJECTORY_THRE.MAX_UNMATCH_LENGTH", class_name, old, max_unmatch[class_id], reason)
+
+        if "confirmed_len" in target:
+            old = confirmed_len[class_id]
+            confirmed_len[class_id] = target["confirmed_len"]
+            _record(report, "aggressive_thresholds", "THRESHOLD.TRAJECTORY_THRE.CONFIRMED_TRACK_LENGTH", class_name, old, confirmed_len[class_id], reason)
+
+        if "birth" in target:
+            old = birth_score.get(class_id, None)
+            birth_score[class_id] = target["birth"]
+            _record(report, "aggressive_thresholds", "THRESHOLD.TRAJECTORY_THRE.SINGLE_STAGE_BIRTH_SCORE", class_name, old, birth_score[class_id], reason)
+
+
 def apply_suggestions(cfg: Dict, comparison: Dict, calibration: Dict, diagnostics: Dict) -> Tuple[Dict, Dict]:
     new_cfg = copy.deepcopy(cfg)
     report = {
@@ -232,7 +287,42 @@ def apply_suggestions(cfg: Dict, comparison: Dict, calibration: Dict, diagnostic
     }
     cmap = new_cfg["CATEGORY_MAP_TO_NUMBER"]
 
-    if diagnostics["strategy"] == "global_track_score":
+    if diagnostics["strategy"] == "aggressive_weak_class_track_score":
+        for class_name in WEAK_CLASSES:
+            class_id = cmap[class_name]
+            _adjust_track_score_for_class(
+                new_cfg,
+                report,
+                class_name,
+                class_id,
+                small_weak=class_name in ("bicycle", "motorcycle"),
+                diagnostics=diagnostics,
+            )
+        for class_name in ("bicycle", "motorcycle", "trailer", "truck"):
+            class_id = cmap[class_name]
+            track_score = new_cfg["TRACK_SCORE"]
+            reason = "very large calibrated gain indicates the weak-class track-score model must be shifted aggressively toward det confidence and maturity"
+            old = track_score["W_DET"][class_id]
+            track_score["W_DET"][class_id] = old + (0.04 if class_name in ("trailer", "truck") else 0.05)
+            _record(report, "track_score", "TRACK_SCORE.W_DET", class_name, old, track_score["W_DET"][class_id], reason)
+            old = track_score["W_ASSOC"][class_id]
+            track_score["W_ASSOC"][class_id] = max(0.01, old - 0.02)
+            _record(report, "track_score", "TRACK_SCORE.W_ASSOC", class_name, old, track_score["W_ASSOC"][class_id], reason)
+            old = track_score["W_CONT"][class_id]
+            track_score["W_CONT"][class_id] = max(0.01, old - 0.02)
+            _record(report, "track_score", "TRACK_SCORE.W_CONT", class_name, old, track_score["W_CONT"][class_id], reason)
+            old = track_score["W_MATURE"][class_id]
+            track_score["W_MATURE"][class_id] = old + (0.02 if class_name in ("trailer", "truck") else 0.03)
+            _record(report, "track_score", "TRACK_SCORE.W_MATURE", class_name, old, track_score["W_MATURE"][class_id], reason)
+            old = track_score["CURRENT_FAKE_SCALE"][class_id]
+            track_score["CURRENT_FAKE_SCALE"][class_id] = clamp(old + (0.06 if class_name in ("bicycle", "motorcycle") else 0.10), 0.55, 0.90)
+            _record(report, "track_score", "TRACK_SCORE.CURRENT_FAKE_SCALE", class_name, old, track_score["CURRENT_FAKE_SCALE"][class_id], reason)
+            old = track_score["MATURE_LEN"][class_id]
+            track_score["MATURE_LEN"][class_id] = max(2, old - 1)
+            _record(report, "track_score", "TRACK_SCORE.MATURE_LEN", class_name, old, track_score["MATURE_LEN"][class_id], reason)
+            normalize_weights(track_score, class_id)
+        _apply_aggressive_weak_thresholds(new_cfg, report)
+    elif diagnostics["strategy"] == "global_track_score":
         for class_name, class_id in cmap.items():
             _adjust_track_score_for_class(
                 new_cfg,
