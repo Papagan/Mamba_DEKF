@@ -634,6 +634,29 @@ Important notes:
 - The final suggested config is copied to `--final-config`.
 - The raw heavy result directories are pruned, but the per-iteration Markdown reports stay under `docs/`.
 
+Resume and reuse modes:
+
+```bash
+python tools/run_single_stage_optimization_loop.py \
+  --config config/nuscenes_single_stage.yaml \
+  --iterations 3 \
+  --processes 12 \
+  --nusc-dataroot /root/autodl-tmp/data/nuscenes/datasets/ \
+  --work-dir debug/optimization_loop \
+  --docs-dir docs/optimization_loop \
+  --history debug/nuscenes_single_stage_history.json \
+  --final-config config/nuscenes_single_stage_suggested.yaml \
+  --keep-last-results 2 \
+  --resume \
+  --reuse-existing
+```
+
+- `--resume`
+  - resumes the newest `loop_*` directory under `--work-dir`
+- `--reuse-existing`
+  - skips stages whose expected outputs already exist in the current iteration directory
+  - forwards reuse behavior to `compare_nuscenes_results.py`
+
 ### 5.6 Conditional Noise + Residual Covariance
 
 `config/train_nuscenes.yaml` now splits noise handling into three layers:

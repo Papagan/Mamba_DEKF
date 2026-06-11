@@ -1,17 +1,31 @@
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 
 from tools.run_single_stage_optimization_loop import (
     build_feedback_comparison,
     derive_result_root,
+    find_latest_loop_root,
     pick_new_run_dir,
     prune_old_run_dirs,
+    stage_complete,
 )
 
 
 class RunSingleStageOptimizationLoopTest(unittest.TestCase):
+    def test_script_help_runs_without_module_import_error(self):
+        proc = subprocess.run(
+            [sys.executable, "tools/run_single_stage_optimization_loop.py", "--help"],
+            cwd="/home/alvin/demo/Mamba-DEKF",
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+        self.assertIn("Run eval -> export -> calibrate -> compare -> suggest", proc.stdout)
+
     def test_derive_result_root(self):
         cfg = {
             "SAVE_PATH": "/root/autodl-tmp/results/nuscenes/",
@@ -70,6 +84,25 @@ class RunSingleStageOptimizationLoopTest(unittest.TestCase):
             self.assertFalse(os.path.exists(run_dirs[0]))
             self.assertTrue(os.path.exists(run_dirs[1]))
             self.assertTrue(os.path.exists(run_dirs[2]))
+
+    def test_find_latest_loop_root(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            a = os.path.join(tmpdir, "loop_20260611_100000")
+            b = os.path.join(tmpdir, "loop_20260611_100500")
+            os.makedirs(a, exist_ok=True)
+            os.makedirs(b, exist_ok=True)
+            self.assertEqual(find_latest_loop_root(tmpdir), b)
+
+    def test_stage_complete_requires_all_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            a = os.path.join(tmpdir, "a.json")
+            b = os.path.join(tmpdir, "b.json")
+            with open(a, "w", encoding="utf-8") as f:
+                f.write("{}")
+            self.assertFalse(stage_complete([a, b]))
+            with open(b, "w", encoding="utf-8") as f:
+                f.write("{}")
+            self.assertTrue(stage_complete([a, b]))
 
 
 if __name__ == "__main__":
