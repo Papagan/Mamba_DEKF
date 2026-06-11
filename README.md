@@ -588,6 +588,52 @@ Recommended workflow:
 5. generate a suggested single-stage config
 6. run a new evaluation using the suggested config
 
+### 5.5.5 Full Optimization Loop
+
+If you want to automate the full tuning loop:
+
+1. evaluate the current config
+2. export track-quality features
+3. calibrate track score
+4. rewrite `results_calibrated.json`
+5. compare original vs calibrated results
+6. generate the next suggested config
+7. keep only the most recent heavy result directories
+
+use:
+
+```bash
+python tools/run_single_stage_optimization_loop.py \
+  --config config/nuscenes_single_stage.yaml \
+  --iterations 3 \
+  --processes 12 \
+  --nusc-dataroot /root/autodl-tmp/data/nuscenes/datasets/ \
+  --work-dir debug/optimization_loop \
+  --docs-dir docs/optimization_loop \
+  --history debug/nuscenes_single_stage_history.json \
+  --final-config config/nuscenes_single_stage_suggested.yaml \
+  --keep-last-results 2
+```
+
+What it does:
+
+- runs `main.py --dataset nuscenes --eval --config ... -p ...`
+- finds the newly created timestamped result directory
+- runs `export_track_quality_features.py`
+- runs `calibrate_track_score.py`
+- runs `compare_nuscenes_results.py`
+- runs `suggest_nuscenes_single_stage_params.py`
+- writes one Markdown report per iteration into `docs/optimization_loop`
+- deletes heavy result directories older than the most recent `--keep-last-results`
+
+Important notes:
+
+- The loop tracks tuning history through `--history`.
+- On the first iteration, the history file is created automatically if it does not exist.
+- On later iterations inside the same loop, the script automatically builds a real-evaluation feedback comparison from consecutive original evaluation results and feeds it back into `suggest_nuscenes_single_stage_params.py`.
+- The final suggested config is copied to `--final-config`.
+- The raw heavy result directories are pruned, but the per-iteration Markdown reports stay under `docs/`.
+
 ### 5.6 Conditional Noise + Residual Covariance
 
 `config/train_nuscenes.yaml` now splits noise handling into three layers:
