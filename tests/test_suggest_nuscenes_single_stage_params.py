@@ -101,6 +101,15 @@ def _calibration(score_weight=0.8, quality_weight=0.2):
 
 
 class SuggestNuScenesSingleStageParamsTest(unittest.TestCase):
+    def test_diagnostics_include_continuous_scales(self):
+        comparison = _comparison(agg_delta=0.08, weak_delta=0.18, strong_delta=0.03)
+        calibration = _calibration(score_weight=0.8, quality_weight=0.1)
+        diagnostics = compute_diagnostics(comparison, calibration)
+        self.assertEqual(diagnostics["strategy"], "aggressive_weak_class_track_score")
+        self.assertGreater(diagnostics["agg_gain_scale"], 0.7)
+        self.assertGreater(diagnostics["weak_gain_scale"], 0.8)
+        self.assertGreater(diagnostics["weak_advantage_scale"], 0.8)
+
     def test_ranking_gain_prefers_track_score(self):
         cfg = _base_cfg()
         comparison = _comparison(agg_delta=0.02, weak_delta=0.03, strong_delta=0.0)
@@ -143,6 +152,28 @@ class SuggestNuScenesSingleStageParamsTest(unittest.TestCase):
         self.assertEqual(new_cfg["THRESHOLD"]["TRAJECTORY_THRE"]["MAX_UNMATCH_LENGTH"][2], 3)
         self.assertTrue(any(item["group"] == "track_score" for item in report["changes"]))
         self.assertTrue(any(item["group"] == "aggressive_thresholds" for item in report["changes"]))
+
+    def test_larger_gain_produces_larger_adjustment(self):
+        cfg_small = _base_cfg()
+        cfg_large = _base_cfg()
+        calibration = _calibration(score_weight=0.8, quality_weight=0.1)
+
+        comparison_small = _comparison(agg_delta=0.03, weak_delta=0.04, strong_delta=0.00)
+        comparison_large = _comparison(agg_delta=0.09, weak_delta=0.18, strong_delta=0.03)
+
+        diag_small = compute_diagnostics(comparison_small, calibration)
+        diag_large = compute_diagnostics(comparison_large, calibration)
+
+        new_small, _ = apply_suggestions(copy.deepcopy(cfg_small), comparison_small, calibration, diag_small)
+        new_large, _ = apply_suggestions(copy.deepcopy(cfg_large), comparison_large, calibration, diag_large)
+
+        det_gain_small = new_small["TRACK_SCORE"]["W_DET"][2] - cfg_small["TRACK_SCORE"]["W_DET"][2]
+        det_gain_large = new_large["TRACK_SCORE"]["W_DET"][2] - cfg_large["TRACK_SCORE"]["W_DET"][2]
+        input_drop_small = cfg_small["THRESHOLD"]["INPUT_SCORE"]["ONLINE"][2] - new_small["THRESHOLD"]["INPUT_SCORE"]["ONLINE"][2]
+        input_drop_large = cfg_large["THRESHOLD"]["INPUT_SCORE"]["ONLINE"][2] - new_large["THRESHOLD"]["INPUT_SCORE"]["ONLINE"][2]
+
+        self.assertGreater(det_gain_large, det_gain_small)
+        self.assertGreater(input_drop_large, input_drop_small)
 
     def test_no_gain_prefers_matching_and_birth(self):
         cfg = _base_cfg()

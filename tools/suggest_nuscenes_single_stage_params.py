@@ -60,6 +60,12 @@ def clamp(x: float, lo: float, hi: float) -> float:
     return float(max(lo, min(hi, x)))
 
 
+def scale(delta: float, denom: float, hi: float = 1.5) -> float:
+    if denom <= 1e-8:
+        return 0.0
+    return clamp(delta / denom, 0.0, hi)
+
+
 def normalize_weights(weight_dicts: Dict[str, Dict[int, float]], class_id: int):
     vals = [max(0.0, float(weight_dicts[name][class_id])) for name in ["W_DET", "W_ASSOC", "W_CONT", "W_MATURE"]]
     total = sum(vals)
@@ -93,6 +99,10 @@ def compute_diagnostics(comparison: Dict, calibration: Dict) -> Dict:
     weak_mean_delta = mean([float(comparison["per_class"][cls]["amota"]["delta"]) for cls in WEAK_CLASSES if cls in comparison["per_class"]])
     strong_mean_delta = mean([float(comparison["per_class"][cls]["amota"]["delta"]) for cls in STRONG_CLASSES if cls in comparison["per_class"]])
     rel = calibration_reliance(calibration)
+    agg_gain_scale = scale(agg_amota_delta, 0.10)
+    weak_gain_scale = scale(weak_mean_delta, 0.20)
+    strong_gain_scale = scale(strong_mean_delta, 0.08)
+    weak_advantage_scale = scale(weak_mean_delta - strong_mean_delta, 0.15)
 
     if agg_amota_delta >= 0.08 or weak_mean_delta >= 0.15:
         strategy = "aggressive_weak_class_track_score"
@@ -113,6 +123,10 @@ def compute_diagnostics(comparison: Dict, calibration: Dict) -> Dict:
         "aggregate_amota_delta": agg_amota_delta,
         "weak_mean_delta": weak_mean_delta,
         "strong_mean_delta": strong_mean_delta,
+        "agg_gain_scale": agg_gain_scale,
+        "weak_gain_scale": weak_gain_scale,
+        "strong_gain_scale": strong_gain_scale,
+        "weak_advantage_scale": weak_advantage_scale,
         **rel,
     }
 
@@ -135,40 +149,46 @@ def _record(report, group: str, path: str, class_name: str | None, old, new, rea
 def _adjust_track_score_for_class(cfg, report, class_name: str, class_id: int, *, small_weak: bool, diagnostics: Dict):
     track_score = cfg["TRACK_SCORE"]
     reason = "ranking gain indicates track-score sorting is the primary bottleneck"
+    agg_gain = diagnostics.get("agg_gain_scale", 0.0)
+    weak_gain = diagnostics.get("weak_gain_scale", 0.0)
+    score_rel = diagnostics.get("score_reliance", 0.0)
+    assoc_rel = diagnostics.get("assoc_reliance", 0.0)
+    cont_rel = diagnostics.get("cont_reliance", 0.0)
+    quality_rel = diagnostics.get("quality_reliance", 0.0)
     if small_weak:
         old = track_score["W_DET"][class_id]
-        track_score["W_DET"][class_id] = old + 0.06
+        track_score["W_DET"][class_id] = old + 0.04 * agg_gain + 0.04 * score_rel
         _record(report, "track_score", "TRACK_SCORE.W_DET", class_name, old, track_score["W_DET"][class_id], reason)
         old = track_score["W_ASSOC"][class_id]
-        track_score["W_ASSOC"][class_id] = max(0.01, old - 0.04)
+        track_score["W_ASSOC"][class_id] = max(0.01, old - (0.03 * weak_gain + 0.02 * assoc_rel))
         _record(report, "track_score", "TRACK_SCORE.W_ASSOC", class_name, old, track_score["W_ASSOC"][class_id], reason)
         old = track_score["W_CONT"][class_id]
-        track_score["W_CONT"][class_id] = max(0.01, old - 0.04)
+        track_score["W_CONT"][class_id] = max(0.01, old - (0.03 * weak_gain + 0.02 * cont_rel))
         _record(report, "track_score", "TRACK_SCORE.W_CONT", class_name, old, track_score["W_CONT"][class_id], reason)
         old = track_score["W_MATURE"][class_id]
-        track_score["W_MATURE"][class_id] = old + 0.02
+        track_score["W_MATURE"][class_id] = old + 0.02 * weak_gain + 0.02 * quality_rel
         _record(report, "track_score", "TRACK_SCORE.W_MATURE", class_name, old, track_score["W_MATURE"][class_id], reason)
         old = track_score["CURRENT_FAKE_SCALE"][class_id]
-        track_score["CURRENT_FAKE_SCALE"][class_id] = clamp(old + 0.04, 0.55, 0.90)
+        track_score["CURRENT_FAKE_SCALE"][class_id] = clamp(old + 0.04 * weak_gain, 0.55, 0.90)
         _record(report, "track_score", "TRACK_SCORE.CURRENT_FAKE_SCALE", class_name, old, track_score["CURRENT_FAKE_SCALE"][class_id], reason)
         old = track_score["MATURE_LEN"][class_id]
-        track_score["MATURE_LEN"][class_id] = max(2, old - 1)
+        track_score["MATURE_LEN"][class_id] = max(2, old - int(round(max(0.5, weak_gain))))
         _record(report, "track_score", "TRACK_SCORE.MATURE_LEN", class_name, old, track_score["MATURE_LEN"][class_id], reason)
     else:
         old = track_score["W_DET"][class_id]
-        track_score["W_DET"][class_id] = max(0.01, old - 0.04)
+        track_score["W_DET"][class_id] = max(0.01, old - (0.03 * agg_gain + 0.02 * diagnostics.get("strong_gain_scale", 0.0)))
         _record(report, "track_score", "TRACK_SCORE.W_DET", class_name, old, track_score["W_DET"][class_id], reason)
         old = track_score["W_ASSOC"][class_id]
-        track_score["W_ASSOC"][class_id] = old + 0.03
+        track_score["W_ASSOC"][class_id] = old + 0.02 * agg_gain + 0.02 * assoc_rel
         _record(report, "track_score", "TRACK_SCORE.W_ASSOC", class_name, old, track_score["W_ASSOC"][class_id], reason)
         old = track_score["W_CONT"][class_id]
-        track_score["W_CONT"][class_id] = old + 0.03
+        track_score["W_CONT"][class_id] = old + 0.02 * agg_gain + 0.02 * cont_rel
         _record(report, "track_score", "TRACK_SCORE.W_CONT", class_name, old, track_score["W_CONT"][class_id], reason)
         old = track_score["W_MATURE"][class_id]
-        track_score["W_MATURE"][class_id] = old + 0.01
+        track_score["W_MATURE"][class_id] = old + 0.01 * agg_gain + 0.01 * quality_rel
         _record(report, "track_score", "TRACK_SCORE.W_MATURE", class_name, old, track_score["W_MATURE"][class_id], reason)
         old = track_score["CURRENT_FAKE_SCALE"][class_id]
-        track_score["CURRENT_FAKE_SCALE"][class_id] = clamp(old - 0.04, 0.55, 0.90)
+        track_score["CURRENT_FAKE_SCALE"][class_id] = clamp(old - 0.03 * agg_gain, 0.55, 0.90)
         _record(report, "track_score", "TRACK_SCORE.CURRENT_FAKE_SCALE", class_name, old, track_score["CURRENT_FAKE_SCALE"][class_id], reason)
     normalize_weights(track_score, class_id)
 
@@ -235,46 +255,76 @@ def _apply_aggressive_weak_thresholds(cfg, report):
     confirmed_len = traj["CONFIRMED_TRACK_LENGTH"]
     birth_score = traj["SINGLE_STAGE_BIRTH_SCORE"]
     cmap = cfg["CATEGORY_MAP_TO_NUMBER"]
-
-    per_class_targets = {
-        "car": {"input": 0.18, "confirmed": 0.42, "output": 0.44, "birth": 0.28},
-        "pedestrian": {"input": 0.22, "confirmed": 0.48, "output": 0.50},
-        "bicycle": {"input": 0.14, "confirmed": 0.32, "output": 0.30, "max_unmatch": 3, "confirmed_len": 2},
-        "motorcycle": {"input": 0.16, "confirmed": 0.35, "output": 0.32, "max_unmatch": 4, "confirmed_len": 2},
-        "bus": {"input": 0.26, "confirmed": 0.50, "output": 0.52, "birth": 0.34},
-        "trailer": {"input": 0.20, "confirmed": 0.38, "output": 0.38, "max_unmatch": 3},
-        "truck": {"input": 0.16, "confirmed": 0.37, "output": 0.37, "max_unmatch": 3},
-    }
     reason = "large calibrated gain indicates weak-class recall is suppressed by conservative score/lifecycle gates"
+    diag = report["diagnostics"]
+    weak_gain = diag.get("weak_gain_scale", 0.0)
+    weak_adv = diag.get("weak_advantage_scale", 0.0)
+    score_rel = diag.get("score_reliance", 0.0)
+    quality_rel = diag.get("quality_reliance", 0.0)
+    agg_gain = diag.get("agg_gain_scale", 0.0)
 
-    for class_name, target in per_class_targets.items():
-        class_id = cmap[class_name]
+    for class_name, class_id in cmap.items():
+        if class_name in ("bicycle", "motorcycle"):
+            input_drop = 0.025 * weak_gain + 0.02 * score_rel
+            confirm_drop = 0.042 * weak_gain + 0.026 * quality_rel
+            output_drop = 0.05 * weak_gain + 0.025 * score_rel
+            extra_unmatch = int(round(max(1.0, weak_adv)))
+            extra_confirm_relax = int(round(max(1.0, weak_adv)))
+        elif class_name in ("trailer", "truck"):
+            input_drop = 0.02 * weak_gain + 0.015 * score_rel
+            confirm_drop = 0.035 * weak_gain + 0.02 * quality_rel
+            output_drop = 0.04 * weak_gain + 0.02 * score_rel
+            extra_unmatch = int(round(max(1.0, 0.8 * weak_adv)))
+            extra_confirm_relax = 0
+        elif class_name == "car":
+            input_drop = 0.0
+            confirm_drop = 0.015 * agg_gain
+            output_drop = 0.02 * agg_gain
+            extra_unmatch = 0
+            extra_confirm_relax = 0
+        elif class_name == "pedestrian":
+            input_drop = 0.01 * agg_gain
+            confirm_drop = 0.015 * agg_gain
+            output_drop = 0.02 * agg_gain
+            extra_unmatch = 0
+            extra_confirm_relax = 0
+        else:  # bus
+            input_drop = 0.01 * agg_gain
+            confirm_drop = 0.015 * agg_gain
+            output_drop = 0.02 * agg_gain
+            extra_unmatch = 0
+            extra_confirm_relax = 0
+
         old = input_online[class_id]
-        input_online[class_id] = target["input"]
-        input_offline[class_id] = target["input"]
+        input_online[class_id] = clamp(old - input_drop, 0.0, 0.5)
+        input_offline[class_id] = input_online[class_id]
         _record(report, "aggressive_thresholds", "THRESHOLD.INPUT_SCORE", class_name, old, input_online[class_id], reason)
 
         old = confirmed[class_id]
-        confirmed[class_id] = target["confirmed"]
+        confirmed[class_id] = clamp(old - confirm_drop, 0.2, 0.8)
         _record(report, "aggressive_thresholds", "THRESHOLD.TRAJECTORY_THRE.CONFIRMED_DET_SCORE", class_name, old, confirmed[class_id], reason)
 
         old = output_score[class_id]
-        output_score[class_id] = target["output"]
+        output_score[class_id] = clamp(old - output_drop, 0.2, 0.8)
         _record(report, "aggressive_thresholds", "THRESHOLD.TRAJECTORY_THRE.OUTPUT_SCORE", class_name, old, output_score[class_id], reason)
 
-        if "max_unmatch" in target:
+        if extra_unmatch > 0 and class_name in ("bicycle", "motorcycle", "trailer", "truck"):
             old = max_unmatch[class_id]
-            max_unmatch[class_id] = target["max_unmatch"]
+            max_unmatch[class_id] = min(old + extra_unmatch, 6)
             _record(report, "aggressive_thresholds", "THRESHOLD.TRAJECTORY_THRE.MAX_UNMATCH_LENGTH", class_name, old, max_unmatch[class_id], reason)
 
-        if "confirmed_len" in target:
+        if extra_confirm_relax > 0 and class_name in ("bicycle", "motorcycle"):
             old = confirmed_len[class_id]
-            confirmed_len[class_id] = target["confirmed_len"]
+            confirmed_len[class_id] = max(1, old - min(extra_confirm_relax, 2))
             _record(report, "aggressive_thresholds", "THRESHOLD.TRAJECTORY_THRE.CONFIRMED_TRACK_LENGTH", class_name, old, confirmed_len[class_id], reason)
 
-        if "birth" in target:
+        if class_name == "car":
             old = birth_score.get(class_id, None)
-            birth_score[class_id] = target["birth"]
+            birth_score[class_id] = clamp(max(input_online[class_id] + 0.10, birth_score.get(class_id, 0.0)), 0.1, 0.85)
+            _record(report, "aggressive_thresholds", "THRESHOLD.TRAJECTORY_THRE.SINGLE_STAGE_BIRTH_SCORE", class_name, old, birth_score[class_id], reason)
+        elif class_name == "bus":
+            old = birth_score.get(class_id, None)
+            birth_score[class_id] = clamp(max(input_online[class_id] + 0.08, birth_score.get(class_id, 0.0)), 0.1, 0.85)
             _record(report, "aggressive_thresholds", "THRESHOLD.TRAJECTORY_THRE.SINGLE_STAGE_BIRTH_SCORE", class_name, old, birth_score[class_id], reason)
 
 
@@ -302,23 +352,30 @@ def apply_suggestions(cfg: Dict, comparison: Dict, calibration: Dict, diagnostic
             class_id = cmap[class_name]
             track_score = new_cfg["TRACK_SCORE"]
             reason = "very large calibrated gain indicates the weak-class track-score model must be shifted aggressively toward det confidence and maturity"
+            weak_gain = diagnostics.get("weak_gain_scale", 0.0)
+            score_rel = diagnostics.get("score_reliance", 0.0)
+            assoc_rel = diagnostics.get("assoc_reliance", 0.0)
+            cont_rel = diagnostics.get("cont_reliance", 0.0)
+            quality_rel = diagnostics.get("quality_reliance", 0.0)
             old = track_score["W_DET"][class_id]
-            track_score["W_DET"][class_id] = old + (0.04 if class_name in ("trailer", "truck") else 0.05)
+            det_bump = (0.03 if class_name in ("trailer", "truck") else 0.04) * weak_gain + 0.02 * score_rel
+            track_score["W_DET"][class_id] = old + det_bump
             _record(report, "track_score", "TRACK_SCORE.W_DET", class_name, old, track_score["W_DET"][class_id], reason)
             old = track_score["W_ASSOC"][class_id]
-            track_score["W_ASSOC"][class_id] = max(0.01, old - 0.02)
+            track_score["W_ASSOC"][class_id] = max(0.01, old - ((0.015 if class_name in ("trailer", "truck") else 0.02) * weak_gain + 0.01 * assoc_rel))
             _record(report, "track_score", "TRACK_SCORE.W_ASSOC", class_name, old, track_score["W_ASSOC"][class_id], reason)
             old = track_score["W_CONT"][class_id]
-            track_score["W_CONT"][class_id] = max(0.01, old - 0.02)
+            track_score["W_CONT"][class_id] = max(0.01, old - ((0.015 if class_name in ("trailer", "truck") else 0.02) * weak_gain + 0.01 * cont_rel))
             _record(report, "track_score", "TRACK_SCORE.W_CONT", class_name, old, track_score["W_CONT"][class_id], reason)
             old = track_score["W_MATURE"][class_id]
-            track_score["W_MATURE"][class_id] = old + (0.02 if class_name in ("trailer", "truck") else 0.03)
+            track_score["W_MATURE"][class_id] = old + (0.015 if class_name in ("trailer", "truck") else 0.02) * weak_gain + 0.01 * quality_rel
             _record(report, "track_score", "TRACK_SCORE.W_MATURE", class_name, old, track_score["W_MATURE"][class_id], reason)
             old = track_score["CURRENT_FAKE_SCALE"][class_id]
-            track_score["CURRENT_FAKE_SCALE"][class_id] = clamp(old + (0.06 if class_name in ("bicycle", "motorcycle") else 0.10), 0.55, 0.90)
+            fake_bump = (0.05 if class_name in ("bicycle", "motorcycle") else 0.06) * weak_gain
+            track_score["CURRENT_FAKE_SCALE"][class_id] = clamp(old + fake_bump, 0.55, 0.90)
             _record(report, "track_score", "TRACK_SCORE.CURRENT_FAKE_SCALE", class_name, old, track_score["CURRENT_FAKE_SCALE"][class_id], reason)
             old = track_score["MATURE_LEN"][class_id]
-            track_score["MATURE_LEN"][class_id] = max(2, old - 1)
+            track_score["MATURE_LEN"][class_id] = max(2, old - int(round(max(0.8, diagnostics.get("weak_advantage_scale", 0.0)))))
             _record(report, "track_score", "TRACK_SCORE.MATURE_LEN", class_name, old, track_score["MATURE_LEN"][class_id], reason)
             normalize_weights(track_score, class_id)
         _apply_aggressive_weak_thresholds(new_cfg, report)
