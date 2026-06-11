@@ -4,6 +4,7 @@ import unittest
 from tools.suggest_nuscenes_single_stage_params import (
     apply_suggestions,
     compute_diagnostics,
+    update_history_with_feedback,
 )
 
 
@@ -174,6 +175,35 @@ class SuggestNuScenesSingleStageParamsTest(unittest.TestCase):
 
         self.assertGreater(det_gain_large, det_gain_small)
         self.assertGreater(input_drop_large, input_drop_small)
+
+    def test_history_feedback_scales_same_direction_steps(self):
+        cfg = _base_cfg()
+        calibration = _calibration(score_weight=0.8, quality_weight=0.1)
+        comparison = _comparison(agg_delta=0.08, weak_delta=0.18, strong_delta=0.03)
+        diagnostics = compute_diagnostics(comparison, calibration)
+
+        history = {"entries": [], "param_state": {}}
+        _, report = apply_suggestions(copy.deepcopy(cfg), comparison, calibration, diagnostics, history=history)
+        history["entries"].append({"changes": report["changes"], "diagnostics": diagnostics, "meta": {}})
+
+        feedback_bad = {
+            "aggregate": {"amota": {"delta": -0.02}},
+            "per_class": {},
+        }
+        history_bad = update_history_with_feedback(copy.deepcopy(history), feedback_bad)
+        new_bad, _ = apply_suggestions(copy.deepcopy(cfg), comparison, calibration, diagnostics, history=history_bad)
+
+        feedback_good = {
+            "aggregate": {"amota": {"delta": 0.02}},
+            "per_class": {},
+        }
+        history_good = update_history_with_feedback(copy.deepcopy(history), feedback_good)
+        new_good, _ = apply_suggestions(copy.deepcopy(cfg), comparison, calibration, diagnostics, history=history_good)
+
+        det_gain_bad = new_bad["TRACK_SCORE"]["W_DET"][2] - cfg["TRACK_SCORE"]["W_DET"][2]
+        det_gain_good = new_good["TRACK_SCORE"]["W_DET"][2] - cfg["TRACK_SCORE"]["W_DET"][2]
+
+        self.assertLess(det_gain_bad, det_gain_good)
 
     def test_no_gain_prefers_matching_and_birth(self):
         cfg = _base_cfg()
