@@ -241,6 +241,10 @@ def build_next_base_config_path(
     return current_config_path
 
 
+def get_orig_metrics_summary_path(run_dir: str) -> str:
+    return os.path.join(run_dir, "eval_result", "metrics_summary.json")
+
+
 def write_iteration_report(path: str, payload: Dict):
     lines = [
         f"# Optimization Iteration {payload['iteration']}",
@@ -360,6 +364,7 @@ def main():
         comparison_path = os.path.join(compare_dir, "comparison_summary.json")
         suggestion_report_path = os.path.join(iter_dir, "nuscenes_single_stage_suggestion.json")
         suggested_config_path = os.path.join(iter_dir, "nuscenes_single_stage_suggested.yaml")
+        orig_metrics_input_path = get_orig_metrics_summary_path(run_dir)
 
         export_cmd = [
             args.python_bin,
@@ -404,6 +409,8 @@ def main():
             results_path,
             "--cal-results",
             calibrated_results_path,
+            "--orig-summary",
+            get_orig_metrics_summary_path(run_dir),
             "--nusc-dataroot",
             args.nusc_dataroot,
             "--output-dir",
@@ -411,10 +418,10 @@ def main():
         ]
         if args.reuse_existing:
             compare_cmd.append("--reuse-existing")
-        if not (args.reuse_existing and stage_complete([comparison_path, os.path.join(compare_dir, "orig_eval", "metrics_summary.json"), os.path.join(compare_dir, "cal_eval", "metrics_summary.json")])):
+        if not (args.reuse_existing and stage_complete([comparison_path, os.path.join(compare_dir, "cal_eval", "metrics_summary.json")])):
             run_command(compare_cmd, cwd=os.getcwd())
 
-        orig_metrics_path = os.path.join(compare_dir, "orig_eval", "metrics_summary.json")
+        orig_metrics_path = orig_metrics_input_path
         cal_metrics_path = os.path.join(compare_dir, "cal_eval", "metrics_summary.json")
         orig_metrics = load_json(orig_metrics_path)
         cal_metrics = load_json(cal_metrics_path)

@@ -169,7 +169,46 @@ def calibration_reliance(calibration: Dict) -> Dict[str, float]:
     }
 
 
-def compute_diagnostics(comparison: Dict, calibration: Dict) -> Dict:
+def recent_feedback_diagnostics(history: Dict | None) -> Dict[str, float | int | bool]:
+    history = history or {}
+    entries = history.get("entries", []) or []
+    feedback_entries = [entry for entry in entries if entry.get("feedback", {}).get("comparison")]
+    last_two = feedback_entries[-2:]
+
+    def weak_mean(entry):
+        comp = entry.get("feedback", {}).get("comparison", {})
+        return mean([
+            float(comp.get("per_class", {}).get(cls, {}).get("amota", {}).get("delta", 0.0))
+            for cls in WEAK_CLASSES
+        ])
+
+    def strong_mean(entry):
+        comp = entry.get("feedback", {}).get("comparison", {})
+        return mean([
+            float(comp.get("per_class", {}).get(cls, {}).get("amota", {}).get("delta", 0.0))
+            for cls in STRONG_CLASSES
+        ])
+
+    def agg(entry):
+        return float(entry.get("feedback", {}).get("aggregate_amota_delta", 0.0))
+
+    last_agg = agg(feedback_entries[-1]) if feedback_entries else 0.0
+    last_weak = weak_mean(feedback_entries[-1]) if feedback_entries else 0.0
+    last_strong = strong_mean(feedback_entries[-1]) if feedback_entries else 0.0
+    consecutive_weak_decline = len(last_two) >= 2 and all(weak_mean(entry) < 0.0 for entry in last_two)
+    consecutive_global_decline = len(last_two) >= 2 and all(agg(entry) < 0.0 for entry in last_two)
+
+    return {
+        "feedback_count": len(feedback_entries),
+        "last_feedback_agg_delta": float(last_agg),
+        "last_feedback_weak_delta": float(last_weak),
+        "last_feedback_strong_delta": float(last_strong),
+        "consecutive_weak_decline": consecutive_weak_decline,
+        "consecutive_global_decline": consecutive_global_decline,
+    }
+
+
+def compute_diagnostics(comparison: Dict, calibration: Dict, history: Dict | None = None) -> Dict:
     agg_amota_delta = float(comparison["aggregate"]["amota"]["delta"])
     weak_mean_delta = mean([float(comparison["per_class"][cls]["amota"]["delta"]) for cls in WEAK_CLASSES if cls in comparison["per_class"]])
     strong_mean_delta = mean([float(comparison["per_class"][cls]["amota"]["delta"]) for cls in STRONG_CLASSES if cls in comparison["per_class"]])
@@ -178,8 +217,28 @@ def compute_diagnostics(comparison: Dict, calibration: Dict) -> Dict:
     weak_gain_scale = scale(weak_mean_delta, 0.20)
     strong_gain_scale = scale(strong_mean_delta, 0.08)
     weak_advantage_scale = scale(weak_mean_delta - strong_mean_delta, 0.15)
+    feedback_diag = recent_feedback_diagnostics(history)
+    feedback_count = int(feedback_diag["feedback_count"])
 
-    if agg_amota_delta >= 0.08 or weak_mean_delta >= 0.15:
+    if feedback_count > 0:
+        damp = 0.5
+        agg_gain_scale *= damp
+        weak_gain_scale *= damp
+        strong_gain_scale *= damp
+        weak_advantage_scale *= damp
+        if float(feedback_diag["last_feedback_agg_delta"]) < 0.0:
+            agg_gain_scale *= 0.6
+            weak_gain_scale *= 0.7
+            weak_advantage_scale *= 0.7
+        if bool(feedback_diag["consecutive_weak_decline"]):
+            weak_gain_scale *= 0.35
+            weak_advantage_scale *= 0.25
+
+    if bool(feedback_diag["consecutive_weak_decline"]):
+        strategy = "weak_class_stability_recovery"
+    elif bool(feedback_diag["consecutive_global_decline"]):
+        strategy = "matching_lifecycle"
+    elif agg_amota_delta >= 0.08 or weak_mean_delta >= 0.15:
         strategy = "aggressive_weak_class_track_score"
     elif agg_amota_delta >= 0.01:
         if weak_mean_delta >= 0.01 and strong_mean_delta < 0.005:
@@ -202,6 +261,7 @@ def compute_diagnostics(comparison: Dict, calibration: Dict) -> Dict:
         "weak_gain_scale": weak_gain_scale,
         "strong_gain_scale": strong_gain_scale,
         "weak_advantage_scale": weak_advantage_scale,
+        **feedback_diag,
         **rel,
     }
 
@@ -332,6 +392,79 @@ def _apply_matching_lifecycle_rules(cfg, comparison, report, history: Dict):
             _record(report, "matching_lifecycle", "THRESHOLD.TRAJECTORY_THRE.SINGLE_STAGE_BIRTH_SCORE", class_name, old, new_birth, reason)
 
 
+def _apply_weak_class_stability_recovery(cfg, report, history: Dict):
+    cmap = cfg["CATEGORY_MAP_TO_NUMBER"]
+    track_score = cfg["TRACK_SCORE"]
+    traj = cfg["THRESHOLD"]["TRAJECTORY_THRE"]
+    input_online = cfg["THRESHOLD"]["INPUT_SCORE"]["ONLINE"]
+    input_offline = cfg["THRESHOLD"]["INPUT_SCORE"]["OFFLINE"]
+    confirmed = traj["CONFIRMED_DET_SCORE"]
+    output_score = traj["OUTPUT_SCORE"]
+    max_unmatch = traj["MAX_UNMATCH_LENGTH"]
+    confirmed_len = traj["CONFIRMED_TRACK_LENGTH"]
+    cost_thre = cfg["THRESHOLD"]["BEV"]["COST_THRE"]
+    diag = report["diagnostics"]
+    reason = "consecutive weak-class real declines indicate over-relaxed ranking/lifecycle; recover by tightening fake continuation and restoring association pressure"
+
+    feedback_weak = abs(float(diag.get("last_feedback_weak_delta", 0.0)))
+    repair_scale = clamp(feedback_weak / 0.05, 0.6, 1.5)
+
+    for class_name in WEAK_CLASSES:
+        class_id = cmap[class_name]
+
+        old = track_score["W_DET"][class_id]
+        track_score["W_DET"][class_id] = apply_scaled_delta(old, -(0.02 * repair_scale), history=history, path="TRACK_SCORE.W_DET", class_name=class_name, lo=0.0, hi=1.0)
+        _record(report, "weak_stability_recovery", "TRACK_SCORE.W_DET", class_name, old, track_score["W_DET"][class_id], reason)
+
+        old = track_score["W_ASSOC"][class_id]
+        track_score["W_ASSOC"][class_id] = apply_scaled_delta(old, 0.025 * repair_scale, history=history, path="TRACK_SCORE.W_ASSOC", class_name=class_name, lo=0.01, hi=1.0)
+        _record(report, "weak_stability_recovery", "TRACK_SCORE.W_ASSOC", class_name, old, track_score["W_ASSOC"][class_id], reason)
+
+        old = track_score["W_CONT"][class_id]
+        track_score["W_CONT"][class_id] = apply_scaled_delta(old, 0.025 * repair_scale, history=history, path="TRACK_SCORE.W_CONT", class_name=class_name, lo=0.01, hi=1.0)
+        _record(report, "weak_stability_recovery", "TRACK_SCORE.W_CONT", class_name, old, track_score["W_CONT"][class_id], reason)
+
+        old = track_score["W_MATURE"][class_id]
+        track_score["W_MATURE"][class_id] = apply_scaled_delta(old, -0.01 * repair_scale, history=history, path="TRACK_SCORE.W_MATURE", class_name=class_name, lo=0.0, hi=1.0)
+        _record(report, "weak_stability_recovery", "TRACK_SCORE.W_MATURE", class_name, old, track_score["W_MATURE"][class_id], reason)
+
+        old = track_score["CURRENT_FAKE_SCALE"][class_id]
+        track_score["CURRENT_FAKE_SCALE"][class_id] = apply_scaled_delta(old, -(0.04 * repair_scale), history=history, path="TRACK_SCORE.CURRENT_FAKE_SCALE", class_name=class_name, lo=0.55, hi=0.90)
+        _record(report, "weak_stability_recovery", "TRACK_SCORE.CURRENT_FAKE_SCALE", class_name, old, track_score["CURRENT_FAKE_SCALE"][class_id], reason)
+
+        old = track_score["MATURE_LEN"][class_id]
+        track_score["MATURE_LEN"][class_id] = int(round(apply_scaled_delta(float(old), 1.0 * repair_scale, history=history, path="TRACK_SCORE.MATURE_LEN", class_name=class_name, lo=2.0, hi=12.0)))
+        _record(report, "weak_stability_recovery", "TRACK_SCORE.MATURE_LEN", class_name, old, track_score["MATURE_LEN"][class_id], reason)
+
+        old = input_online[class_id]
+        input_online[class_id] = apply_scaled_delta(old, 0.02 * repair_scale, history=history, path="THRESHOLD.INPUT_SCORE", class_name=class_name, lo=0.0, hi=0.5)
+        input_offline[class_id] = input_online[class_id]
+        _record(report, "weak_stability_recovery", "THRESHOLD.INPUT_SCORE", class_name, old, input_online[class_id], reason)
+
+        old = confirmed[class_id]
+        confirmed[class_id] = apply_scaled_delta(old, 0.02 * repair_scale, history=history, path="THRESHOLD.TRAJECTORY_THRE.CONFIRMED_DET_SCORE", class_name=class_name, lo=0.2, hi=0.8)
+        _record(report, "weak_stability_recovery", "THRESHOLD.TRAJECTORY_THRE.CONFIRMED_DET_SCORE", class_name, old, confirmed[class_id], reason)
+
+        old = output_score[class_id]
+        output_score[class_id] = apply_scaled_delta(old, 0.025 * repair_scale, history=history, path="THRESHOLD.TRAJECTORY_THRE.OUTPUT_SCORE", class_name=class_name, lo=0.2, hi=0.8)
+        _record(report, "weak_stability_recovery", "THRESHOLD.TRAJECTORY_THRE.OUTPUT_SCORE", class_name, old, output_score[class_id], reason)
+
+        old = max_unmatch[class_id]
+        max_unmatch[class_id] = int(round(apply_scaled_delta(float(old), -1.0 * repair_scale, history=history, path="THRESHOLD.TRAJECTORY_THRE.MAX_UNMATCH_LENGTH", class_name=class_name, lo=0.0, hi=6.0)))
+        _record(report, "weak_stability_recovery", "THRESHOLD.TRAJECTORY_THRE.MAX_UNMATCH_LENGTH", class_name, old, max_unmatch[class_id], reason)
+
+        if class_name in ("bicycle", "motorcycle"):
+            old = confirmed_len[class_id]
+            confirmed_len[class_id] = int(round(apply_scaled_delta(float(old), 1.0, history=history, path="THRESHOLD.TRAJECTORY_THRE.CONFIRMED_TRACK_LENGTH", class_name=class_name, lo=1.0, hi=8.0)))
+            _record(report, "weak_stability_recovery", "THRESHOLD.TRAJECTORY_THRE.CONFIRMED_TRACK_LENGTH", class_name, old, confirmed_len[class_id], reason)
+
+        old = cost_thre[class_id]
+        cost_thre[class_id] = apply_scaled_delta(old, -(0.04 * repair_scale), history=history, path="THRESHOLD.BEV.COST_THRE", class_name=class_name, lo=0.8, hi=2.5)
+        _record(report, "weak_stability_recovery", "THRESHOLD.BEV.COST_THRE", class_name, old, cost_thre[class_id], reason)
+
+        normalize_weights(track_score, class_id)
+
+
 def _apply_aggressive_weak_thresholds(cfg, report, history: Dict):
     input_online = cfg["THRESHOLD"]["INPUT_SCORE"]["ONLINE"]
     input_offline = cfg["THRESHOLD"]["INPUT_SCORE"]["OFFLINE"]
@@ -429,7 +562,9 @@ def apply_suggestions(cfg: Dict, comparison: Dict, calibration: Dict, diagnostic
     }
     cmap = new_cfg["CATEGORY_MAP_TO_NUMBER"]
 
-    if diagnostics["strategy"] == "aggressive_weak_class_track_score":
+    if diagnostics["strategy"] == "weak_class_stability_recovery":
+        _apply_weak_class_stability_recovery(new_cfg, report, history)
+    elif diagnostics["strategy"] == "aggressive_weak_class_track_score":
         for class_name in WEAK_CLASSES:
             class_id = cmap[class_name]
             _adjust_track_score_for_class(
@@ -524,7 +659,7 @@ def main():
         feedback_payload = load_json(args.feedback_comparison)
         history = update_history_with_feedback(history, feedback_payload)
 
-    diagnostics = compute_diagnostics(comparison, calibration)
+    diagnostics = compute_diagnostics(comparison, calibration, history=history)
     new_cfg, report = apply_suggestions(cfg, comparison, calibration, diagnostics, history=history)
     report["meta"] = {
         "calibration": os.path.abspath(args.calibration),

@@ -11,6 +11,7 @@ from tools.run_single_stage_optimization_loop import (
     build_next_base_config_path,
     derive_result_root,
     find_latest_loop_root,
+    get_orig_metrics_summary_path,
     pick_new_run_dir,
     prune_old_run_dirs,
     stage_complete,
@@ -186,6 +187,12 @@ class RunSingleStageOptimizationLoopTest(unittest.TestCase):
                 rejected_count=1,
             ),
             "/tmp/accepted.yaml",
+        )
+
+    def test_get_orig_metrics_summary_path(self):
+        self.assertEqual(
+            get_orig_metrics_summary_path("/tmp/run_001"),
+            "/tmp/run_001/eval_result/metrics_summary.json",
         )
 
 

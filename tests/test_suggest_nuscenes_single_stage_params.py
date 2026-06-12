@@ -101,6 +101,19 @@ def _calibration(score_weight=0.8, quality_weight=0.2):
     }
 
 
+def _feedback_entry(agg_delta, weak_delta, strong_delta):
+    comparison = _comparison(agg_delta=agg_delta, weak_delta=weak_delta, strong_delta=strong_delta)
+    return {
+        "changes": [],
+        "diagnostics": {},
+        "meta": {},
+        "feedback": {
+            "aggregate_amota_delta": agg_delta,
+            "comparison": comparison,
+        },
+    }
+
+
 class SuggestNuScenesSingleStageParamsTest(unittest.TestCase):
     def test_diagnostics_include_continuous_scales(self):
         comparison = _comparison(agg_delta=0.08, weak_delta=0.18, strong_delta=0.03)
@@ -226,6 +239,42 @@ class SuggestNuScenesSingleStageParamsTest(unittest.TestCase):
             new_cfg["THRESHOLD"]["INPUT_SCORE"]["ONLINE"][6],
         )
         self.assertTrue(any(item["group"] == "matching_lifecycle" for item in report["changes"]))
+
+    def test_history_degrades_calibration_gain_after_real_feedback(self):
+        comparison = _comparison(agg_delta=0.08, weak_delta=0.18, strong_delta=0.03)
+        calibration = _calibration(score_weight=0.8, quality_weight=0.1)
+        diag_plain = compute_diagnostics(comparison, calibration)
+        history = {
+            "entries": [
+                _feedback_entry(agg_delta=-0.01, weak_delta=-0.03, strong_delta=0.0),
+            ],
+            "param_state": {},
+        }
+        diag_hist = compute_diagnostics(comparison, calibration, history=history)
+        self.assertLess(diag_hist["agg_gain_scale"], diag_plain["agg_gain_scale"])
+        self.assertLess(diag_hist["weak_gain_scale"], diag_plain["weak_gain_scale"])
+
+    def test_consecutive_weak_decline_switches_to_stability_recovery(self):
+        cfg = _base_cfg()
+        comparison = _comparison(agg_delta=0.09, weak_delta=0.18, strong_delta=0.03)
+        calibration = _calibration(score_weight=0.8, quality_weight=0.1)
+        history = {
+            "entries": [
+                _feedback_entry(agg_delta=-0.01, weak_delta=-0.02, strong_delta=0.0),
+                _feedback_entry(agg_delta=-0.015, weak_delta=-0.03, strong_delta=0.0),
+            ],
+            "param_state": {},
+        }
+        diagnostics = compute_diagnostics(comparison, calibration, history=history)
+        self.assertEqual(diagnostics["strategy"], "weak_class_stability_recovery")
+
+        new_cfg, report = apply_suggestions(copy.deepcopy(cfg), comparison, calibration, diagnostics, history=history)
+        self.assertGreater(new_cfg["TRACK_SCORE"]["W_ASSOC"][2], cfg["TRACK_SCORE"]["W_ASSOC"][2])
+        self.assertGreater(new_cfg["TRACK_SCORE"]["W_CONT"][2], cfg["TRACK_SCORE"]["W_CONT"][2])
+        self.assertLess(new_cfg["TRACK_SCORE"]["CURRENT_FAKE_SCALE"][2], cfg["TRACK_SCORE"]["CURRENT_FAKE_SCALE"][2])
+        self.assertGreater(new_cfg["THRESHOLD"]["INPUT_SCORE"]["ONLINE"][2], cfg["THRESHOLD"]["INPUT_SCORE"]["ONLINE"][2])
+        self.assertLess(new_cfg["THRESHOLD"]["TRAJECTORY_THRE"]["MAX_UNMATCH_LENGTH"][2], cfg["THRESHOLD"]["TRAJECTORY_THRE"]["MAX_UNMATCH_LENGTH"][2])
+        self.assertTrue(any(item["group"] == "weak_stability_recovery" for item in report["changes"]))
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ def parse_args():
     )
     parser.add_argument("--orig-results", required=True, help="Path to original results.json")
     parser.add_argument("--cal-results", required=True, help="Path to calibrated results.json")
+    parser.add_argument("--orig-summary", default="", help="Optional existing metrics_summary.json for original results; if set, original official eval is skipped")
     parser.add_argument("--nusc-dataroot", required=True, help="nuScenes dataroot")
     parser.add_argument("--output-dir", required=True, help="Directory to store eval outputs and comparison JSON")
     parser.add_argument("--version", default="v1.0-trainval", help="nuScenes version")
@@ -138,6 +139,29 @@ def maybe_eval(result_path: str, output_dir: str, *, reuse_existing: bool, nusc_
     )
 
 
+def maybe_load_or_eval_orig_summary(
+    *,
+    result_path: str,
+    output_dir: str,
+    existing_summary_path: str,
+    reuse_existing: bool,
+    nusc_dataroot: str,
+    version: str,
+    eval_set: str,
+):
+    if existing_summary_path and os.path.exists(existing_summary_path):
+        ensure_dir(output_dir)
+        return load_json(existing_summary_path)
+    return maybe_eval(
+        result_path,
+        output_dir,
+        reuse_existing=reuse_existing,
+        nusc_dataroot=nusc_dataroot,
+        version=version,
+        eval_set=eval_set,
+    )
+
+
 def main():
     args = parse_args()
     metrics = [m.strip().lower() for m in args.metrics.split(",") if m.strip()]
@@ -147,9 +171,10 @@ def main():
     orig_eval_dir = os.path.join(args.output_dir, "orig_eval")
     cal_eval_dir = os.path.join(args.output_dir, "cal_eval")
 
-    orig_summary = maybe_eval(
-        args.orig_results,
-        orig_eval_dir,
+    orig_summary = maybe_load_or_eval_orig_summary(
+        result_path=args.orig_results,
+        output_dir=orig_eval_dir,
+        existing_summary_path=args.orig_summary,
         reuse_existing=args.reuse_existing,
         nusc_dataroot=args.nusc_dataroot,
         version=args.version,
@@ -167,6 +192,7 @@ def main():
     payload = build_comparison_payload(orig_summary, cal_summary, class_names=class_names, metrics=metrics)
     payload["meta"] = {
         "orig_results": os.path.abspath(args.orig_results),
+        "orig_summary": os.path.abspath(args.orig_summary) if args.orig_summary else "",
         "cal_results": os.path.abspath(args.cal_results),
         "orig_eval_dir": os.path.abspath(orig_eval_dir),
         "cal_eval_dir": os.path.abspath(cal_eval_dir),

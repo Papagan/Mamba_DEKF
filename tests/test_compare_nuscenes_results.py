@@ -1,6 +1,9 @@
+import json
+import os
+import tempfile
 import unittest
 
-from tools.compare_nuscenes_results import build_comparison_payload
+from tools.compare_nuscenes_results import build_comparison_payload, maybe_load_or_eval_orig_summary
 
 
 class CompareNuScenesResultsTest(unittest.TestCase):
@@ -33,6 +36,25 @@ class CompareNuScenesResultsTest(unittest.TestCase):
         self.assertAlmostEqual(payload["aggregate"]["mota"]["delta"], 0.01, places=6)
         self.assertAlmostEqual(payload["per_class"]["truck"]["amota"]["delta"], 0.08, places=6)
         self.assertAlmostEqual(payload["per_class"]["car"]["amota"]["delta"], -0.01, places=6)
+
+    def test_maybe_load_or_eval_orig_summary_prefers_existing_summary(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            summary_path = os.path.join(tmpdir, "metrics_summary.json")
+            payload = {"amota": 0.7, "label_metrics": {"amota": {}}}
+            with open(summary_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+
+            loaded = maybe_load_or_eval_orig_summary(
+                result_path="/tmp/results.json",
+                output_dir=os.path.join(tmpdir, "unused"),
+                existing_summary_path=summary_path,
+                reuse_existing=False,
+                nusc_dataroot="/tmp/nusc",
+                version="v1.0-trainval",
+                eval_set="val",
+            )
+
+            self.assertEqual(loaded["amota"], 0.7)
 
 
 if __name__ == "__main__":
