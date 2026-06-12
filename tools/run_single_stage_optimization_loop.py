@@ -49,6 +49,12 @@ def load_yaml(path: str) -> Dict:
         return yaml.safe_load(f)
 
 
+def save_yaml(path: str, payload: Dict):
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(payload, f, allow_unicode=True, sort_keys=False)
+
+
 def save_json(path: str, payload: Dict):
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
