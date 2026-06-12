@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import copy
 import json
 import os
 import shutil
@@ -127,6 +128,119 @@ def build_feedback_comparison(prev_summary: Dict, curr_summary: Dict, class_name
     return payload
 
 
+def _class_amota(summary: Dict, class_name: str) -> float:
+    return float(summary.get("label_metrics", {}).get("amota", {}).get(class_name, 0.0))
+
+
+def _class_id_from_name(cfg: Dict, class_name: str) -> int:
+    return int(cfg["CATEGORY_MAP_TO_NUMBER"][class_name])
+
+
+def _get_class_value(cfg: Dict, path: str, class_name: str):
+    class_id = _class_id_from_name(cfg, class_name)
+    if path == "THRESHOLD.INPUT_SCORE":
+        return cfg["THRESHOLD"]["INPUT_SCORE"]["ONLINE"][class_id]
+    keys = path.split(".")
+    node = cfg
+    for key in keys:
+        node = node[key]
+    return node[class_id]
+
+
+def _set_class_value(cfg: Dict, path: str, class_name: str, value):
+    class_id = _class_id_from_name(cfg, class_name)
+    if path == "THRESHOLD.INPUT_SCORE":
+        cfg["THRESHOLD"]["INPUT_SCORE"]["ONLINE"][class_id] = value
+        cfg["THRESHOLD"]["INPUT_SCORE"]["OFFLINE"][class_id] = value
+        return
+    keys = path.split(".")
+    node = cfg
+    for key in keys[:-1]:
+        node = node[key]
+    node[keys[-1]][class_id] = value
+
+
+def _get_global_value(cfg: Dict, path: str):
+    keys = path.split(".")
+    node = cfg
+    for key in keys:
+        node = node[key]
+    return node
+
+
+def _set_global_value(cfg: Dict, path: str, value):
+    keys = path.split(".")
+    node = cfg
+    for key in keys[:-1]:
+        node = node[key]
+    node[keys[-1]] = value
+
+
+def accept_suggested_changes_by_class(
+    base_cfg: Dict,
+    candidate_cfg: Dict,
+    suggestion_report: Dict,
+    feedback_comparison: Dict,
+) -> tuple[Dict, Dict]:
+    merged_cfg = copy.deepcopy(base_cfg)
+    accepted = []
+    rejected = []
+    aggregate_delta = float(feedback_comparison.get("aggregate", {}).get("amota", {}).get("delta", 0.0))
+
+    for change in suggestion_report.get("changes", []):
+        path = change["path"]
+        class_name = change.get("class_name")
+        if class_name:
+            class_delta = float(
+                feedback_comparison.get("per_class", {})
+                .get(class_name, {})
+                .get("amota", {})
+                .get("delta", 0.0)
+            )
+            accept = class_delta > 0.0
+        else:
+            accept = aggregate_delta > 0.0
+
+        record = {
+            "path": path,
+            "class_name": class_name,
+            "old": change.get("old"),
+            "new": change.get("new"),
+            "accept": accept,
+        }
+
+        if accept:
+            if class_name:
+                value = _get_class_value(candidate_cfg, path, class_name)
+                _set_class_value(merged_cfg, path, class_name, value)
+            else:
+                value = _get_global_value(candidate_cfg, path)
+                _set_global_value(merged_cfg, path, value)
+            accepted.append(record)
+        else:
+            rejected.append(record)
+
+    return merged_cfg, {
+        "aggregate_amota_delta": aggregate_delta,
+        "accepted_count": len(accepted),
+        "rejected_count": len(rejected),
+        "accepted_changes": accepted,
+        "rejected_changes": rejected,
+    }
+
+
+def build_next_base_config_path(
+    *,
+    accepted_config_path: str,
+    current_config_path: str,
+    accepted_count: int,
+    rejected_count: int,
+) -> str:
+    if accepted_config_path:
+        return accepted_config_path
+    return current_config_path
+
+
 def write_iteration_report(path: str, payload: Dict):
     lines = [
         f"# Optimization Iteration {payload['iteration']}",
@@ -139,6 +253,8 @@ def write_iteration_report(path: str, payload: Dict):
     ]
     if payload.get("feedback_comparison"):
         lines.append(f"- Feedback comparison: `{payload['feedback_comparison']}`")
+    if payload.get("acceptance_summary"):
+        lines.append(f"- Acceptance summary: `{payload['acceptance_summary']}`")
     lines.extend(
         [
             "",
@@ -155,6 +271,8 @@ def write_iteration_report(path: str, payload: Dict):
             f"- Weak gain scale: `{payload['suggestion']['weak_gain_scale']:.3f}`",
             f"- Weak advantage scale: `{payload['suggestion']['weak_advantage_scale']:.3f}`",
             f"- Suggested changes: `{payload['suggestion']['change_count']}`",
+            f"- Accepted changes: `{payload['suggestion'].get('accepted_count', 0)}`",
+            f"- Rejected changes: `{payload['suggestion'].get('rejected_count', 0)}`",
             "",
         ]
     )
@@ -177,6 +295,10 @@ def main():
         current_config = os.path.abspath(loop_state.get("current_config", args.config))
         prev_feedback_path = loop_state.get("last_feedback_comparison", "")
         tracked_run_dirs = loop_state.get("kept_run_dirs", [])
+        accepted_config_path = os.path.abspath(loop_state.get("accepted_config", os.path.join(loop_root, "accepted_config.yaml")))
+        pending_suggestion_report_path = loop_state.get("pending_suggestion_report", "")
+        best_global_amota = float(loop_state.get("best_global_amota", 0.0))
+        best_amota_by_class = loop_state.get("best_amota_by_class", {})
         prev_orig_metrics = load_json(loop_state["last_orig_metrics"]) if loop_state.get("last_orig_metrics") and os.path.exists(loop_state["last_orig_metrics"]) else None
         start_iteration = int(loop_state.get("completed_iterations", 0)) + 1
     else:
@@ -187,6 +309,11 @@ def main():
         prev_orig_metrics = None
         prev_feedback_path = ""
         tracked_run_dirs: List[str] = []
+        accepted_config_path = os.path.join(loop_root, "accepted_config.yaml")
+        shutil.copyfile(current_config, accepted_config_path)
+        pending_suggestion_report_path = ""
+        best_global_amota = 0.0
+        best_amota_by_class = {}
         start_iteration = 1
 
     for iteration in range(start_iteration, args.iterations + 1):
@@ -294,10 +421,39 @@ def main():
         comparison_summary = load_json(comparison_path)
 
         feedback_path = ""
+        acceptance_path = ""
+        acceptance_summary = {"accepted_count": 0, "rejected_count": 0}
         if prev_orig_metrics is not None:
             feedback_payload = build_feedback_comparison(prev_orig_metrics, orig_metrics, DEFAULT_CLASSES, DEFAULT_METRICS)
             feedback_path = os.path.join(iter_dir, "feedback_comparison_summary.json")
             save_json(feedback_path, feedback_payload)
+            if pending_suggestion_report_path and os.path.exists(pending_suggestion_report_path):
+                accepted_cfg = load_yaml(accepted_config_path)
+                candidate_cfg = load_yaml(current_config)
+                suggestion_report_prev = load_json(pending_suggestion_report_path)
+                accepted_cfg, acceptance_summary = accept_suggested_changes_by_class(
+                    accepted_cfg,
+                    candidate_cfg,
+                    suggestion_report_prev,
+                    feedback_payload,
+                )
+                save_yaml(accepted_config_path, accepted_cfg)
+                acceptance_path = os.path.join(iter_dir, "acceptance_summary.json")
+                save_json(acceptance_path, acceptance_summary)
+
+        best_global_amota = max(best_global_amota, float(orig_metrics.get("amota", 0.0)))
+        for class_name in DEFAULT_CLASSES:
+            best_amota_by_class[class_name] = max(
+                float(best_amota_by_class.get(class_name, 0.0)),
+                _class_amota(orig_metrics, class_name),
+            )
+
+        base_config_for_suggest = build_next_base_config_path(
+            accepted_config_path=accepted_config_path,
+            current_config_path=current_config,
+            accepted_count=int(acceptance_summary.get("accepted_count", 0)),
+            rejected_count=int(acceptance_summary.get("rejected_count", 0)),
+        )
 
         suggest_cmd = [
             args.python_bin,
@@ -307,7 +463,7 @@ def main():
             "--comparison",
             comparison_path,
             "--config",
-            current_config,
+            base_config_for_suggest,
             "--output",
             suggested_config_path,
             "--report",
@@ -328,10 +484,12 @@ def main():
                 "iteration": iteration,
                 "timestamp": datetime.now().isoformat(timespec="seconds"),
                 "input_config": current_config,
+                "base_config_for_suggest": base_config_for_suggest,
                 "run_dir": run_dir,
                 "suggested_config": suggested_config_path,
                 "comparison_summary": comparison_path,
                 "feedback_comparison": feedback_path,
+                "acceptance_summary": acceptance_path,
                 "aggregate": {
                     "orig_amota": float(orig_metrics.get("amota", 0.0)),
                     "cal_amota": float(cal_metrics.get("amota", 0.0)),
@@ -343,17 +501,20 @@ def main():
                     "weak_gain_scale": float(suggestion_report["diagnostics"].get("weak_gain_scale", 0.0)),
                     "weak_advantage_scale": float(suggestion_report["diagnostics"].get("weak_advantage_scale", 0.0)),
                     "change_count": len(suggestion_report.get("changes", [])),
+                    "accepted_count": int(acceptance_summary.get("accepted_count", 0)),
+                    "rejected_count": int(acceptance_summary.get("rejected_count", 0)),
                 },
             },
         )
 
         prev_orig_metrics = orig_metrics
         prev_feedback_path = feedback_path
+        pending_suggestion_report_path = suggestion_report_path
         current_config = suggested_config_path
 
-    if current_config:
+    if accepted_config_path and os.path.exists(accepted_config_path):
         os.makedirs(os.path.dirname(os.path.abspath(args.final_config)), exist_ok=True)
-        shutil.copyfile(current_config, args.final_config)
+        shutil.copyfile(accepted_config_path, args.final_config)
         print(f"[loop] copied final suggested config to {args.final_config}")
 
     state_path = os.path.join(loop_root, "loop_summary.json")
@@ -368,6 +529,10 @@ def main():
             "completed_iterations": args.iterations,
             "current_config": os.path.abspath(current_config),
             "final_config": os.path.abspath(args.final_config),
+            "accepted_config": os.path.abspath(accepted_config_path),
+            "pending_suggestion_report": os.path.abspath(pending_suggestion_report_path) if pending_suggestion_report_path else "",
+            "best_global_amota": best_global_amota,
+            "best_amota_by_class": best_amota_by_class,
             "history": os.path.abspath(args.history),
             "loop_root": os.path.abspath(loop_root),
             "docs_dir": os.path.abspath(args.docs_dir),

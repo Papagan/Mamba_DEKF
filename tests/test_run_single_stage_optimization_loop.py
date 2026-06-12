@@ -6,7 +6,9 @@ import tempfile
 import unittest
 
 from tools.run_single_stage_optimization_loop import (
+    accept_suggested_changes_by_class,
     build_feedback_comparison,
+    build_next_base_config_path,
     derive_result_root,
     find_latest_loop_root,
     pick_new_run_dir,
@@ -103,6 +105,88 @@ class RunSingleStageOptimizationLoopTest(unittest.TestCase):
             with open(b, "w", encoding="utf-8") as f:
                 f.write("{}")
             self.assertTrue(stage_complete([a, b]))
+
+    def test_accept_suggested_changes_by_class_accepts_only_improved_classes(self):
+        base_cfg = {
+            "CATEGORY_MAP_TO_NUMBER": {"car": 0, "bicycle": 2},
+            "THRESHOLD": {
+                "INPUT_SCORE": {
+                    "ONLINE": {0: 0.20, 2: 0.18},
+                    "OFFLINE": {0: 0.20, 2: 0.18},
+                },
+                "TRAJECTORY_THRE": {
+                    "OUTPUT_SCORE": {0: 0.45, 2: 0.40},
+                },
+            },
+            "TRACK_SCORE": {
+                "W_DET": {0: 0.35, 2: 0.45},
+            },
+        }
+        candidate_cfg = {
+            "CATEGORY_MAP_TO_NUMBER": {"car": 0, "bicycle": 2},
+            "THRESHOLD": {
+                "INPUT_SCORE": {
+                    "ONLINE": {0: 0.17, 2: 0.14},
+                    "OFFLINE": {0: 0.17, 2: 0.14},
+                },
+                "TRAJECTORY_THRE": {
+                    "OUTPUT_SCORE": {0: 0.43, 2: 0.31},
+                },
+            },
+            "TRACK_SCORE": {
+                "W_DET": {0: 0.37, 2: 0.52},
+            },
+        }
+        suggestion_report = {
+            "changes": [
+                {"path": "THRESHOLD.INPUT_SCORE", "class_name": "car", "old": 0.20, "new": 0.17},
+                {"path": "THRESHOLD.INPUT_SCORE", "class_name": "bicycle", "old": 0.18, "new": 0.14},
+                {"path": "THRESHOLD.TRAJECTORY_THRE.OUTPUT_SCORE", "class_name": "bicycle", "old": 0.40, "new": 0.31},
+                {"path": "TRACK_SCORE.W_DET", "class_name": "bicycle", "old": 0.45, "new": 0.52},
+            ]
+        }
+        feedback = {
+            "aggregate": {"amota": {"delta": -0.01}},
+            "per_class": {
+                "car": {"amota": {"delta": -0.02}},
+                "bicycle": {"amota": {"delta": 0.10}},
+            },
+        }
+
+        merged_cfg, acceptance = accept_suggested_changes_by_class(
+            base_cfg,
+            candidate_cfg,
+            suggestion_report,
+            feedback,
+        )
+
+        self.assertEqual(merged_cfg["THRESHOLD"]["INPUT_SCORE"]["ONLINE"][0], 0.20)
+        self.assertEqual(merged_cfg["THRESHOLD"]["INPUT_SCORE"]["OFFLINE"][0], 0.20)
+        self.assertEqual(merged_cfg["THRESHOLD"]["INPUT_SCORE"]["ONLINE"][2], 0.14)
+        self.assertEqual(merged_cfg["THRESHOLD"]["TRAJECTORY_THRE"]["OUTPUT_SCORE"][2], 0.31)
+        self.assertEqual(merged_cfg["TRACK_SCORE"]["W_DET"][2], 0.52)
+        self.assertEqual(acceptance["accepted_count"], 3)
+        self.assertEqual(acceptance["rejected_count"], 1)
+
+    def test_build_next_base_config_path_prefers_accepted_config_after_regression(self):
+        self.assertEqual(
+            build_next_base_config_path(
+                accepted_config_path="/tmp/accepted.yaml",
+                current_config_path="/tmp/current.yaml",
+                accepted_count=0,
+                rejected_count=4,
+            ),
+            "/tmp/accepted.yaml",
+        )
+        self.assertEqual(
+            build_next_base_config_path(
+                accepted_config_path="/tmp/accepted.yaml",
+                current_config_path="/tmp/current.yaml",
+                accepted_count=2,
+                rejected_count=1,
+            ),
+            "/tmp/accepted.yaml",
+        )
 
 
 if __name__ == "__main__":
