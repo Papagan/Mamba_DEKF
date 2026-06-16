@@ -1,0 +1,27 @@
+DATASET: "nuscenes"
+FILTER_MODE: "pure_dekf"
+TRACKER_COMPAT_MODE: "mctrack"
+
+# Only keep the parameters that materially affect the current
+# mctrack + single-stage + geometric + TRACK_SCORE=false path.
+MATCHING:
+  USE_BYTETRACK: False
+  BEV:
+    MATCHING_MODE: Hungarian
+    COST_STATE: {0: "BackPredict", 1: "BackPredict", 2: "Predict", 3: "Fusion", 4: "Predict", 5: "BackPredict", 6: "BackPredict"}
+
+THRESHOLD:
+  INPUT_SCORE:
+    ONLINE: {0: 0.15, 1: 0.16, 2: 0.20, 3: 0.15, 4: 0.16, 5: 0.17, 6: 0.00}
+    OFFLINE: {0: 0.15, 1: 0.16, 2: 0.20, 3: 0.15, 4: 0.16, 5: 0.17, 6: 0.00}
+  COST_STATE_PREDICT_RATION: {0: 1.0, 1: 1.0, 2: 1.0, 3: 0.5, 4: 1.0, 5: 1.0, 6: 1.0}
+  NMS_THRE: {0: 0.04, 1: 0.08, 2: 0.08, 3: 0.06, 4: 0.08, 5: 0.12, 6: 0.05}
+  BEV:
+    COST_MODE: "geometric"
+    COST_THRE: {0: 1.10, 1: 2.06, 2: 2.00, 3: 2.06, 4: 1.60, 5: 1.26, 6: 1.16}
+  TRAJECTORY_THRE:
+    PREDICT_BBOX_LENGTH: {0: 17, 1: 7, 2: 13, 3: 22, 4: 14, 5: 7, 6: 22}
+    MAX_UNMATCH_LENGTH: {0: 0, 1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1}
+
+TRACK_SCORE:
+  ENABLED: false

@@ -3,6 +3,8 @@
 # ------------------------------------------------------------------------
 
 DATASET: "nuscenes"
+# Preset: nuScenes single-stage matching.
+# Use this file when you want MCTrack-style single-pass association without ByteTrack birth gating.
 
 # dataset info
 SPLIT: "val" # val, test
@@ -11,7 +13,7 @@ DATASET_ROOT: "/root/autodl-tmp/data/nuscenes/datasets/"
 DETECTIONS_ROOT: "/root/autodl-tmp/data/base_version/nuscenes/"
 SAVE_PATH: "/root/autodl-tmp/results/nuscenes/"
 TRACKING_MODE: 'ONLINE' # ONLINE / GLOBAL
-FILTER_MODE: 'mamba' # mamba / pure_dekf / fusion
+FILTER_MODE: 'fusion' # mamba / pure_dekf / fusion
 TRACKER_COMPAT_MODE: 'mctrack' # default / mctrack
 IS_RV_MATCHING: False  # True / False
 FRAME_RATE: 2
@@ -51,15 +53,14 @@ MAMBA:
   MIN_KAPPA: 0.5
 
 MATCHING:
-  USE_BYTETRACK: True   # True = two-stage (high strict + low relaxed), False = single-stage (MCTrack-style)
+  USE_BYTETRACK: False  # Single-stage preset.
   BEV:
     # Cost state per category:
     #   Predict     — use KF-predicted bbox  (best when KF prediction is accurate)
     #   BackPredict — use last fused bbox     (best when motion is erratic)
     #   Fusion      — weighted blend via COST_STATE_PREDICT_RATION
-    # Mamba-DEKF has direct velocity obs → CV prediction is more accurate than MCTrack,
-    # so cars/buses/trucks use Predict; agile categories stay on BackPredict/Fusion.
-    COST_STATE: {0: "Predict", 1: "BackPredict", 2: "BackPredict", 3: "Fusion", 4: "Predict", 5: "Predict", 6: "Predict"}
+    # Baseline matching state used by docs/result0608.log (AMOTA=0.610).
+    COST_STATE: {0: "Predict", 1: "Predict", 2: "Predict", 3: "Predict", 4: "Predict", 5: "Predict", 6: "Predict"}
     # iou_3d, giou_3d, dist_3d, ro_gdiou_3d
     COST_MODE: {0: "RO_GDIOU_3D", 1: "RO_GDIOU_3D", 2: "RO_GDIOU_3D", 3: "RO_GDIOU_3D", 4: "RO_GDIOU_3D", 5: "RO_GDIOU_3D", 6: "RO_GDIOU_3D"} 
      # Hungarian, Greedy
@@ -79,14 +80,16 @@ THRESHOLD:
     # Recommended single-stage preset (USE_BYTETRACK=False):
     #   ONLINE:  {0: 0.15, 1: 0.16, 2: 0.18, 3: 0.15, 4: 0.16, 5: 0.15, 6: 0.00}
     #   OFFLINE: {0: 0.15, 1: 0.16, 2: 0.18, 3: 0.15, 4: 0.16, 5: 0.15, 6: 0.00}
-    ONLINE: {0: 0.15, 1: 0.16, 2: 0.20, 3: 0.15, 4: 0.16, 5: 0.17, 6: 0.0}
-    OFFLINE: {0: 0.15, 1: 0.16, 2: 0.20, 3: 0.15, 4: 0.16, 5: 0.17, 6: 0.0}
-  COST_STATE_PREDICT_RATION: {0: 1.0, 1: 1.0, 2: 1.0, 3: 0.5, 4: 1.0, 5: 1.0, 6: 1.0}  # 3=motorcycle: 50/50 blend
-  NMS_THRE: {0: 0.04, 1: 0.08, 2: 0.08, 3: 0.06, 4: 0.08, 5: 0.12, 6: 0.05}
+    # Tuned from docs/result.log sweet spots:
+    # bicycle/trailer slightly higher to suppress low-score FPs;
+    # bus/pedestrian/motorcycle raised to align with their stable threshold bands.
+    ONLINE: {0: 0.18, 1: 0.30, 2: 0.22, 3: 0.22, 4: 0.22, 5: 0.24, 6: 0.18}
+    OFFLINE: {0: 0.18, 1: 0.30, 2: 0.22, 3: 0.22, 4: 0.22, 5: 0.24, 6: 0.18}
+  COST_STATE_PREDICT_RATION: {0: 1.0, 1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0, 5: 1.0, 6: 1.0}  # 3=motorcycle: 50/50 blend
+  NMS_THRE: {0: 0.08, 1: 0.08, 2: 0.08, 3: 0.08, 4: 0.08, 5: 0.12, 6: 0.06}
   # Export/eval filter on final tracking_score.
   # Only results at or above these per-class floors are written to results.json.
   EVAL_MIN_TRACKING_SCORE: {0: 0.00, 1: 0.00, 2: 0.00, 3: 0.00, 4: 0.00, 5: 0.00, 6: 0.00}
-  
   BEV:
     # Per-category matching cost thresholds (lower = stricter).
     # Uncertainty-adaptive gate scales these dynamically based on P trace.
@@ -106,7 +109,7 @@ THRESHOLD:
     #    without improving pairwise discrimination.
     # Recommended single-stage preset (USE_BYTETRACK=False):
     # COST_THRE: {0: 1.20, 1: 1.85, 2: 1.70, 3: 1.65, 4: 1.30, 5: 1.50, 6: 1.25}
-    COST_THRE: {0: 1.20, 1: 1.80, 2: 1.60, 3: 1.60, 4: 1.20, 5: 1.40, 6: 1.20}
+    COST_THRE: {0: 1.35, 1: 1.85, 2: 1.70, 3: 1.75, 4: 1.30, 5: 1.65, 6: 1.35}
     # COST_THRE:      {0: 1.45, 1: 2.00, 2: 1.85, 3: 1.85, 4: 1.45, 5: 1.65, 6: 1.45}
     COST_MODE: "geometric"   # "geometric" (early training) | "full" (converged)
     # COST_MODE: "full"
@@ -142,14 +145,13 @@ THRESHOLD:
     # Max unmatched frames before status → obscured (not output, but still matchable).
     # Recommended single-stage preset (USE_BYTETRACK=False):
     # MAX_UNMATCH_LENGTH: {0: 2, 1: 1, 2: 2, 3: 2, 4: 2, 5: 1, 6: 1}
-    MAX_UNMATCH_LENGTH: {0: 2, 1: 1, 2: 1, 3: 1, 4: 2, 5: 1, 6: 1}
+    MAX_UNMATCH_LENGTH: {0: 3, 1: 1, 2: 2, 3: 3, 4: 2, 5: 2, 6: 2}
 
     # Min frames before a track is considered "confirmed" (status=1, output).
     # bicycle/motorcycle → 5: CenterPoint has high FP rate, need stricter gating.
-    # trailer → 2: was 1, single-frame confirms caused excess FP.
     # Recommended single-stage preset (USE_BYTETRACK=False):
     # CONFIRMED_TRACK_LENGTH: {0: 1, 1: 1, 2: 4, 3: 4, 4: 1, 5: 1, 6: 1}
-    CONFIRMED_TRACK_LENGTH: {0: 1, 1: 1, 2: 5, 3: 5, 4: 1, 5: 1, 6: 1}
+    CONFIRMED_TRACK_LENGTH: {0: 1, 1: 1, 2: 3, 3: 3, 4: 1, 5: 1, 6: 1}
 
     # Max frames out-of-view before death (0 = disabled)
     DELET_OUT_VIEW_LENGTH: {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0}
@@ -158,12 +160,20 @@ THRESHOLD:
     # Mamba-DEKF's KF smooths lower-quality initial dets → set to 0.5 (vs MCTrack 0.7).
     # Recommended single-stage preset (USE_BYTETRACK=False):
     # CONFIRMED_DET_SCORE: {0: 0.40, 1: 0.44, 2: 0.42, 3: 0.45, 4: 0.50, 5: 0.45, 6: 0.40}
-    CONFIRMED_DET_SCORE: {0: 0.45, 1: 0.45, 2: 0.50, 3: 0.52, 4: 0.5, 5: 0.5, 6: 0.5}
+    # Baseline used by docs/result0608.log (AMOTA=0.610).
+    CONFIRMED_DET_SCORE: {0: 0.44, 1: 0.56, 2: 0.41, 3: 0.43, 4: 0.46, 5: 0.45, 6: 0.41}
 
     # Detection score threshold to CREATE a new track (Strict Birth).
     # Higher for noisy categories (bicycle, motorcycle) to suppress false tracks.
     # CenterPoint produces many false bicycle detections at score 0.4-0.55.
+    # Unused in single-stage birth logic; kept only for reference.
     BIRTH_SCORE: {0: 0.40, 1: 0.50, 2: 0.45, 3: 0.50, 4: 0.35, 5: 0.45, 6: 0.4}
+
+    # Mixed single-stage birth gate:
+    # classes listed here require score >= threshold to birth when unmatched;
+    # classes omitted here keep legacy single-stage "always birth" behavior.
+    # This is intentionally applied to high-FP large-object classes first,
+    # while keeping bicycle / motorcycle / pedestrian wide-open for recall.
     SINGLE_STAGE_BIRTH_SCORE: {}
 
     # Detection score threshold used when aggregating a trajectory's final output score.
@@ -171,14 +181,38 @@ THRESHOLD:
     # Recommended single-stage preset (USE_BYTETRACK=False):
     # OUTPUT_SCORE: {0: 0.42, 1: 0.46, 2: 0.50, 3: 0.48, 4: 0.54, 5: 0.50, 6: 0.44}
     # OUTPUT_SCORE: {0: 0.40, 1: 0.40, 2: 0.35, 3: 0.35, 4: 0.40, 5: 0.40, 6: 0.40}
-    OUTPUT_SCORE: {0: 0.3, 1: 0.36, 2: 0.45, 3: 0.36, 4: 0.35, 5: 0.4, 6: 0.3}
+    # Baseline used by docs/result0608.log (AMOTA=0.610).
+    OUTPUT_SCORE: {0: 0.48, 1: 0.58, 2: 0.45, 3: 0.46, 4: 0.48, 5: 0.47, 6: 0.45}
     # Sentinel value for filter-predicted bboxes (excluded from output).
     IS_FILTER_PREDICT_BOX: {0: -1, 1: -1, 2: -1, 3: -1, 4: -1, 5: -1, 6: -1}
 
     # Matching cost threshold for track confirmation promotion.
     # Recommended single-stage preset (USE_BYTETRACK=False):
     # CONFIRMED_MATCHED_SCORE: {0: 0.35, 1: 0.35, 2: 0.38, 3: 0.38, 4: 0.32, 5: 0.35, 6: 0.33}
-    CONFIRMED_MATCHED_SCORE:  {0: 0.3, 1: 0.3, 2: 0.3, 3: 0.3, 4: 0.3, 5: 0.3, 6: 0.3} 
+    CONFIRMED_MATCHED_SCORE: {0: 0.35, 1: 0.35, 2: 0.38, 3: 0.38, 4: 0.32, 5: 0.35, 6: 0.33}
+
+TRACK_SCORE:
+  ENABLED: false  # true to enable quality_v1 track scoring; false to use raw det-score aggregation (legacy)
+  MODE: quality_v1
+  # Track-quality score replaces raw detection-score aggregation using:
+  # 1. top-k / recent real detection confidence
+  # 2. association quality from matched_score
+  # 3. continuity penalties from fake/coast and low-score rescue frames
+  # 4. trajectory maturity
+  REAL_SCORE_TOPK: 5
+  RECENT_WINDOW: 5
+  MIN_SCORE: 0.01
+  MAX_SCORE: 0.995
+  DEFAULT_CURRENT_FAKE_SCALE: 0.78
+  # [car, pedestrian, bicycle, motorcycle, bus, trailer, truck]
+  MATURE_LEN: {0: 5, 1: 4, 2: 2, 3: 2, 4: 5, 5: 3, 6: 4}
+  CURRENT_FAKE_SCALE: {0: 0.80, 1: 0.80, 2: 0.90, 3: 0.90, 4: 0.80, 5: 0.78, 6: 0.78}
+  # More association/continuity weight for weak classes seen in docs/last_result.log:
+  # bicycle / motorcycle / trailer / truck.
+  W_DET:    {0: 0.38, 1: 0.36, 2: 0.46, 3: 0.46, 4: 0.36, 5: 0.42, 6: 0.40}
+  W_ASSOC:  {0: 0.20, 1: 0.16, 2: 0.08, 3: 0.08, 4: 0.16, 5: 0.14, 6: 0.16}
+  W_CONT:   {0: 0.18, 1: 0.18, 2: 0.08, 3: 0.08, 4: 0.16, 5: 0.12, 6: 0.14}
+  W_MATURE: {0: 0.24, 1: 0.30, 2: 0.4181, 3: 0.4181, 4: 0.32, 5: 0.3458, 6: 0.3268}
 
 
 # DEKF baseline physical priors for Pure_DEKF and IMM Fusion Mode

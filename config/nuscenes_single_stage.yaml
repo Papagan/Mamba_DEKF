@@ -60,7 +60,7 @@ MATCHING:
     #   BackPredict — use last fused bbox     (best when motion is erratic)
     #   Fusion      — weighted blend via COST_STATE_PREDICT_RATION
     # Baseline matching state used by docs/result0608.log (AMOTA=0.610).
-    COST_STATE: {0: "Predict", 1: "Predict", 2: "Predict", 3: "Predict", 4: "Predict", 5: "Predict", 6: "Predict"}
+    COST_STATE: {0: "Predict", 1: "Predict", 2: "BackPredict", 3: "Predict", 4: "Predict", 5: "BackPredict", 6: "Predict"}
     # iou_3d, giou_3d, dist_3d, ro_gdiou_3d
     COST_MODE: {0: "RO_GDIOU_3D", 1: "RO_GDIOU_3D", 2: "RO_GDIOU_3D", 3: "RO_GDIOU_3D", 4: "RO_GDIOU_3D", 5: "RO_GDIOU_3D", 6: "RO_GDIOU_3D"} 
      # Hungarian, Greedy
@@ -83,10 +83,13 @@ THRESHOLD:
     # Tuned from docs/result.log sweet spots:
     # bicycle/trailer slightly higher to suppress low-score FPs;
     # bus/pedestrian/motorcycle raised to align with their stable threshold bands.
-    ONLINE: {0: 0.18, 1: 0.22, 2: 0.14, 3: 0.16, 4: 0.26, 5: 0.20, 6: 0.16}
-    OFFLINE: {0: 0.18, 1: 0.22, 2: 0.14, 3: 0.16, 4: 0.26, 5: 0.20, 6: 0.16}
-  COST_STATE_PREDICT_RATION: {0: 1.0, 1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0, 5: 1.0, 6: 1.0}  # 3=motorcycle: 50/50 blend
-  NMS_THRE: {0: 0.08, 1: 0.08, 2: 0.08, 3: 0.08, 4: 0.08, 5: 0.12, 6: 0.06}
+    # Fused from best_baseline + new_try:
+    # keep car/pedestrian/bicycle/bus on the stable baseline,
+    # but relax motorcycle/trailer/truck slightly to recover recall.
+    ONLINE: {0: 0.18, 1: 0.30, 2: 0.20, 3: 0.15, 4: 0.22, 5: 0.17, 6: 0.12}
+    OFFLINE: {0: 0.18, 1: 0.30, 2: 0.20, 3: 0.15, 4: 0.22, 5: 0.17, 6: 0.12}
+  COST_STATE_PREDICT_RATION: {0: 1.0, 1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0, 5: 1.0, 6: 1.0}  # only used when COST_STATE=Fusion
+  NMS_THRE: {0: 0.08, 1: 0.08, 2: 0.08, 3: 0.06, 4: 0.08, 5: 0.12, 6: 0.05}
   # Export/eval filter on final tracking_score.
   # Only results at or above these per-class floors are written to results.json.
   EVAL_MIN_TRACKING_SCORE: {0: 0.00, 1: 0.00, 2: 0.00, 3: 0.00, 4: 0.00, 5: 0.00, 6: 0.00}
@@ -109,7 +112,10 @@ THRESHOLD:
     #    without improving pairwise discrimination.
     # Recommended single-stage preset (USE_BYTETRACK=False):
     # COST_THRE: {0: 1.20, 1: 1.85, 2: 1.70, 3: 1.65, 4: 1.30, 5: 1.50, 6: 1.25}
-    COST_THRE: {0: 1.35, 1: 1.85, 2: 1.70, 3: 1.75, 4: 1.30, 5: 1.65, 6: 1.35}
+    # Keep the stable baseline for car/pedestrian/bicycle/bus.
+    # For motorcycle/trailer/truck, move part-way toward new_try to gain recall
+    # without importing its full global aggressiveness.
+    COST_THRE: {0: 1.35, 1: 1.85, 2: 1.66, 3: 1.60, 4: 1.30, 5: 1.40, 6: 1.25}
     # COST_THRE:      {0: 1.45, 1: 2.00, 2: 1.85, 3: 1.85, 4: 1.45, 5: 1.65, 6: 1.45}
     COST_MODE: "geometric"   # "geometric" (early training) | "full" (converged)
     # COST_MODE: "full"
@@ -140,18 +146,18 @@ THRESHOLD:
 
     # Max consecutive coast (predict-only) frames before death.
     # bicycle/motorcycle cut to 8 (4s) — long coast was generating ghost FPs.
-    PREDICT_BBOX_LENGTH: {0: 17, 1: 7, 2: 8, 3: 8, 4: 15, 5: 7, 6: 20}
+    PREDICT_BBOX_LENGTH: {0: 17, 1: 7, 2: 6, 3: 8, 4: 15, 5: 5, 6: 20}
 
     # Max unmatched frames before status → obscured (not output, but still matchable).
     # Recommended single-stage preset (USE_BYTETRACK=False):
     # MAX_UNMATCH_LENGTH: {0: 2, 1: 1, 2: 2, 3: 2, 4: 2, 5: 1, 6: 1}
-    MAX_UNMATCH_LENGTH: {0: 3, 1: 1, 2: 3, 3: 4, 4: 2, 5: 3, 6: 3}
+    MAX_UNMATCH_LENGTH: {0: 3, 1: 1, 2: 2, 3: 1, 4: 2, 5: 1, 6: 2}
 
     # Min frames before a track is considered "confirmed" (status=1, output).
     # bicycle/motorcycle → 5: CenterPoint has high FP rate, need stricter gating.
     # Recommended single-stage preset (USE_BYTETRACK=False):
     # CONFIRMED_TRACK_LENGTH: {0: 1, 1: 1, 2: 4, 3: 4, 4: 1, 5: 1, 6: 1}
-    CONFIRMED_TRACK_LENGTH: {0: 1, 1: 1, 2: 2, 3: 2, 4: 1, 5: 1, 6: 1}
+    CONFIRMED_TRACK_LENGTH: {0: 1, 1: 1, 2: 3, 3: 3, 4: 1, 5: 1, 6: 1}
 
     # Max frames out-of-view before death (0 = disabled)
     DELET_OUT_VIEW_LENGTH: {0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0}
@@ -161,7 +167,7 @@ THRESHOLD:
     # Recommended single-stage preset (USE_BYTETRACK=False):
     # CONFIRMED_DET_SCORE: {0: 0.40, 1: 0.44, 2: 0.42, 3: 0.45, 4: 0.50, 5: 0.45, 6: 0.40}
     # Baseline used by docs/result0608.log (AMOTA=0.610).
-    CONFIRMED_DET_SCORE: {0: 0.42, 1: 0.48, 2: 0.32, 3: 0.35, 4: 0.50, 5: 0.38, 6: 0.37}
+    CONFIRMED_DET_SCORE: {0: 0.44, 1: 0.56, 2: 0.41, 3: 0.43, 4: 0.46, 5: 0.45, 6: 0.41}
     # Next trial after enabling TRACK_SCORE.QUALITY_V1 (recommended from docs/last_result.log):
     # lower weak-class confirm gates slightly because track-level quality ranking
     # will now suppress dirty tracks downstream.
@@ -178,7 +184,7 @@ THRESHOLD:
     # classes omitted here keep legacy single-stage "always birth" behavior.
     # This is intentionally applied to high-FP large-object classes first,
     # while keeping bicycle / motorcycle / pedestrian wide-open for recall.
-    SINGLE_STAGE_BIRTH_SCORE: {0: 0.28, 4: 0.34}
+    SINGLE_STAGE_BIRTH_SCORE: {}
 
     # Detection score threshold used when aggregating a trajectory's final output score.
     # Only real detections above this threshold contribute to the quality-gated score.
@@ -186,7 +192,7 @@ THRESHOLD:
     # OUTPUT_SCORE: {0: 0.42, 1: 0.46, 2: 0.50, 3: 0.48, 4: 0.54, 5: 0.50, 6: 0.44}
     # OUTPUT_SCORE: {0: 0.40, 1: 0.40, 2: 0.35, 3: 0.35, 4: 0.40, 5: 0.40, 6: 0.40}
     # Baseline used by docs/result0608.log (AMOTA=0.610).
-    OUTPUT_SCORE: {0: 0.44, 1: 0.50, 2: 0.30, 3: 0.32, 4: 0.52, 5: 0.38, 6: 0.37}
+    OUTPUT_SCORE: {0: 0.48, 1: 0.58, 2: 0.45, 3: 0.46, 4: 0.48, 5: 0.47, 6: 0.45}
     # Next trial after enabling TRACK_SCORE.QUALITY_V1 (recommended from docs/last_result.log):
     # weak classes (bicycle/motorcycle/trailer/truck) can consume slightly more
     # real detections in the score model without relying on raw-det-score ranking.
@@ -200,7 +206,7 @@ THRESHOLD:
     CONFIRMED_MATCHED_SCORE: {0: 0.35, 1: 0.35, 2: 0.38, 3: 0.38, 4: 0.32, 5: 0.35, 6: 0.33}
 
 TRACK_SCORE:
-  ENABLED: true
+  ENABLED: false
   MODE: quality_v1
   # Track-quality score replaces raw detection-score aggregation using:
   # 1. top-k / recent real detection confidence
