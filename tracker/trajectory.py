@@ -23,6 +23,7 @@ from .compat_utils import (
     select_filtered_tracking_score,
     sync_bbox_fields_from_state,
     score_for_unmatched_fake_bbox,
+    use_mctrack_exact_unmatch_update,
 )
 
 np.set_printoptions(formatter={"float": "{:0.4f}".format})
@@ -220,7 +221,12 @@ class Trajectory:
         fake_bbox.frame_id = frame_id
 
         if self._tracker_compat_mode == "mctrack":
-            pred_state = getattr(fake_bbox, "global_xyz_lwh_yaw_predict", None)
+            exact_fake_state = None
+            if use_mctrack_exact_unmatch_update(self.cfg, self.category_num):
+                exact_fake_state = getattr(fake_bbox, "global_xyz_lwh_yaw_fake_update", None)
+            pred_state = exact_fake_state if exact_fake_state is not None else getattr(
+                fake_bbox, "global_xyz_lwh_yaw_predict", None
+            )
             if pred_state is not None:
                 pred_state = list(pred_state)
                 sync_bbox_fields_from_state(
@@ -229,7 +235,10 @@ class Trajectory:
                     update_fusion=True,
                     update_predict=True,
                 )
-                if hasattr(fake_bbox, "global_velocity_fusion"):
+                if exact_fake_state is not None and hasattr(fake_bbox, "global_velocity_fake_update"):
+                    fake_bbox.global_velocity = list(fake_bbox.global_velocity_fake_update)
+                    fake_bbox.global_velocity_fusion = list(fake_bbox.global_velocity_fake_update)
+                elif hasattr(fake_bbox, "global_velocity_fusion"):
                     fake_bbox.global_velocity = list(fake_bbox.global_velocity_fusion)
             else:
                 sync_bbox_fields_from_state(

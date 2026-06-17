@@ -33,6 +33,7 @@ from tracker.compat_utils import (
     normalize_tracker_compat_mode,
     select_output_tracking_score,
     sync_bbox_fields_from_state,
+    use_mctrack_exact_unmatch_update,
     use_mctrack_single_stage_flow,
 )
 from tracker.trajectory import Trajectory
@@ -58,6 +59,43 @@ _DEFAULT_MAMBA_CFG = {
     "MIN_KAPPA": 0.1,        # kappa floor (prevents R_ori→∞)
     "NUM_CLASSES": 10,        # number of object categories for size embeddings
 }
+
+
+def run_mctrack_exact_unmatch_kf_step(
+    *,
+    pos_x: torch.Tensor,
+    pos_P: torch.Tensor,
+    siz_x: torch.Tensor,
+    siz_P: torch.Tensor,
+    ori_x: torch.Tensor,
+    ori_P: torch.Tensor,
+    R_pos: torch.Tensor,
+    device: torch.device,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Apply the MCTrack-style fake update on already-predicted KF states.
+
+    In original MCTrack, unmatch_update() calls predict() to get a predicted
+    observation, then calls update(predicted_observation). Because the original
+    KF object still holds the last matched state internally, that update becomes
+    a zero-innovation fake update on the one-step predicted state.
+
+    In this project, the outer tracker has already advanced kf_states to the
+    predicted state before association. Therefore the numerically equivalent
+    operation is:
+      - keep size/orientation at the predicted state
+      - run a zero-innovation update on the predicted position state only
+    """
+    kf = MambaDecoupledEKF(batch_size=pos_x.shape[0], device=device)
+    kf.kf.B = pos_x.shape[0]
+    kf.kf.pos_filter.B = pos_x.shape[0]
+    kf.kf.siz_filter.B = pos_x.shape[0]
+    kf.kf.ori_filter.B = pos_x.shape[0]
+    kf.kf.init_states(pos_x, pos_P, siz_x, siz_P, ori_x, ori_P)
+
+    z_pos = torch.cat([pos_x[:, 0:3, :], pos_x[:, 3:5, :]], dim=1)
+    upd_pos_x, upd_pos_P = kf.kf.pos_filter.update(z_pos, R_pos)
+    return upd_pos_x, upd_pos_P, siz_x, siz_P, ori_x, ori_P
 
 
 class Base3DTracker:
@@ -533,6 +571,65 @@ class Base3DTracker:
                 ox[0],
             ])
 
+    def _apply_mctrack_exact_unmatch_update(
+        self,
+        track_ids: List[int],
+        mamba_out: Optional[Dict],
+        traj_index_map: Dict[int, int],
+    ) -> None:
+        if not track_ids or mamba_out is None:
+            return
+
+        eligible_ids = [
+            tid for tid in track_ids
+            if tid in self.all_trajs
+            and use_mctrack_exact_unmatch_update(self.cfg, self.all_trajs[tid].category_num)
+            and tid in traj_index_map
+        ]
+        if not eligible_ids:
+            return
+
+        pos_x, pos_P, siz_x, siz_P, ori_x, ori_P = self._batch_kf_states(eligible_ids)
+        batch_indices = [traj_index_map[tid] for tid in eligible_ids]
+        R_pos = mamba_out["R_pos"][batch_indices]
+
+        upd_pos_x, upd_pos_P, upd_siz_x, upd_siz_P, upd_ori_x, upd_ori_P = run_mctrack_exact_unmatch_kf_step(
+            pos_x=pos_x,
+            pos_P=pos_P,
+            siz_x=siz_x,
+            siz_P=siz_P,
+            ori_x=ori_x,
+            ori_P=ori_P,
+            R_pos=R_pos,
+            device=self.device,
+        )
+
+        self._unbatch_kf_states(
+            eligible_ids,
+            upd_pos_x, upd_pos_P,
+            upd_siz_x, upd_siz_P,
+            upd_ori_x, upd_ori_P,
+        )
+
+        for i, tid in enumerate(eligible_ids):
+            traj = self.all_trajs[tid]
+            bbox = traj.bboxes[-1]
+            pred_state = list(getattr(bbox, "global_xyz_lwh_yaw_predict", bbox.global_xyz_lwh_yaw))
+            fake_state = [
+                float(upd_pos_x[i, 0, 0]),
+                float(upd_pos_x[i, 1, 0]),
+                float(pred_state[2]),
+                float(pred_state[3]),
+                float(pred_state[4]),
+                float(pred_state[5]),
+                float(pred_state[6]),
+            ]
+            bbox.global_xyz_lwh_yaw_fake_update = fake_state
+            bbox.global_velocity_fake_update = [
+                float(upd_pos_x[i, 3, 0]),
+                float(upd_pos_x[i, 4, 0]),
+            ]
+
     # ==================================================================
     # Helpers
     # ==================================================================
@@ -885,6 +982,11 @@ class Base3DTracker:
             if i not in matched_traj_indices:
                 unmatched_trajs[track_id] = self.all_trajs[track_id]
                 if not self.cfg.get("IS_RV_MATCHING", False):
+                    self._apply_mctrack_exact_unmatch_update(
+                        [track_id],
+                        mamba_out,
+                        traj_index_map,
+                    )
                     self.all_trajs[track_id].unmatch_update(
                         frame_info.frame_id, timestamp=frame_info.timestamp
                     )
