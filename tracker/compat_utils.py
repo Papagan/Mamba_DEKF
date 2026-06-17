@@ -220,6 +220,16 @@ def use_mctrack_exact_unmatch_update(cfg, category_num: int) -> bool:
     return int(category_num) in {int(v) for v in classes}
 
 
+def use_mctrack_exact_matched_update(cfg, category_num: int) -> bool:
+    compat_mode = normalize_tracker_compat_mode((cfg or {}).get("TRACKER_COMPAT_MODE", "default"))
+    if compat_mode != "mctrack":
+        return False
+    if not bool((cfg or {}).get("MCTRACK_EXACT_MATCHED_UPDATE", False)):
+        return False
+    classes = (cfg or {}).get("MCTRACK_EXACT_MATCHED_UPDATE_CLASSES", [])
+    return int(category_num) in {int(v) for v in classes}
+
+
 def extract_bbox_history_fields(bbox, compat_mode):
     compat_mode = normalize_tracker_compat_mode(compat_mode)
     if compat_mode == "mctrack":

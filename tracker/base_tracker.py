@@ -33,6 +33,7 @@ from tracker.compat_utils import (
     normalize_tracker_compat_mode,
     select_output_tracking_score,
     sync_bbox_fields_from_state,
+    use_mctrack_exact_matched_update,
     use_mctrack_exact_unmatch_update,
     use_mctrack_single_stage_flow,
 )
@@ -96,6 +97,66 @@ def run_mctrack_exact_unmatch_kf_step(
     z_pos = torch.cat([pos_x[:, 0:3, :], pos_x[:, 3:5, :]], dim=1)
     upd_pos_x, upd_pos_P = kf.kf.pos_filter.update(z_pos, R_pos)
     return upd_pos_x, upd_pos_P, siz_x, siz_P, ori_x, ori_P
+
+
+def run_mctrack_exact_matched_kf_step(
+    *,
+    pos_x: torch.Tensor,
+    pos_P: torch.Tensor,
+    siz_x: torch.Tensor,
+    siz_P: torch.Tensor,
+    ori_x: torch.Tensor,
+    ori_P: torch.Tensor,
+    z_pos: torch.Tensor,
+    z_siz: torch.Tensor,
+    z_ori: torch.Tensor,
+    R_pos: torch.Tensor,
+    R_siz: torch.Tensor,
+    R_ori: torch.Tensor,
+    device: torch.device,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Apply a stricter MCTrack-style matched update on already-predicted states.
+
+    Original MCTrack pose/size filters do not consume the same state/measurement
+    dimensions as the current decoupled KF:
+      - pose filter does not directly observe z
+      - size filter does not directly observe h
+
+    To approximate that behavior while keeping the current filter implementation,
+    we run the standard batched update and then restore the dimensions that are
+    not directly constrained in MCTrack to their predicted-state values.
+    """
+    kf = MambaDecoupledEKF(batch_size=pos_x.shape[0], device=device)
+    kf.kf.B = pos_x.shape[0]
+    kf.kf.pos_filter.B = pos_x.shape[0]
+    kf.kf.siz_filter.B = pos_x.shape[0]
+    kf.kf.ori_filter.B = pos_x.shape[0]
+    kf.kf.init_states(pos_x, pos_P, siz_x, siz_P, ori_x, ori_P)
+
+    upd_pos_x, upd_pos_P, upd_siz_x, upd_siz_P, upd_ori_x, upd_ori_P = kf.kf.update(
+        z_pos, z_siz, z_ori,
+        R_pos=R_pos, R_siz=R_siz, R_ori=R_ori,
+    )
+
+    upd_pos_x = upd_pos_x.clone()
+    upd_pos_P = upd_pos_P.clone()
+    upd_siz_x = upd_siz_x.clone()
+    upd_siz_P = upd_siz_P.clone()
+
+    # MCTrack pose filter is 2D/velocity-centric. Restore z and vz to the
+    # predicted state, and keep their covariance block from the predicted P.
+    for idx in (2, 5):
+        upd_pos_x[:, idx, :] = pos_x[:, idx, :]
+        upd_pos_P[:, idx, :] = pos_P[:, idx, :]
+        upd_pos_P[:, :, idx] = pos_P[:, :, idx]
+
+    # MCTrack size filter only consumes l/w. Restore h to the predicted state.
+    upd_siz_x[:, 2, :] = siz_x[:, 2, :]
+    upd_siz_P[:, 2, :] = siz_P[:, 2, :]
+    upd_siz_P[:, :, 2] = siz_P[:, :, 2]
+
+    return upd_pos_x, upd_pos_P, upd_siz_x, upd_siz_P, upd_ori_x, upd_ori_P
 
 
 class Base3DTracker:
@@ -742,52 +803,82 @@ class Base3DTracker:
         if len(matched_track_ids) == 0:
             return
 
-        B_m = len(matched_track_ids)
         dev = self.device
 
-        # ---- build observation tensors from matched detections ----
-        z_pos_list, z_siz_list, z_ori_list = [], [], []
-        for bbox in matched_bboxes:
-            vel = bbox.global_velocity  # [vx, vy] from detection
-            z_pos_list.append([
-                bbox.global_xyz[0], bbox.global_xyz[1], bbox.global_xyz[2],
-                vel[0], vel[1],
-            ])
-            z_siz_list.append(bbox.lwh)
-            z_ori_list.append([bbox.global_yaw])
+        exact_pairs = []
+        standard_pairs = []
+        for tid, bbox in zip(matched_track_ids, matched_bboxes):
+            traj = self.all_trajs.get(tid)
+            if traj is not None and use_mctrack_exact_matched_update(self.cfg, traj.category_num):
+                exact_pairs.append((tid, bbox))
+            else:
+                standard_pairs.append((tid, bbox))
 
-        z_pos = torch.tensor(z_pos_list, device=dev, dtype=torch.float32).unsqueeze(-1)  # [B_m, 5, 1]
-        z_siz = torch.tensor(z_siz_list, device=dev, dtype=torch.float32).unsqueeze(-1)  # [B_m, 3, 1]
-        z_ori = torch.tensor(z_ori_list, device=dev, dtype=torch.float32).unsqueeze(-1)  # [B_m, 1, 1]
+        def _run_subset(pairs, *, exact_mode: bool) -> None:
+            if not pairs:
+                return
 
-        # ---- extract R matrices for matched subset from mamba_out ----
-        batch_indices = [traj_index_map[tid] for tid in matched_track_ids]
-        R_pos = mamba_out["R_pos"][batch_indices]  # [B_m, 3, 3]
-        R_siz = mamba_out["R_siz"][batch_indices]  # [B_m, 3, 3]
-        R_ori = mamba_out["R_ori"][batch_indices]  # [B_m, 1, 1]
+            sub_track_ids = [tid for tid, _ in pairs]
+            sub_bboxes = [bbox for _, bbox in pairs]
+            B_m = len(sub_track_ids)
 
-        # ---- load predicted KF states for matched tracks ----
-        pos_x, pos_P, siz_x, siz_P, ori_x, ori_P = self._batch_kf_states(matched_track_ids)
+            z_pos_list, z_siz_list, z_ori_list = [], [], []
+            for bbox in sub_bboxes:
+                vel = bbox.global_velocity
+                z_pos_list.append([
+                    bbox.global_xyz[0], bbox.global_xyz[1], bbox.global_xyz[2],
+                    vel[0], vel[1],
+                ])
+                z_siz_list.append(bbox.lwh)
+                z_ori_list.append([bbox.global_yaw])
 
-        # ---- set filter batch size and states ----
-        self.mamba_ekf.kf.B = B_m
-        self.mamba_ekf.kf.pos_filter.B = B_m
-        self.mamba_ekf.kf.siz_filter.B = B_m
-        self.mamba_ekf.kf.ori_filter.B = B_m
-        self.mamba_ekf.kf.init_states(pos_x, pos_P, siz_x, siz_P, ori_x, ori_P)
+            z_pos = torch.tensor(z_pos_list, device=dev, dtype=torch.float32).unsqueeze(-1)
+            z_siz = torch.tensor(z_siz_list, device=dev, dtype=torch.float32).unsqueeze(-1)
+            z_ori = torch.tensor(z_ori_list, device=dev, dtype=torch.float32).unsqueeze(-1)
 
-        # ---- KF update ----
-        with torch.no_grad():
-            ux, uP, usx, usP, uox, uoP = self.mamba_ekf.kf.update(
-                z_pos, z_siz, z_ori,
-                R_pos=R_pos, R_siz=R_siz, R_ori=R_ori,
-            )
+            batch_indices = [traj_index_map[tid] for tid in sub_track_ids]
+            R_pos = mamba_out["R_pos"][batch_indices]
+            R_siz = mamba_out["R_siz"][batch_indices]
+            R_ori = mamba_out["R_ori"][batch_indices]
 
-        # ---- write back ----
-        self._unbatch_kf_states(matched_track_ids, ux, uP, usx, usP, uox, uoP)
+            pos_x, pos_P, siz_x, siz_P, ori_x, ori_P = self._batch_kf_states(sub_track_ids)
 
-        for i, (tid, bbox) in enumerate(zip(matched_track_ids, matched_bboxes)):
-            self._write_updated_state_to_bbox(bbox, ux[i:i+1], usx[i:i+1], uox[i:i+1])
+            if exact_mode:
+                with torch.no_grad():
+                    ux, uP, usx, usP, uox, uoP = run_mctrack_exact_matched_kf_step(
+                        pos_x=pos_x,
+                        pos_P=pos_P,
+                        siz_x=siz_x,
+                        siz_P=siz_P,
+                        ori_x=ori_x,
+                        ori_P=ori_P,
+                        z_pos=z_pos,
+                        z_siz=z_siz,
+                        z_ori=z_ori,
+                        R_pos=R_pos,
+                        R_siz=R_siz,
+                        R_ori=R_ori,
+                        device=dev,
+                    )
+            else:
+                self.mamba_ekf.kf.B = B_m
+                self.mamba_ekf.kf.pos_filter.B = B_m
+                self.mamba_ekf.kf.siz_filter.B = B_m
+                self.mamba_ekf.kf.ori_filter.B = B_m
+                self.mamba_ekf.kf.init_states(pos_x, pos_P, siz_x, siz_P, ori_x, ori_P)
+                with torch.no_grad():
+                    ux, uP, usx, usP, uox, uoP = self.mamba_ekf.kf.update(
+                        z_pos, z_siz, z_ori,
+                        R_pos=R_pos, R_siz=R_siz, R_ori=R_ori,
+                    )
+
+            self._unbatch_kf_states(sub_track_ids, ux, uP, usx, usP, uox, uoP)
+
+            for i, bbox in enumerate(sub_bboxes):
+                self._write_updated_state_to_bbox(bbox, ux[i:i+1], usx[i:i+1], uox[i:i+1])
+
+        _run_subset(standard_pairs, exact_mode=False)
+        _run_subset(exact_pairs, exact_mode=True)
 
     def _summarize_small_class_pending_reasons(self) -> Dict[str, Dict[str, int]]:
         summary: Dict[str, Dict[str, int]] = {}

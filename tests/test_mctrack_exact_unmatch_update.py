@@ -4,7 +4,10 @@ import sys
 
 sys.modules.setdefault("pyquaternion", types.SimpleNamespace(Quaternion=object))
 
-from tracker.compat_utils import use_mctrack_exact_unmatch_update
+from tracker.compat_utils import (
+    use_mctrack_exact_unmatch_update,
+    use_mctrack_exact_matched_update,
+)
 from tracker.trajectory import Trajectory
 
 
@@ -21,6 +24,19 @@ class MCTrackExactUnmatchUpdateTest(unittest.TestCase):
 
         cfg["MCTRACK_EXACT_UNMATCH_UPDATE"] = False
         self.assertFalse(use_mctrack_exact_unmatch_update(cfg, 2))
+
+    def test_exact_matched_update_only_enabled_for_configured_mctrack_classes(self):
+        cfg = {
+            "TRACKER_COMPAT_MODE": "mctrack",
+            "MCTRACK_EXACT_MATCHED_UPDATE": True,
+            "MCTRACK_EXACT_MATCHED_UPDATE_CLASSES": [5, 6],
+        }
+        self.assertTrue(use_mctrack_exact_matched_update(cfg, 5))
+        self.assertTrue(use_mctrack_exact_matched_update(cfg, 6))
+        self.assertFalse(use_mctrack_exact_matched_update(cfg, 2))
+
+        cfg["MCTRACK_EXACT_MATCHED_UPDATE"] = False
+        self.assertFalse(use_mctrack_exact_matched_update(cfg, 5))
 
     def test_unmatch_update_prefers_fake_update_state_when_enabled(self):
         class DummyBBox:
