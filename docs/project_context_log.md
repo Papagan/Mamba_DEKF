@@ -524,3 +524,10 @@
 - [docs/result.log](/home/alvin/demo/Mamba-DEKF/docs/result.log)
 - [docs/noise.log](/home/alvin/demo/Mamba-DEKF/docs/noise.log)
 - [README.md](/home/alvin/demo/Mamba-DEKF/README.md)
+
+## 2026-06-17: Frozen Exact-Hybrid Baseline
+
+- Baseline config: `config/nuscenes_single_stage_mctrack_exact_noise_hybrid.yaml`
+- Baseline aggregated AMOTA: `0.737`
+- Baseline purpose: immutable A/B reference for all route-A work
+- Constraint: any new change must be evaluated against this config and must not replace it in-place

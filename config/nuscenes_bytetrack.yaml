@@ -108,6 +108,10 @@ THRESHOLD:
     # Recommended single-stage preset (USE_BYTETRACK=False):
     # COST_THRE: {0: 1.20, 1: 1.85, 2: 1.70, 3: 1.65, 4: 1.30, 5: 1.50, 6: 1.25}
     COST_THRE: {0: 1.20, 1: 1.80, 2: 1.60, 3: 1.60, 4: 1.20, 5: 1.40, 6: 1.20}
+    # ByteTrack stage-2 rescue uses a conservative geometric matcher.
+    # Start from a small global relax ratio, then optionally override classes explicitly here.
+    STAGE2_RELAX_RATIO: 1.10
+    STAGE2_COST_THRE: {}
     # COST_THRE:      {0: 1.45, 1: 2.00, 2: 1.85, 3: 1.85, 4: 1.45, 5: 1.65, 6: 1.45}
     COST_MODE: "geometric"   # "geometric" (early training) | "full" (converged)
     # COST_MODE: "full"
@@ -167,6 +171,8 @@ THRESHOLD:
     BIRTH_SCORE: {0: 0.40, 1: 0.50, 2: 0.45, 3: 0.50, 4: 0.35, 5: 0.45, 6: 0.4}
     # Medium-score detections can still create tentative init tracks.
     TENTATIVE_BIRTH_SCORE: {0: 0.25, 1: 0.30, 2: 0.30, 3: 0.32, 4: 0.25, 5: 0.30, 6: 0.25}
+    # Safe ByteTrack repair default: stage-2 is rescue-only, so tentative detections do not birth tracks.
+    ALLOW_TENTATIVE_BIRTH: False
 
     # Detection score threshold used when aggregating a trajectory's final output score.
     # Only real detections above this threshold contribute to the quality-gated score.

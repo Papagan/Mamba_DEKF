@@ -1,4 +1,69 @@
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
+
+
+ThresholdShape = Union[Dict[int, float], Sequence[float]]
+
+
+def build_stage2_relaxed_thresholds(
+    base_thresholds: ThresholdShape,
+    relax_ratio: float = 1.0,
+    per_class_overrides: Optional[Dict[int, float]] = None,
+):
+    """
+    Build stage-2 rescue thresholds while preserving the original container shape.
+
+    Dict inputs stay dicts so per-class threshold lookups remain stable.
+    Optional overrides replace the relaxed value for specific classes.
+    """
+    per_class_overrides = per_class_overrides or {}
+
+    if isinstance(base_thresholds, dict):
+        relaxed = {
+            cls_id: float(threshold) * float(relax_ratio)
+            for cls_id, threshold in base_thresholds.items()
+        }
+        for cls_id, threshold in per_class_overrides.items():
+            if cls_id in relaxed:
+                relaxed[cls_id] = float(threshold)
+        return relaxed
+
+    relaxed = [float(threshold) * float(relax_ratio) for threshold in base_thresholds]
+    for cls_id, threshold in per_class_overrides.items():
+        if 0 <= int(cls_id) < len(relaxed):
+            relaxed[int(cls_id)] = float(threshold)
+    return relaxed
+
+
+def build_stage2_rescue_groups(
+    unmatched_traj_indices: Sequence[int],
+    trajs: Sequence[object],
+    rescue_det_indices: Sequence[int],
+    dets: Sequence[object],
+    category_map: dict,
+) -> List[Tuple[int, List[int], List[int]]]:
+    """
+    Group unmatched trajectories and stage-2 rescue detections by class.
+
+    This keeps stage-2 geometric rescue from depending on cross-class ordering
+    when the geometric matcher consumes per-class threshold/state settings.
+    """
+    traj_groups: Dict[int, List[int]] = {}
+    det_groups: Dict[int, List[int]] = {}
+
+    for traj_idx in unmatched_traj_indices:
+        cls_id = int(getattr(trajs[traj_idx], "category_num", -1))
+        traj_groups.setdefault(cls_id, []).append(int(traj_idx))
+
+    for det_idx in rescue_det_indices:
+        det = dets[det_idx]
+        cls_id = int(category_map.get(det.category, -1))
+        det_groups.setdefault(cls_id, []).append(int(det_idx))
+
+    shared_classes = sorted(set(traj_groups.keys()) & set(det_groups.keys()))
+    return [
+        (cls_id, traj_groups[cls_id], det_groups[cls_id])
+        for cls_id in shared_classes
+    ]
 
 
 def classify_single_stage_birth(
@@ -61,6 +126,7 @@ def split_bytetrack_detections(
     birth_cfg: dict,
     tentative_birth_cfg: Optional[dict] = None,
     low_score_floor: float = 0.1,
+    tentative_birth_enabled: bool = True,
 ) -> Tuple[List[int], List[int], List[int]]:
     """
     Split detections into high / tentative / low groups.
@@ -85,7 +151,10 @@ def split_bytetrack_detections(
         if bucket == "high":
             high_indices.append(i)
         elif bucket == "tentative":
-            tentative_indices.append(i)
+            if tentative_birth_enabled:
+                tentative_indices.append(i)
+            else:
+                low_indices.append(i)
         elif bucket == "low":
             low_indices.append(i)
 

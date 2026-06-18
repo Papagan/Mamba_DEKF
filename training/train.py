@@ -62,6 +62,20 @@ logger = logging.getLogger("train")
 # Training step
 # ======================================================================
 
+
+def resolve_runtime_contract_filter_mode(cfg, train_tracker_compat_mode):
+    valid_modes = {"mamba", "pure_dekf", "fusion"}
+
+    configured_mode = str((cfg or {}).get("FILTER_MODE", "")).strip().lower()
+    if configured_mode in valid_modes:
+        return configured_mode
+
+    compat_fallback = str(train_tracker_compat_mode).strip().lower()
+    if compat_fallback in valid_modes:
+        return compat_fallback
+
+    return "mamba"
+
 def training_step(
     mamba: TemporalMamba,
     batch: dict,
@@ -758,6 +772,7 @@ def main():
         "tracker_compat_mode": train_tracker_compat_mode,
         "history_source": history_source,
         "init_state_source": init_state_source,
+        "filter_mode": resolve_runtime_contract_filter_mode(cfg, train_tracker_compat_mode),
         "future_update_source": "det" if bool((cfg.get("BASE_NOISE", {}) or {}).get("DETECTION_UPDATE", {}).get("ENABLED", True)) else "gt_noisy",
         "train_source": train_source,
         "val_source": val_source,

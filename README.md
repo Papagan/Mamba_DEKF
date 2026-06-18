@@ -588,6 +588,15 @@ Recommended workflow:
 5. generate a suggested single-stage config
 6. run a new evaluation using the suggested config
 
+### Frozen Route-A Baseline
+
+Current protected baseline:
+
+- Config: `config/nuscenes_single_stage_mctrack_exact_noise_hybrid.yaml`
+- Aggregated AMOTA: `0.737`
+
+All route-A experiments should branch from this baseline and be evaluated against it rather than modifying it in place.
+
 ### 5.5.5 Full Optimization Loop
 
 If you want to automate the full tuning loop:

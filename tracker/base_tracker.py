@@ -23,6 +23,8 @@ from tracker.matching import (
     match_trajs_and_dets_uncertainty_aware,
 )
 from tracker.bytetrack_utils import (
+    build_stage2_relaxed_thresholds,
+    build_stage2_rescue_groups,
     classify_single_stage_birth,
     split_bytetrack_detections,
 )
@@ -60,6 +62,90 @@ _DEFAULT_MAMBA_CFG = {
     "MIN_KAPPA": 0.1,        # kappa floor (prevents R_ori→∞)
     "NUM_CLASSES": 10,        # number of object categories for size embeddings
 }
+
+
+def build_runtime_contract_warnings(
+    runtime_contract,
+    tracker_compat_mode,
+    filter_mode,
+    current_cost_mode,
+    current_history_source=None,
+    current_init_state_source=None,
+):
+    tracker_compat_mode = (
+        "default" if tracker_compat_mode is None else str(tracker_compat_mode).strip().lower()
+    )
+    filter_mode = "mamba" if filter_mode is None else str(filter_mode).strip().lower()
+    current_cost_mode = (
+        "unknown" if current_cost_mode is None else str(current_cost_mode).strip().lower()
+    )
+    current_history_source = (
+        None if current_history_source is None else str(current_history_source).strip().lower()
+    )
+    current_init_state_source = (
+        None if current_init_state_source is None else str(current_init_state_source).strip().lower()
+    )
+
+    expected_compat = str(
+        runtime_contract.get("tracker_compat_mode", tracker_compat_mode)
+    ).strip().lower()
+    expected_cost_mode = str(
+        runtime_contract.get("expected_bev_cost_mode", current_cost_mode)
+    ).strip().lower()
+    expected_history_source = runtime_contract.get("history_source", None)
+    if expected_history_source is not None:
+        expected_history_source = str(expected_history_source).strip().lower()
+    expected_init_state_source = runtime_contract.get("init_state_source", None)
+    if expected_init_state_source is not None:
+        expected_init_state_source = str(expected_init_state_source).strip().lower()
+    expected_filter_mode = str(
+        runtime_contract.get("filter_mode", filter_mode)
+    ).strip().lower()
+
+    warnings = []
+    if expected_compat != tracker_compat_mode:
+        warnings.append(
+            "[Base3DTracker] WARNING: checkpoint runtime_contract expects "
+            f"TRACKER_COMPAT_MODE={expected_compat}, but current config uses "
+            f"{tracker_compat_mode}. Results may degrade due to history semantics mismatch."
+        )
+    if expected_cost_mode != current_cost_mode:
+        warnings.append(
+            "[Base3DTracker] WARNING: checkpoint runtime_contract expects "
+            f"BEV COST_MODE={expected_cost_mode}, but current config uses "
+            f"{current_cost_mode}. Results may degrade due to mismatched "
+            "training/inference matching behavior."
+        )
+    if (
+        expected_history_source is not None
+        and current_history_source is not None
+        and expected_history_source != current_history_source
+    ):
+        warnings.append(
+            "[Base3DTracker] WARNING: checkpoint runtime_contract expects "
+            f"history_source={expected_history_source}, but current runtime uses "
+            f"{current_history_source}. Results may degrade due to mismatched "
+            "history feature semantics."
+        )
+    if (
+        expected_init_state_source is not None
+        and current_init_state_source is not None
+        and expected_init_state_source != current_init_state_source
+    ):
+        warnings.append(
+            "[Base3DTracker] WARNING: checkpoint runtime_contract expects "
+            f"init_state_source={expected_init_state_source}, but current runtime uses "
+            f"{current_init_state_source}. Results may degrade due to mismatched "
+            "KF initialization semantics."
+        )
+    if expected_filter_mode != filter_mode:
+        warnings.append(
+            "[Base3DTracker] WARNING: checkpoint runtime_contract expects "
+            f"FILTER_MODE={expected_filter_mode}, but current config uses "
+            f"{filter_mode}. Results may degrade due to mismatched "
+            "Mamba/KF inference behavior."
+        )
+    return warnings
 
 
 def run_mctrack_exact_unmatch_kf_step(
@@ -243,29 +329,18 @@ class Base3DTracker:
                     print(f"[Base3DTracker] WARNING: unexpected keys in checkpoint: {unexpected}")
                 print(f"[Base3DTracker] Loaded Mamba weights from {ckpt_path}")
                 if runtime_contract:
-                    expected_compat = str(
-                        runtime_contract.get("tracker_compat_mode", self.tracker_compat_mode)
-                    ).strip().lower()
                     current_cost_mode = str(
                         self.cfg.get("THRESHOLD", {}).get("BEV", {}).get("COST_MODE", "unknown")
                     ).strip().lower()
-                    expected_cost_mode = str(
-                        runtime_contract.get("expected_bev_cost_mode", current_cost_mode)
-                    ).strip().lower()
-                    if expected_compat != self.tracker_compat_mode:
-                        print(
-                            "[Base3DTracker] WARNING: checkpoint runtime_contract expects "
-                            f"TRACKER_COMPAT_MODE={expected_compat}, but current config uses "
-                            f"{self.tracker_compat_mode}. Results may degrade due to history "
-                            "semantics mismatch."
-                        )
-                    if expected_cost_mode != current_cost_mode:
-                        print(
-                            "[Base3DTracker] WARNING: checkpoint runtime_contract expects "
-                            f"BEV COST_MODE={expected_cost_mode}, but current config uses "
-                            f"{current_cost_mode}. Results may degrade due to mismatched "
-                            "training/inference matching behavior."
-                        )
+                    for warning in build_runtime_contract_warnings(
+                        runtime_contract=runtime_contract,
+                        tracker_compat_mode=self.tracker_compat_mode,
+                        filter_mode=self.filter_mode,
+                        current_cost_mode=current_cost_mode,
+                        current_history_source=self.cfg.get("HISTORY_SOURCE", None),
+                        current_init_state_source=self.cfg.get("INIT_STATE_SOURCE", None),
+                    ):
+                        print(warning)
             else:
                 print(f"[Base3DTracker] WARNING: CHECKPOINT_PATH={ckpt_path} not found. "
                       f"Running with RANDOM Mamba weights — results will be poor.")
@@ -1340,6 +1415,9 @@ class Base3DTracker:
             tentative_birth_cfg = self.cfg["THRESHOLD"]["TRAJECTORY_THRE"].get(
                 "TENTATIVE_BIRTH_SCORE", {}
             )
+            tentative_birth_enabled = self.cfg["THRESHOLD"]["TRAJECTORY_THRE"].get(
+                "ALLOW_TENTATIVE_BIRTH", False
+            )
             (
                 high_det_indices,
                 tentative_det_indices,
@@ -1350,6 +1428,7 @@ class Base3DTracker:
                 birth_cfg=birth_cfg,
                 tentative_birth_cfg=tentative_birth_cfg,
                 low_score_floor=0.1,
+                tentative_birth_enabled=tentative_birth_enabled,
             )
             high_dets = [frame_info.bboxes[i] for i in high_det_indices]
             tentative_dets = [frame_info.bboxes[i] for i in tentative_det_indices]
@@ -1414,40 +1493,56 @@ class Base3DTracker:
             ]
 
             if len(unmatched_traj_full_indices) > 0 and len(rescue_dets) > 0:
-                unmatched_trajs = [trajs[i] for i in unmatched_traj_full_indices]
-                um_trk_emb = trk_embeddings[unmatched_traj_full_indices] \
-                    if trk_embeddings is not None else None
-                um_trk_pos_P = [trk_pos_P[i] for i in unmatched_traj_full_indices] \
-                    if trk_pos_P is not None else None
-                um_trk_ori_P = [trk_ori_P[i] for i in unmatched_traj_full_indices] \
-                    if trk_ori_P is not None else None
-                um_cal_flags = [cal_flags[i] for i in unmatched_traj_full_indices]
-                det_emb_low = det_embeddings_all[rescue_det_indices] \
-                    if det_embeddings_all is not None else None
-
                 cfg_relaxed = copy.deepcopy(self.cfg)
                 orig_thre = cfg_relaxed["THRESHOLD"]["BEV"]["COST_THRE"]
-                cfg_relaxed["THRESHOLD"]["BEV"]["COST_THRE"] = [
-                    v * 2.0 for v in orig_thre.values()
-                ]
-
-                match_res_2, costs_2 = match_trajs_and_dets_uncertainty_aware(
-                    unmatched_trajs, rescue_dets, cfg_relaxed,
-                    trk_embeddings=um_trk_emb,
-                    det_embeddings=det_emb_low,
-                    trk_pos_P=um_trk_pos_P,
-                    trk_ori_P=um_trk_ori_P,
-                    cal_flag=um_cal_flags,
+                bev_cfg = cfg_relaxed["THRESHOLD"]["BEV"]
+                cfg_relaxed["THRESHOLD"]["BEV"]["COST_THRE"] = build_stage2_relaxed_thresholds(
+                    orig_thre,
+                    relax_ratio=float(bev_cfg.get("STAGE2_RELAX_RATIO", 1.0)),
+                    per_class_overrides=bev_cfg.get("STAGE2_COST_THRE", {}),
+                )
+                cfg_relaxed["THRESHOLD"]["BEV"]["COST_MODE"] = "geometric"
+                stage2_groups = build_stage2_rescue_groups(
+                    unmatched_traj_indices=unmatched_traj_full_indices,
+                    trajs=trajs,
+                    rescue_det_indices=rescue_det_indices,
+                    dets=frame_info.bboxes,
+                    category_map=self.cfg["CATEGORY_MAP_TO_NUMBER"],
+                )
+                stage2_rows = []
+                stage2_costs = []
+                for _, traj_group, det_group in stage2_groups:
+                    group_trajs = [trajs[i] for i in traj_group]
+                    group_dets = [frame_info.bboxes[i] for i in det_group]
+                    group_match_res, group_costs = match_trajs_and_dets(
+                        group_trajs,
+                        group_dets,
+                        cfg_relaxed,
+                    )
+                    for match_idx, row in enumerate(group_match_res if len(group_match_res) > 0 else []):
+                        stage2_rows.append(
+                            [traj_group[int(row[0])], det_group[int(row[1])]]
+                        )
+                        stage2_costs.append(
+                            float(group_costs[match_idx]) if match_idx < len(group_costs) else float("inf")
+                        )
+                match_res_2 = (
+                    np.asarray(stage2_rows, dtype=int)
+                    if stage2_rows
+                    else np.empty((0, 2), dtype=int)
+                )
+                costs_2 = (
+                    np.asarray(stage2_costs, dtype=float)
+                    if stage2_costs
+                    else np.empty((0,), dtype=float)
                 )
             else:
                 match_res_2 = np.empty((0, 2), dtype=int)
                 costs_2 = np.empty((0,), dtype=float)
 
             for match_idx, row in enumerate(match_res_2 if len(match_res_2) > 0 else []):
-                um_sub_idx = int(row[0])
-                low_sub_idx = int(row[1])
-                traj_full_idx = unmatched_traj_full_indices[um_sub_idx]
-                det_global_idx = rescue_det_indices[low_sub_idx]
+                traj_full_idx = int(row[0])
+                det_global_idx = int(row[1])
                 track_id = trajs[traj_full_idx].track_id
                 det_bbox = frame_info.bboxes[det_global_idx]
                 # Mark Stage-2 rescue matches so they help continuity
@@ -1550,34 +1645,33 @@ class Base3DTracker:
                             f"[TRK-SMALL] frame={frame_info.frame_id} cls={det_bbox.category} "
                             f"event=birth tid={self.track_id_counter - 1} det_score={det_bbox.det_score:.4f}"
                         )
-            # ---- Tentative Birth: unmatched mid-score dets can start init tracks ----
-            matched_tentative_sub_set = {
-                rescue_det_indices.index(det_idx)
-                for det_idx in matched_det_global_set
-                if det_idx in tentative_det_indices and det_idx in rescue_det_indices
-            }
-            for sub_idx in range(len(tentative_dets)):
-                if sub_idx not in matched_tentative_sub_set:
-                    det_bbox = tentative_dets[sub_idx]
-                    new_traj = Trajectory(
-                        track_id=self.track_id_counter,
-                        init_bbox=det_bbox,
-                        cfg=self.cfg,
-                    )
-                    self.all_trajs[self.track_id_counter] = new_traj
-                    self._init_kf_state(self.track_id_counter, det_bbox)
-                    self.track_id_counter += 1
-                    if _dbg_small and det_bbox.category in birth_counts:
-                        birth_counts[det_bbox.category] += 1
-                        emit_debug_line(
-                            f"[TRK-SMALL] frame={frame_info.frame_id} cls={det_bbox.category} "
-                            f"event=tentative_birth tid={self.track_id_counter - 1} det_score={det_bbox.det_score:.4f}"
+            if tentative_birth_enabled:
+                matched_tentative_sub_set = {
+                    tentative_det_indices.index(det_idx)
+                    for det_idx in matched_det_global_set
+                    if det_idx in tentative_det_indices
+                }
+                for sub_idx in range(len(tentative_dets)):
+                    if sub_idx not in matched_tentative_sub_set:
+                        det_bbox = tentative_dets[sub_idx]
+                        new_traj = Trajectory(
+                            track_id=self.track_id_counter,
+                            init_bbox=det_bbox,
+                            cfg=self.cfg,
                         )
+                        self.all_trajs[self.track_id_counter] = new_traj
+                        self._init_kf_state(self.track_id_counter, det_bbox)
+                        self.track_id_counter += 1
+                        if _dbg_small and det_bbox.category in birth_counts:
+                            birth_counts[det_bbox.category] += 1
+                            emit_debug_line(
+                                f"[TRK-SMALL] frame={frame_info.frame_id} cls={det_bbox.category} "
+                                f"event=tentative_birth tid={self.track_id_counter - 1} det_score={det_bbox.det_score:.4f}"
+                            )
             if _dbg:
-                births = (
-                    len(high_dets) - len(matched_high_sub_set)
-                    + len(tentative_dets) - len(matched_tentative_sub_set)
-                )
+                births = len(high_dets) - len(matched_high_sub_set)
+                if tentative_birth_enabled:
+                    births += len(tentative_dets) - len(matched_tentative_sub_set)
                 coasts = trajs_cnt - len(matched_traj_full_set)
                 emit_debug_line(
                     f"[TRK] frame={frame_info.frame_id} births={births} coasts={coasts} "

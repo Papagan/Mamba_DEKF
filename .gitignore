@@ -2,6 +2,7 @@
 **/results/
 evaluation/results/
 .vscode/
+.worktrees/
 output/
 outputs/
 output.txt
@@ -11,3 +12,4 @@ new_data/
 val.json
 waymo-od/
 docs/command.log
+.worktrees/
