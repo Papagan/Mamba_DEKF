@@ -18,10 +18,55 @@ _DIRTY_CLASS_TO_PROFILE = {
 
 
 def map_class_to_dirty_profile(class_id: int):
-    return _DIRTY_CLASS_TO_PROFILE.get(int(class_id))
+    try:
+        class_id = int(class_id)
+    except (TypeError, ValueError):
+        return None
+    return _DIRTY_CLASS_TO_PROFILE.get(class_id)
+
+
+def collect_dirty_track_features(traj, *, base_score: float, pos_trace_prior: float) -> dict:
+    recent_flags = list(getattr(traj, "debug_fake_history", []))
+    low_score_flags = list(getattr(traj, "debug_low_score_history", []))
+    recent_costs = list(getattr(traj, "debug_match_cost_history", []))
+    pos_trace = float(getattr(traj, "debug_pos_trace", 0.0))
+    prior = max(float(pos_trace_prior), 1e-6)
+
+    recent_fake_len = 0
+    for flag in reversed(recent_flags):
+        if not flag:
+            break
+        recent_fake_len += 1
+
+    fake_ratio = (
+        sum(1 for flag in recent_flags if flag) / len(recent_flags)
+        if recent_flags
+        else 0.0
+    )
+    low_score_ratio = (
+        sum(1 for flag in low_score_flags if flag) / len(low_score_flags)
+        if low_score_flags
+        else 0.0
+    )
+    recent_low_score_match_count = sum(1 for flag in low_score_flags if flag)
+    recent_match_cost_mean = (
+        sum(recent_costs) / len(recent_costs) if recent_costs else 0.0
+    )
+
+    return {
+        "recent_fake_len": recent_fake_len,
+        "fake_ratio": fake_ratio,
+        "recent_low_score_match_count": recent_low_score_match_count,
+        "low_score_ratio": low_score_ratio,
+        "recent_match_cost_mean": recent_match_cost_mean,
+        "current_det_score": float(base_score),
+        "pos_trace": pos_trace,
+        "pos_trace_ratio": pos_trace / prior,
+    }
 
 
 def dirty_track_suppressor(*, features: dict, profile_cfg: dict) -> dict:
+    features = features or {}
     profile_cfg = profile_cfg or {}
     soft_fake_len = int(profile_cfg.get("soft_fake_len", 99))
     hard_fake_len = int(profile_cfg.get("hard_fake_len", 999))

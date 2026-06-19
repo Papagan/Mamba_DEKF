@@ -2,6 +2,7 @@ import unittest
 
 from tracker.compat_utils import (
     allow_single_stage_birth_under_mode,
+    collect_dirty_track_features,
     compute_track_quality_score,
     dirty_track_suppressor,
     extract_bbox_history_fields,
@@ -15,6 +16,26 @@ from tracker.compat_utils import (
 )
 
 
+def make_traj_stub(
+    *,
+    fake_history=None,
+    low_score_history=None,
+    recent_match_costs=None,
+    current_score=0.0,
+    pos_trace=0.0,
+):
+    class DummyTraj:
+        pass
+
+    traj = DummyTraj()
+    traj.debug_fake_history = list(fake_history or [])
+    traj.debug_low_score_history = list(low_score_history or [])
+    traj.debug_match_cost_history = list(recent_match_costs or [])
+    traj.debug_current_score = float(current_score)
+    traj.debug_pos_trace = float(pos_trace)
+    return traj
+
+
 class MCTrackCompatUtilsTest(unittest.TestCase):
     def test_dirty_track_profile_mapping(self):
         self.assertEqual(map_class_to_dirty_profile(0), "stable_large")
@@ -22,6 +43,8 @@ class MCTrackCompatUtilsTest(unittest.TestCase):
         self.assertEqual(map_class_to_dirty_profile(5), "heavy_long")
         self.assertEqual(map_class_to_dirty_profile(1), "human")
         self.assertIsNone(map_class_to_dirty_profile(99))
+        self.assertIsNone(map_class_to_dirty_profile(None))
+        self.assertIsNone(map_class_to_dirty_profile("not-a-class"))
 
     def test_dirty_suppressor_returns_identity_for_clean_track(self):
         suppress = dirty_track_suppressor(
@@ -47,6 +70,11 @@ class MCTrackCompatUtilsTest(unittest.TestCase):
         self.assertAlmostEqual(suppress["penalty"], 1.0)
         self.assertFalse(suppress["hard_reject"])
 
+    def test_dirty_suppressor_degrades_safely_for_missing_inputs(self):
+        suppress = dirty_track_suppressor(features=None, profile_cfg=None)
+        self.assertAlmostEqual(suppress["penalty"], 1.0)
+        self.assertFalse(suppress["hard_reject"])
+
     def test_dirty_suppressor_soft_penalizes_but_does_not_reject_moderate_dirty_track(self):
         suppress = dirty_track_suppressor(
             features={
@@ -68,8 +96,7 @@ class MCTrackCompatUtilsTest(unittest.TestCase):
                 "cost_penalty_start": 0.9,
             },
         )
-        self.assertLess(suppress["penalty"], 1.0)
-        self.assertGreaterEqual(suppress["penalty"], 0.5)
+        self.assertAlmostEqual(suppress["penalty"], 0.8)
         self.assertFalse(suppress["hard_reject"])
 
     def test_dirty_suppressor_hard_rejects_extreme_dirty_track(self):
@@ -94,6 +121,27 @@ class MCTrackCompatUtilsTest(unittest.TestCase):
             },
         )
         self.assertTrue(suppress["hard_reject"])
+
+    def test_collect_dirty_track_features_uses_recent_fake_and_trace_ratio(self):
+        traj = make_traj_stub(
+            fake_history=[False, True, True],
+            low_score_history=[False, True, False],
+            recent_match_costs=[0.4, 1.1],
+            current_score=0.3,
+            pos_trace=4.0,
+        )
+
+        features = collect_dirty_track_features(
+            traj,
+            base_score=0.3,
+            pos_trace_prior=2.0,
+        )
+
+        self.assertEqual(features["recent_fake_len"], 2)
+        self.assertAlmostEqual(features["low_score_ratio"], 1 / 3)
+        self.assertAlmostEqual(features["recent_match_cost_mean"], 0.75)
+        self.assertAlmostEqual(features["current_det_score"], 0.3)
+        self.assertAlmostEqual(features["pos_trace_ratio"], 2.0)
 
     def test_initial_status_flag_matches_mode(self):
         self.assertEqual(initial_status_flag_for_mode("default"), 0)
