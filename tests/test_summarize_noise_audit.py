@@ -1,9 +1,13 @@
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 from tools.summarize_noise_audit import build_summary, load_audits, render_text
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _sample_payload(mode, *, split="infer", q_pos_family, q_pos_ratio, q_pos_p90=None, q_pos_ratio_p90=None):
@@ -128,6 +132,17 @@ class SummarizeNoiseAuditTest(unittest.TestCase):
         self.assertIn("pure_dekf", rendered)
         self.assertIn("family=2.5/3.5", rendered)
         self.assertIn("ratio=1.2/1.7", rendered)
+
+    def test_script_help_runs_without_module_import_error(self):
+        script = REPO_ROOT / "tools" / "summarize_noise_audit.py"
+        result = subprocess.run(
+            [sys.executable, str(script), "--help"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("Summarize one or more noise audit JSON files", result.stdout)
 
 
 if __name__ == "__main__":
