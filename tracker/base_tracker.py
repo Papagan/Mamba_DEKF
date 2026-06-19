@@ -29,6 +29,7 @@ from tracker.bytetrack_utils import (
     split_bytetrack_detections,
 )
 from tracker.compat_utils import (
+    apply_dirty_track_suppressor_to_output,
     allow_single_stage_birth_under_mode,
     compute_track_quality_score,
     extract_bbox_history_fields,
@@ -2026,6 +2027,23 @@ class Base3DTracker:
                         compat_mode=self.tracker_compat_mode,
                     )
                 bbox.det_score = quality_score
+                suppressor_cfg = self.cfg.get("DIRTY_TRACK_SUPPRESSOR", {})
+                base_score = (
+                    bbox.det_score if getattr(bbox, "det_score", None) is not None
+                    else getattr(bbox, "score", 0.0)
+                )
+                suppress_result = apply_dirty_track_suppressor_to_output(
+                    base_score=base_score,
+                    class_id=traj.category_num,
+                    traj=traj,
+                    suppressor_cfg=suppressor_cfg,
+                    pos_trace_prior=1.0,
+                )
+                if suppress_result["hard_reject"]:
+                    continue
+                bbox.det_score = suppress_result["final_score"]
+                if hasattr(bbox, "score"):
+                    bbox.score = suppress_result["final_score"]
                 output_trajs[track_id] = bbox
                 self.all_trajs[track_id].is_output = True
         return output_trajs

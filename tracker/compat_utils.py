@@ -106,6 +106,39 @@ def dirty_track_suppressor(*, features: dict, profile_cfg: dict) -> dict:
     }
 
 
+def get_dirty_track_profile_cfg(class_id: int, suppressor_cfg: dict) -> dict:
+    profile_name = map_class_to_dirty_profile(class_id)
+    if not profile_name:
+        return {}
+    return ((suppressor_cfg or {}).get("PROFILES") or {}).get(profile_name, {})
+
+
+def apply_dirty_track_suppressor_to_output(
+    *,
+    base_score: float,
+    class_id: int,
+    traj,
+    suppressor_cfg: dict,
+    pos_trace_prior: float,
+) -> dict:
+    if not bool((suppressor_cfg or {}).get("ENABLED", False)):
+        return {"final_score": float(base_score), "hard_reject": False, "penalty": 1.0}
+
+    profile_cfg = get_dirty_track_profile_cfg(class_id, suppressor_cfg)
+    features = collect_dirty_track_features(
+        traj,
+        base_score=base_score,
+        pos_trace_prior=pos_trace_prior,
+    )
+    suppress = dirty_track_suppressor(features=features, profile_cfg=profile_cfg)
+    return {
+        "final_score": float(base_score) * float(suppress["penalty"]),
+        "hard_reject": bool(suppress["hard_reject"]),
+        "penalty": float(suppress["penalty"]),
+        "features": features,
+    }
+
+
 def normalize_tracker_compat_mode(mode) -> str:
     if mode is None:
         return "default"

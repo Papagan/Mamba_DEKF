@@ -1,6 +1,7 @@
 import unittest
 
 from tracker.compat_utils import (
+    apply_dirty_track_suppressor_to_output,
     allow_single_stage_birth_under_mode,
     collect_dirty_track_features,
     compute_track_quality_score,
@@ -34,6 +35,26 @@ def make_traj_stub(
     traj.debug_current_score = float(current_score)
     traj.debug_pos_trace = float(pos_trace)
     return traj
+
+
+def make_clean_traj_stub():
+    return make_traj_stub(
+        fake_history=[False, False, False],
+        low_score_history=[False, False, False],
+        recent_match_costs=[0.2, 0.3, 0.25],
+        current_score=0.8,
+        pos_trace=1.5,
+    )
+
+
+def make_dirty_traj_stub():
+    return make_traj_stub(
+        fake_history=[False, True, True],
+        low_score_history=[True, False, True, False, True],
+        recent_match_costs=[0.95, 1.05],
+        current_score=0.4,
+        pos_trace=4.2,
+    )
 
 
 class MCTrackCompatUtilsTest(unittest.TestCase):
@@ -142,6 +163,43 @@ class MCTrackCompatUtilsTest(unittest.TestCase):
         self.assertAlmostEqual(features["recent_match_cost_mean"], 0.75)
         self.assertAlmostEqual(features["current_det_score"], 0.3)
         self.assertAlmostEqual(features["pos_trace_ratio"], 2.0)
+
+    def test_apply_dirty_track_suppressor_is_identity_when_disabled(self):
+        result = apply_dirty_track_suppressor_to_output(
+            base_score=0.8,
+            class_id=0,
+            traj=make_clean_traj_stub(),
+            suppressor_cfg={"ENABLED": False},
+            pos_trace_prior=2.0,
+        )
+
+        self.assertAlmostEqual(result["final_score"], 0.8)
+        self.assertFalse(result["hard_reject"])
+
+    def test_apply_dirty_track_suppressor_softly_downweights_dirty_track(self):
+        result = apply_dirty_track_suppressor_to_output(
+            base_score=0.4,
+            class_id=5,
+            traj=make_dirty_traj_stub(),
+            suppressor_cfg={
+                "ENABLED": True,
+                "PROFILES": {
+                    "heavy_long": {
+                        "soft_fake_len": 2,
+                        "hard_fake_len": 4,
+                        "soft_low_score_ratio": 0.35,
+                        "hard_low_score_ratio": 0.60,
+                        "soft_pos_trace_ratio": 1.8,
+                        "hard_pos_trace_ratio": 2.6,
+                        "cost_penalty_start": 0.9,
+                    }
+                },
+            },
+            pos_trace_prior=2.0,
+        )
+
+        self.assertLess(result["final_score"], 0.4)
+        self.assertFalse(result["hard_reject"])
 
     def test_initial_status_flag_matches_mode(self):
         self.assertEqual(initial_status_flag_for_mode("default"), 0)
