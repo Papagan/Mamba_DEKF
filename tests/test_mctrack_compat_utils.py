@@ -3,8 +3,10 @@ import unittest
 from tracker.compat_utils import (
     allow_single_stage_birth_under_mode,
     compute_track_quality_score,
+    dirty_track_suppressor,
     extract_bbox_history_fields,
     initial_status_flag_for_mode,
+    map_class_to_dirty_profile,
     sync_bbox_fields_from_state,
     select_filtered_tracking_score,
     score_for_unmatched_fake_bbox,
@@ -14,6 +16,85 @@ from tracker.compat_utils import (
 
 
 class MCTrackCompatUtilsTest(unittest.TestCase):
+    def test_dirty_track_profile_mapping(self):
+        self.assertEqual(map_class_to_dirty_profile(0), "stable_large")
+        self.assertEqual(map_class_to_dirty_profile(2), "agile_weak")
+        self.assertEqual(map_class_to_dirty_profile(5), "heavy_long")
+        self.assertEqual(map_class_to_dirty_profile(1), "human")
+        self.assertIsNone(map_class_to_dirty_profile(99))
+
+    def test_dirty_suppressor_returns_identity_for_clean_track(self):
+        suppress = dirty_track_suppressor(
+            features={
+                "recent_fake_len": 0,
+                "fake_ratio": 0.0,
+                "recent_low_score_match_count": 0,
+                "low_score_ratio": 0.0,
+                "recent_match_cost_mean": 0.3,
+                "current_det_score": 0.8,
+                "pos_trace_ratio": 1.0,
+            },
+            profile_cfg={
+                "soft_fake_len": 2,
+                "hard_fake_len": 4,
+                "soft_low_score_ratio": 0.35,
+                "hard_low_score_ratio": 0.60,
+                "soft_pos_trace_ratio": 1.8,
+                "hard_pos_trace_ratio": 2.6,
+                "cost_penalty_start": 0.9,
+            },
+        )
+        self.assertAlmostEqual(suppress["penalty"], 1.0)
+        self.assertFalse(suppress["hard_reject"])
+
+    def test_dirty_suppressor_soft_penalizes_but_does_not_reject_moderate_dirty_track(self):
+        suppress = dirty_track_suppressor(
+            features={
+                "recent_fake_len": 2,
+                "fake_ratio": 0.4,
+                "recent_low_score_match_count": 1,
+                "low_score_ratio": 0.45,
+                "recent_match_cost_mean": 1.0,
+                "current_det_score": 0.35,
+                "pos_trace_ratio": 2.0,
+            },
+            profile_cfg={
+                "soft_fake_len": 2,
+                "hard_fake_len": 4,
+                "soft_low_score_ratio": 0.35,
+                "hard_low_score_ratio": 0.60,
+                "soft_pos_trace_ratio": 1.8,
+                "hard_pos_trace_ratio": 2.6,
+                "cost_penalty_start": 0.9,
+            },
+        )
+        self.assertLess(suppress["penalty"], 1.0)
+        self.assertGreaterEqual(suppress["penalty"], 0.5)
+        self.assertFalse(suppress["hard_reject"])
+
+    def test_dirty_suppressor_hard_rejects_extreme_dirty_track(self):
+        suppress = dirty_track_suppressor(
+            features={
+                "recent_fake_len": 5,
+                "fake_ratio": 0.8,
+                "recent_low_score_match_count": 4,
+                "low_score_ratio": 0.75,
+                "recent_match_cost_mean": 1.5,
+                "current_det_score": 0.05,
+                "pos_trace_ratio": 3.2,
+            },
+            profile_cfg={
+                "soft_fake_len": 2,
+                "hard_fake_len": 4,
+                "soft_low_score_ratio": 0.35,
+                "hard_low_score_ratio": 0.60,
+                "soft_pos_trace_ratio": 1.8,
+                "hard_pos_trace_ratio": 2.6,
+                "cost_penalty_start": 0.9,
+            },
+        )
+        self.assertTrue(suppress["hard_reject"])
+
     def test_initial_status_flag_matches_mode(self):
         self.assertEqual(initial_status_flag_for_mode("default"), 0)
         self.assertEqual(initial_status_flag_for_mode("mctrack"), 1)

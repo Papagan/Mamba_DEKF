@@ -1,6 +1,66 @@
 import numpy as np
 
 
+DIRTY_PROFILE_STABLE_LARGE = "stable_large"
+DIRTY_PROFILE_AGILE_WEAK = "agile_weak"
+DIRTY_PROFILE_HEAVY_LONG = "heavy_long"
+DIRTY_PROFILE_HUMAN = "human"
+
+_DIRTY_CLASS_TO_PROFILE = {
+    0: DIRTY_PROFILE_STABLE_LARGE,
+    4: DIRTY_PROFILE_STABLE_LARGE,
+    2: DIRTY_PROFILE_AGILE_WEAK,
+    3: DIRTY_PROFILE_AGILE_WEAK,
+    5: DIRTY_PROFILE_HEAVY_LONG,
+    6: DIRTY_PROFILE_HEAVY_LONG,
+    1: DIRTY_PROFILE_HUMAN,
+}
+
+
+def map_class_to_dirty_profile(class_id: int):
+    return _DIRTY_CLASS_TO_PROFILE.get(int(class_id))
+
+
+def dirty_track_suppressor(*, features: dict, profile_cfg: dict) -> dict:
+    profile_cfg = profile_cfg or {}
+    soft_fake_len = int(profile_cfg.get("soft_fake_len", 99))
+    hard_fake_len = int(profile_cfg.get("hard_fake_len", 999))
+    soft_low_score_ratio = float(profile_cfg.get("soft_low_score_ratio", 1.0))
+    hard_low_score_ratio = float(profile_cfg.get("hard_low_score_ratio", 2.0))
+    soft_pos_trace_ratio = float(profile_cfg.get("soft_pos_trace_ratio", 999.0))
+    hard_pos_trace_ratio = float(profile_cfg.get("hard_pos_trace_ratio", 9999.0))
+    cost_penalty_start = float(profile_cfg.get("cost_penalty_start", 999.0))
+
+    recent_fake_len = int(features.get("recent_fake_len", 0))
+    low_score_ratio = float(features.get("low_score_ratio", 0.0))
+    pos_trace_ratio = float(features.get("pos_trace_ratio", 1.0))
+    recent_match_cost_mean = float(features.get("recent_match_cost_mean", 0.0))
+    current_det_score = float(features.get("current_det_score", 1.0))
+
+    fake_penalty = 1.0
+    if recent_fake_len >= soft_fake_len:
+        fake_penalty = min(fake_penalty, 0.85)
+    if low_score_ratio >= soft_low_score_ratio:
+        fake_penalty = min(fake_penalty, 0.8)
+    if pos_trace_ratio >= soft_pos_trace_ratio:
+        fake_penalty = min(fake_penalty, 0.8)
+    if recent_match_cost_mean >= cost_penalty_start:
+        fake_penalty = min(fake_penalty, 0.85)
+    if current_det_score <= 0.1:
+        fake_penalty = min(fake_penalty, 0.75)
+
+    hard_reject = (
+        recent_fake_len >= hard_fake_len
+        and low_score_ratio >= hard_low_score_ratio
+        and pos_trace_ratio >= hard_pos_trace_ratio
+    )
+
+    return {
+        "penalty": max(0.5, float(fake_penalty)),
+        "hard_reject": bool(hard_reject),
+    }
+
+
 def normalize_tracker_compat_mode(mode) -> str:
     if mode is None:
         return "default"
