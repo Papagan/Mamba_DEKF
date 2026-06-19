@@ -199,6 +199,12 @@ BASE_NOISE:
     ENABLED: true
     MISS_R_SCALE: 1000.0
 
+AUDIT:
+  NOISE_AUDIT:
+    ENABLED: false
+    STRICT: false
+    TRAIN_OUTPUT_PATH: debug/train_noise_audit.json
+
 # ---- Loss ----
 LOSS:
   W_POS: 5.0

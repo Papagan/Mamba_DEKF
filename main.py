@@ -13,6 +13,7 @@ import math
 from tqdm import tqdm
 from datetime import datetime
 from functools import partial
+from kalmanfilter.noise_audit import NoiseAuditAccumulator
 from tracker.base_tracker import Base3DTracker
 from dataset.baseversion_dataset import BaseVersionTrackingDataset
 from evaluation.static_evaluation.kitti.evaluation_HOTA.scripts.run_kitti import (
@@ -94,7 +95,38 @@ def _print_nuscenes_result_diagnostics(results_path):
         print(f"[SAVE DIAG] example_{idx}={example}")
 
 
-def run(scene_id, scenes_data, cfg, args, tracking_results):
+def _build_noise_audit_cfg(cfg):
+    return (((cfg or {}).get("AUDIT") or {}).get("NOISE_AUDIT") or {})
+
+
+def _collect_scene_inference_audit_state(scene_id, tracker, cfg, scene_audit_states):
+    audit_cfg = _build_noise_audit_cfg(cfg)
+    if not audit_cfg.get("ENABLED", False):
+        return
+    state = tracker.export_noise_audit_state()
+    if state is not None:
+        scene_audit_states[scene_id] = state
+
+
+def _write_merged_infer_noise_audit(cfg, scene_audit_states):
+    audit_cfg = _build_noise_audit_cfg(cfg)
+    if not audit_cfg.get("ENABLED", False):
+        return
+
+    merged = NoiseAuditAccumulator()
+    for scene_id in sorted(scene_audit_states.keys()):
+        merged.merge_state(scene_audit_states[scene_id])
+
+    output_path = audit_cfg.get("INFER_OUTPUT_PATH", "debug/infer_noise_audit.json")
+    try:
+        merged.write_json(output_path)
+    except Exception as exc:
+        if audit_cfg.get("STRICT", False):
+            raise
+        print(f"[main] WARNING: failed to write merged inference noise audit to {output_path}: {exc}")
+
+
+def run(scene_id, scenes_data, cfg, args, tracking_results, scene_audit_states):
     """
     Info: This function tracks objects in a given scene, processes frame data, and stores tracking results.
     Parameters:
@@ -104,6 +136,7 @@ def run(scene_id, scenes_data, cfg, args, tracking_results):
             cfg: Configuration settings for tracking.
             args: Additional arguments.
             tracking_results: Dictionary to store results.
+            scene_audit_states: Dictionary to store per-scene audit state.
         output:
             tracking_results: Updated tracking results for the scene.
     """
@@ -154,6 +187,7 @@ def run(scene_id, scenes_data, cfg, args, tracking_results):
                 ):
                     del all_trajs[frame_id]["trajs"][track_id]
 
+    _collect_scene_inference_audit_state(scene_id, tracker, cfg, scene_audit_states)
     tracking_results[scene_id] = all_trajs
 
 
@@ -225,18 +259,26 @@ if __name__ == "__main__":
 
     manager = multiprocessing.Manager()
     tracking_results = manager.dict()
+    scene_audit_states = manager.dict()
     if args.process > 1:
         pool = multiprocessing.Pool(args.process)
         func = partial(
-            run, scenes_data=data, cfg=cfg, args=args, tracking_results=tracking_results
+            run,
+            scenes_data=data,
+            cfg=cfg,
+            args=args,
+            tracking_results=tracking_results,
+            scene_audit_states=scene_audit_states,
         )
         pool.map(func, scene_lists)
         pool.close()
         pool.join()
     else:
         for scene_id in tqdm(scene_lists, desc="Running scenes"):
-            run(scene_id, data, cfg, args, tracking_results)
+            run(scene_id, data, cfg, args, tracking_results, scene_audit_states)
     tracking_results = dict(tracking_results)
+    scene_audit_states = dict(scene_audit_states)
+    _write_merged_infer_noise_audit(cfg, scene_audit_states)
 
     if args.dataset == "kitti":
         save_results_kitti(tracking_results, cfg)

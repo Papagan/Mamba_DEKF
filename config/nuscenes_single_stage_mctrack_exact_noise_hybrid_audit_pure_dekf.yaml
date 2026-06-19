@@ -1,12 +1,10 @@
 # ------------------------------------------------------------------------
-# MCTrack effective-config exact baseline + MCTrack KF noise exact mapping.
+# Controlled audit/compare config derived from the frozen exact-hybrid baseline.
 # Purpose:
-#   Measure how much remaining gap comes from the baseline Q/R mismatch after
-#   effective thresholds / COST_STATE have already been aligned.
-# Notes:
-#   - pure_dekf only
-#   - TRACK_SCORE disabled
-#   - uses current exact-unmatch v3 only for trailer/truck
+#   Keep the exact-hybrid baseline fixed while enabling audit output for a
+#   fair FILTER_MODE comparison. This pure_dekf variant only appends
+#   AUDIT.NOISE_AUDIT settings; all effective tracking parameters match the
+#   frozen baseline.
 # ------------------------------------------------------------------------
 
 DATASET: "nuscenes"
@@ -118,46 +116,72 @@ DEKF_BASE_NOISE:
   Q:
     POS: [0.5, 0.5, 0.5, 1.5, 1.5, 1.5]
     POS_PER_CAT:
-      0: [0.5, 0.5, 0.5, 1.5, 1.5, 1.5]
+      0: [0.2, 0.2, 0.2, 1.0, 1.0, 1.0]
       1: [1.5, 1.5, 1.5, 1.5, 1.5, 1.5]
       2: [0.3, 0.3, 0.3, 1.0, 1.0, 1.0]
       3: [0.5, 0.5, 0.5, 4.0, 4.0, 4.0]
       4: [0.5, 0.5, 0.5, 1.5, 1.5, 1.5]
       5: [0.3, 0.3, 0.3, 0.1, 0.1, 0.1]
       6: [0.1, 0.1, 0.1, 2.0, 2.0, 2.0]
-    SIZ: [0.5, 0.5, 0.5]
+    SIZ: [0.05, 0.05, 0.05]
     ORI: [0.1]
   R:
     POS_STD_XY:
-      - [0.8367, 0.8367]
-      - [1.4142, 1.4142]
-      - [0.3162, 0.3162]
-      - [0.3162, 0.3162]
+      - [0.5210, 0.5045]
+      - [0.2745, 0.2731]
+      - [0.5562, 0.5444]
+      - [0.8646, 0.8695]
       - [1.2247, 1.2247]
       - [1.4142, 1.4142]
       - [1.2247, 1.2247]
-    POS_STD_Z: [0.8367, 1.4142, 0.3162, 0.3162, 1.2247, 1.4142, 1.2247]
     SIZ_STD_LW:
+      - [0.2417, 0.0799]
+      - [0.0567, 0.0422]
+      - [0.1118, 0.0661]
+      - [0.1866, 0.0860]
       - [1.4142, 1.4142]
       - [1.4142, 1.4142]
       - [1.4142, 1.4142]
-      - [1.4142, 1.4142]
-      - [1.4142, 1.4142]
-      - [1.4142, 1.4142]
-      - [1.4142, 1.4142]
-    SIZ_STD_H: [1.4142, 1.4142, 1.4142, 1.4142, 1.4142, 1.4142, 1.4142]
+    ORI_STD:
+      - 0.1823
+      - 0.0304
+      - 0.1540
+      - 0.0609
+      - 0.4472
+      - 0.4472
+      - 0.4472
     VEL_STD_XY:
-      - [0.7071, 0.7071]
-      - [1.8708, 1.8708]
-      - [1.0000, 1.0000]
-      - [0.3162, 0.3162]
+      - [0.7551, 0.7017]
+      - [0.2494, 0.2409]
+      - [0.3933, 0.3942]
+      - [0.8261, 0.8865]
       - [22.3607, 22.3607]
       - [1.5811, 1.5811]
       - [2.0000, 2.0000]
-    ORI_STD: [0.4472, 0.4472, 0.4472, 0.4472, 0.4472, 0.4472, 0.4472]
   CONDITIONAL_NOISE:
-    ENABLED: false
+    ENABLED: true
+    SCORE_WEIGHT: 0.8
+    MISS_WEIGHT: 0.8
+    RANGE_WEIGHT: 0.3
+    SPEED_WEIGHT: 0.2
+    YAW_RATE_WEIGHT: 0.2
+    SIZE_SCORE_WEIGHT: 0.4
+    SIZE_MISS_WEIGHT: 0.2
+    RANGE_REF: 30.0
+    SPEED_REF: 15.0
+    YAW_RATE_REF: 0.5
+    MIN_SCALE: 0.75
+    MAX_SCALE: 2.5
   FUSION:
     STRICT_RATIO: {0: 2.0, 1: 2.0, 2: 1.5, 3: 1.5, 4: 2.0, 5: 2.0, 6: 2.0}
   RESIDUAL_ANCHOR:
-    ENABLED: false
+    ENABLED: True
+    TARGETS: ["Q_pos", "R_pos", "R_siz", "R_ori"]
+    MIN_STD_RATIO: 0.60
+    MAX_STD_RATIO: 1.80
+
+AUDIT:
+  NOISE_AUDIT:
+    ENABLED: true
+    STRICT: false
+    INFER_OUTPUT_PATH: "debug/noise_audit/pure_dekf/infer_noise_audit.json"

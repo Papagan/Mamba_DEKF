@@ -91,6 +91,61 @@ def wrap_to_pi(angles: Tensor) -> Tensor:
     return angles - 2.0 * math.pi * torch.round(angles / (2.0 * math.pi))
 
 
+def _covariance_trace_batch(cov: Optional[Tensor]) -> Optional[Tensor]:
+    if cov is None:
+        return None
+    return cov.diagonal(dim1=-2, dim2=-1).sum(-1)
+
+
+def build_noise_audit_samples(
+    *,
+    mode,
+    traj_labels,
+    matched_mask,
+    history_lens,
+    q_pos,
+    r_pos,
+    r_siz,
+    r_ori,
+    prior_q_pos,
+    prior_r_pos,
+    prior_r_siz,
+    prior_r_ori,
+):
+    def _to_scalar(sequence, index, cast):
+        if sequence is None:
+            return None
+        value = sequence[index]
+        if hasattr(value, "item"):
+            value = value.item()
+        return cast(value)
+
+    samples = []
+    total = len(traj_labels)
+    for idx in range(total):
+        samples.append(
+            {
+                "mode": str(mode),
+                "class_id": _to_scalar(traj_labels, idx, int),
+                "state": "matched" if bool(matched_mask[idx]) else "unmatched",
+                "history_len": _to_scalar(history_lens, idx, int),
+                "families": {
+                    "q_pos": _to_scalar(q_pos, idx, float),
+                    "r_pos": _to_scalar(r_pos, idx, float),
+                    "r_siz": _to_scalar(r_siz, idx, float),
+                    "r_ori": _to_scalar(r_ori, idx, float),
+                },
+                "prior_families": {
+                    "q_pos": _to_scalar(prior_q_pos, idx, float),
+                    "r_pos": _to_scalar(prior_r_pos, idx, float),
+                    "r_siz": _to_scalar(prior_r_siz, idx, float),
+                    "r_ori": _to_scalar(prior_r_ori, idx, float),
+                },
+            }
+        )
+    return samples
+
+
 # ============================================================
 # Filter 1: Position Filter  (Constant Velocity model)
 # State: [x, y, z, vx, vy, vz]  dim=6
@@ -1339,6 +1394,19 @@ class MambaDecoupledEKF(nn.Module):
             # numerical range than the baseline variance → trace ratio is misleading.
             # Orientation safety is provided by Q_ori fusion (above) and the
             # per-category baseline R_o accessible via pure_dekf mode when needed.
+
+        mamba_out["noise_audit_values"] = {
+            "q_pos": _covariance_trace_batch(mamba_out["Q_pos"]),
+            "r_pos": _covariance_trace_batch(mamba_out["R_pos"]),
+            "r_siz": _covariance_trace_batch(mamba_out["R_siz"]),
+            "r_ori": _covariance_trace_batch(mamba_out["R_ori"]),
+        }
+        mamba_out["noise_audit_priors"] = {
+            "q_pos": _covariance_trace_batch(Q_p),
+            "r_pos": _covariance_trace_batch(R_p),
+            "r_siz": _covariance_trace_batch(R_s),
+            "r_ori": _covariance_trace_batch(R_o),
+        }
 
         # Execute KF predict step using the active (or fused) noise models
         pos_x, pos_P, siz_x, siz_P, ori_x, ori_P = self.kf.predict(

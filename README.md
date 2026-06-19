@@ -597,6 +597,29 @@ Current protected baseline:
 
 All route-A experiments should branch from this baseline and be evaluated against it rather than modifying it in place.
 
+## Mamba/Fusion Noise Audit
+
+The repository also provides a controlled comparison workflow for `pure_dekf`, `fusion`, and `mamba` on top of the frozen `0.737` baseline `config/nuscenes_single_stage_mctrack_exact_noise_hybrid.yaml`. These three configs intentionally change `FILTER_MODE` while keeping the rest of the exact-hybrid baseline fixed, so they are suitable for fair mode-to-mode noise audits:
+
+- `config/nuscenes_single_stage_mctrack_exact_noise_hybrid_audit_pure_dekf.yaml`
+- `config/nuscenes_single_stage_mctrack_exact_noise_hybrid_audit_fusion.yaml`
+- `config/nuscenes_single_stage_mctrack_exact_noise_hybrid_audit_mamba.yaml`
+
+Sample eval entry point:
+
+```bash
+python main.py --dataset nuscenes --eval --config config/nuscenes_single_stage_mctrack_exact_noise_hybrid_audit_fusion.yaml -p 12
+```
+
+Sample audit summary:
+
+```bash
+python tools/summarize_noise_audit.py \
+  --inputs debug/noise_audit/pure_dekf/infer_noise_audit.json \
+           debug/noise_audit/fusion/infer_noise_audit.json \
+           debug/noise_audit/mamba/infer_noise_audit.json
+```
+
 ### 5.5.5 Full Optimization Loop
 
 If you want to automate the full tuning loop:

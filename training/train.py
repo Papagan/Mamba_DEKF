@@ -49,9 +49,12 @@ from training.losses import JointLoss
 from kalmanfilter.mamba_adaptive_kf import (
     TemporalMamba,
     DecoupledAdaptiveKF,
+    build_noise_audit_samples,
 )
+from kalmanfilter.noise_audit import NoiseAuditAccumulator
 from kalmanfilter.noise_priors import (
     build_base_covariances,
+    category_to_tracking_name,
     categories_to_class_ids,
 )
 
@@ -61,6 +64,119 @@ logger = logging.getLogger("train")
 # ======================================================================
 # Training step
 # ======================================================================
+
+
+def _build_noise_audit_cfg(cfg):
+    return (((cfg or {}).get("AUDIT") or {}).get("NOISE_AUDIT") or {})
+
+
+def _new_train_noise_audit_accumulator(audit_cfg):
+    if not bool((audit_cfg or {}).get("ENABLED", False)):
+        return None
+    return NoiseAuditAccumulator()
+
+
+def _resolve_train_noise_audit_state(
+    use_det_update,
+    obs_future_pos,
+    obs_future_match,
+):
+    """
+    Project the training teacher-forcing regime onto the shared audit state axis.
+
+    This is not a literal tracker lifecycle state. It maps detector/fusion
+    teacher-forced observations to the shared "matched" bucket and the
+    GT-noisy fallback path to the shared "unmatched" bucket so training and
+    inference summaries stay schema-compatible.
+    """
+    if use_det_update and obs_future_pos is not None and obs_future_match is not None:
+        return "matched"
+    return "unmatched"
+
+
+def _record_train_noise_audit_samples(
+    noise_audit,
+    *,
+    filter_mode,
+    audit_state,
+    categories,
+    class_ids,
+    history_mask,
+    q_pos,
+    r_pos,
+    r_siz,
+    r_ori,
+    prior_q_pos,
+    prior_r_pos,
+    prior_r_siz,
+    prior_r_ori,
+):
+    if noise_audit is None:
+        return
+
+    # `audit_state` is already projected onto the shared matched/unmatched
+    # axis so the JSON stays comparable with inference-side summaries.
+    def _to_list(values):
+        if values is None:
+            return None
+        if hasattr(values, "detach"):
+            values = values.detach()
+        if hasattr(values, "cpu"):
+            values = values.cpu()
+        if hasattr(values, "tolist"):
+            return values.tolist()
+        return list(values)
+
+    history_rows = _to_list(history_mask) or []
+    history_lens = [sum(1 for value in row if bool(value)) for row in history_rows]
+    class_id_list = _to_list(class_ids) or []
+    class_names = [category_to_tracking_name(category) for category in categories]
+
+    samples = build_noise_audit_samples(
+        mode=filter_mode,
+        traj_labels=class_id_list,
+        matched_mask=[True] * len(class_names),
+        history_lens=history_lens,
+        q_pos=_to_list(q_pos),
+        r_pos=_to_list(r_pos),
+        r_siz=_to_list(r_siz),
+        r_ori=_to_list(r_ori),
+        prior_q_pos=_to_list(prior_q_pos),
+        prior_r_pos=_to_list(prior_r_pos),
+        prior_r_siz=_to_list(prior_r_siz),
+        prior_r_ori=_to_list(prior_r_ori),
+    )
+
+    for class_name, sample in zip(class_names, samples):
+        noise_audit.add_sample(
+            split="train",
+            mode=sample["mode"],
+            class_id=sample["class_id"],
+            class_name=class_name,
+            state=audit_state,
+            history_len=sample["history_len"],
+            families=sample["families"],
+            prior_families=sample["prior_families"],
+        )
+
+
+def _dump_train_noise_audit_if_needed(noise_audit, audit_cfg, logger_obj=None):
+    if noise_audit is None:
+        return
+
+    output_path = (audit_cfg or {}).get(
+        "TRAIN_OUTPUT_PATH", "debug/train_noise_audit.json"
+    )
+    try:
+        noise_audit.write_json(output_path)
+    except Exception as exc:
+        if (audit_cfg or {}).get("STRICT", False):
+            raise
+        message = f"Failed to write training noise audit to {output_path}: {exc}"
+        if logger_obj is not None:
+            logger_obj.warning(message)
+        else:
+            print(message)
 
 
 def resolve_runtime_contract_filter_mode(cfg, train_tracker_compat_mode):
@@ -87,6 +203,8 @@ def training_step(
     warmup_epochs: int = 0,
     transition_epochs: int = 0,
     vel_warmup_epochs: int = 3,
+    train_noise_audit: NoiseAuditAccumulator = None,
+    filter_mode: str = "mamba",
 ) -> tuple:
     """
     Multi-step KF rollout training with noisy teacher forcing.
@@ -210,6 +328,32 @@ def training_step(
     noise_scale_siz_lwh = noise_bundle["siz_std_lwh"]
     noise_scale_vel_xy = noise_bundle["vel_std_xy"]
     noise_scale_ori = noise_bundle["ori_std"].view(B, 1, 1)
+
+    if train_noise_audit is not None:
+        # Training does not have literal tracker matched/unmatched lifecycle
+        # states here. Project the teacher-forcing mode onto that shared axis
+        # so the audit schema remains comparable with inference output.
+        audit_state = _resolve_train_noise_audit_state(
+            use_det_update,
+            obs_future_pos,
+            obs_future_match,
+        )
+        _record_train_noise_audit_samples(
+            train_noise_audit,
+            filter_mode=filter_mode,
+            audit_state=audit_state,
+            categories=categories,
+            class_ids=class_ids,
+            history_mask=history_mask,
+            q_pos=mamba_out["Q_pos"].diagonal(dim1=-2, dim2=-1).sum(-1),
+            r_pos=mamba_out["R_pos"].diagonal(dim1=-2, dim2=-1).sum(-1),
+            r_siz=mamba_out["R_siz"].diagonal(dim1=-2, dim2=-1).sum(-1),
+            r_ori=mamba_out["R_ori"].diagonal(dim1=-2, dim2=-1).sum(-1),
+            prior_q_pos=noise_bundle["Q_pos_base"].diagonal(dim1=-2, dim2=-1).sum(-1),
+            prior_r_pos=noise_bundle["R_pos_base"].diagonal(dim1=-2, dim2=-1).sum(-1),
+            prior_r_siz=noise_bundle["R_siz_base"].diagonal(dim1=-2, dim2=-1).sum(-1),
+            prior_r_ori=noise_bundle["R_ori_base"].diagonal(dim1=-2, dim2=-1).sum(-1),
+        )
 
     # delta_pos gives Mamba a direct gradient path through loss_pos,
     # not only through R_pos via the KF update.
@@ -778,9 +922,12 @@ def main():
         "val_source": val_source,
         "expected_bev_cost_mode": str(data_cfg.get("EXPECTED_BEV_COST_MODE", "geometric")).strip().lower(),
     }
+    train_filter_mode = runtime_contract["filter_mode"]
+    train_noise_audit_cfg = _build_noise_audit_cfg(cfg)
 
     for epoch in range(start_epoch, epochs):
         mamba.train()
+        train_noise_audit = _new_train_noise_audit_accumulator(train_noise_audit_cfg)
         epoch_loss = 0.0
         epoch_detail = {}
         n_batches = 0
@@ -798,7 +945,9 @@ def main():
                 mamba, batch, loss_fn, device, noise_cfg, base_noise_cfg,
                 epoch=epoch, warmup_epochs=warmup_epochs,
                 transition_epochs=transition_epochs,
-                vel_warmup_epochs=vel_warmup_epochs)
+                vel_warmup_epochs=vel_warmup_epochs,
+                train_noise_audit=train_noise_audit,
+                filter_mode=train_filter_mode)
 
             # Check for NaN / Inf loss before backward
             if torch.isnan(loss) or torch.isinf(loss):
@@ -903,6 +1052,12 @@ def main():
         # Q/R diagonal std — should stay > 0; zero = constant output (degenerate)
         for key in ["std_Q_pos", "std_Q_siz", "std_R_pos", "std_R_siz", "std_kappa", "mean_kappa"]:
             writer.add_scalar(f"train/{key}", avg_train.get(key, 0), step)
+
+        _dump_train_noise_audit_if_needed(
+            train_noise_audit,
+            train_noise_audit_cfg,
+            logger_obj=logger,
+        )
 
         # ---- Checkpoint ----
         val_total = avg_val.get("loss_real", avg_val.get("loss_total", float("inf")))

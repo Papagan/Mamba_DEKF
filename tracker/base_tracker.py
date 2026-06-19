@@ -41,7 +41,8 @@ from tracker.compat_utils import (
 )
 from tracker.trajectory import Trajectory
 from tracker.bbox import BBox
-from kalmanfilter.mamba_adaptive_kf import MambaDecoupledEKF
+from kalmanfilter.mamba_adaptive_kf import MambaDecoupledEKF, build_noise_audit_samples
+from kalmanfilter.noise_audit import NoiseAuditAccumulator
 from utils.debug_log import emit_debug_line
 from utils.utils import norm_realative_radian
 
@@ -62,6 +63,14 @@ _DEFAULT_MAMBA_CFG = {
     "MIN_KAPPA": 0.1,        # kappa floor (prevents R_ori→∞)
     "NUM_CLASSES": 10,        # number of object categories for size embeddings
 }
+
+
+def _build_noise_audit_cfg(cfg):
+    return (((cfg or {}).get("AUDIT") or {}).get("NOISE_AUDIT") or {})
+
+
+def _noise_audit_enabled(cfg):
+    return bool(_build_noise_audit_cfg(cfg).get("ENABLED", False))
 
 
 def build_runtime_contract_warnings(
@@ -360,6 +369,11 @@ class Base3DTracker:
         # ---- per-track KF state storage ----
         # Keyed by track_id → dict of tensors on device
         self.kf_states: Dict[int, Dict[str, torch.Tensor]] = {}
+        self.noise_audit_cfg = _build_noise_audit_cfg(cfg)
+        self.noise_audit = (
+            NoiseAuditAccumulator() if _noise_audit_enabled(cfg) else None
+        )
+        self._noise_audit_pending: Optional[Dict] = None
 
     def _normalize_delta_t(self, dt_raw: float) -> float:
         """
@@ -386,6 +400,121 @@ class Base3DTracker:
         # Safety clamp: avoid extreme dt spikes from broken timestamps.
         dt_sec = float(np.clip(dt_sec, 1e-3, 5.0))
         return dt_sec
+
+    def _record_noise_audit_sample(
+        self,
+        *,
+        mode: str,
+        class_id: int,
+        class_name: str,
+        state: str,
+        history_len: Optional[int],
+        families: Dict[str, float],
+        prior_families: Dict[str, Optional[float]],
+    ) -> None:
+        if self.noise_audit is None:
+            return
+        self.noise_audit.add_sample(
+            split="infer",
+            mode=mode,
+            class_id=class_id,
+            class_name=class_name,
+            state=state,
+            history_len=history_len,
+            families=families,
+            prior_families=prior_families,
+        )
+
+    def _stage_noise_audit_samples(
+        self,
+        *,
+        track_ids: List[int],
+        trajs: List[Trajectory],
+        class_ids: torch.Tensor,
+        history_mask: torch.Tensor,
+        mamba_out: Dict,
+    ) -> None:
+        if self.noise_audit is None:
+            self._noise_audit_pending = None
+            return
+
+        audit_values = mamba_out.get("noise_audit_values")
+        audit_priors = mamba_out.get("noise_audit_priors")
+        if audit_values is None or audit_priors is None:
+            self._noise_audit_pending = None
+            return
+
+        def _to_cpu_list(values):
+            if values is None:
+                return None
+            return values.detach().cpu().tolist()
+
+        self._noise_audit_pending = {
+            "mode": self.filter_mode,
+            "track_ids": list(track_ids),
+            "class_ids": class_ids.detach().cpu().tolist(),
+            "class_names": [traj.bboxes[-1].category for traj in trajs],
+            "history_lens": history_mask.to(dtype=torch.int64).sum(dim=1).cpu().tolist(),
+            "values": {name: _to_cpu_list(values) for name, values in audit_values.items()},
+            "priors": {name: _to_cpu_list(values) for name, values in audit_priors.items()},
+        }
+
+    def _flush_noise_audit_samples(self) -> None:
+        if self.noise_audit is None or not self._noise_audit_pending:
+            return
+
+        pending = self._noise_audit_pending
+        matched_mask = []
+        for track_id in pending["track_ids"]:
+            traj = self.all_trajs.get(track_id)
+            if traj is None:
+                traj = self.all_dead_trajs.get(track_id)
+            bbox = traj.bboxes[-1] if traj is not None and traj.bboxes else None
+            matched_mask.append(bool(bbox is not None and not getattr(bbox, "is_fake", False)))
+
+        samples = build_noise_audit_samples(
+            mode=pending["mode"],
+            traj_labels=pending["class_ids"],
+            matched_mask=matched_mask,
+            history_lens=pending["history_lens"],
+            q_pos=pending["values"]["q_pos"],
+            r_pos=pending["values"]["r_pos"],
+            r_siz=pending["values"]["r_siz"],
+            r_ori=pending["values"]["r_ori"],
+            prior_q_pos=pending["priors"]["q_pos"],
+            prior_r_pos=pending["priors"]["r_pos"],
+            prior_r_siz=pending["priors"]["r_siz"],
+            prior_r_ori=pending["priors"]["r_ori"],
+        )
+
+        for class_name, sample in zip(pending["class_names"], samples):
+            self._record_noise_audit_sample(
+                mode=sample["mode"],
+                class_id=sample["class_id"],
+                class_name=class_name,
+                state=sample["state"],
+                history_len=sample["history_len"],
+                families=sample["families"],
+                prior_families=sample["prior_families"],
+            )
+
+        self._noise_audit_pending = None
+
+    def dump_noise_audit_if_needed(self) -> None:
+        if self.noise_audit is None:
+            return
+        output_path = self.noise_audit_cfg.get("INFER_OUTPUT_PATH", "debug/infer_noise_audit.json")
+        try:
+            self.noise_audit.write_json(output_path)
+        except Exception as exc:
+            if self.noise_audit_cfg.get("STRICT", False):
+                raise
+            print(f"[Base3DTracker] WARNING: failed to write noise audit to {output_path}: {exc}")
+
+    def export_noise_audit_state(self) -> Optional[Dict]:
+        if self.noise_audit is None:
+            return None
+        return self.noise_audit.export_state()
 
     # ==================================================================
     # History extraction: Trajectory bboxes → [B, T, 12] tensor
@@ -800,6 +929,7 @@ class Base3DTracker:
             trk_embeddings : [N_trk, embed_dim] numpy array (or None)
         """
         if len(trajs) == 0:
+            self._noise_audit_pending = None
             return None, None
 
         track_ids = [t.track_id for t in trajs]
@@ -852,6 +982,13 @@ class Base3DTracker:
 
         # ---- 7. Extract embeddings for Module C ----
         trk_embeddings = mamba_out["embedding"].cpu().numpy()  # [B, embed_dim]
+        self._stage_noise_audit_samples(
+            track_ids=track_ids,
+            trajs=trajs,
+            class_ids=class_ids,
+            history_mask=history_mask,
+            mamba_out=mamba_out,
+        )
 
         return mamba_out, trk_embeddings
 
@@ -1843,6 +1980,7 @@ class Base3DTracker:
                 f"[TRK] frame={frame_info.frame_id} dead={_n_dead} "
                 f"alive={len(self.all_trajs)} output={len(output_trajs)}"
             )
+        self._flush_noise_audit_samples()
         return output_trajs
 
     # ==================================================================
