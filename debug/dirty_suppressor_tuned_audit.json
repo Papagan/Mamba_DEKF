@@ -1,0 +1,123 @@
+{
+  "buckets": [
+    {
+      "avg_hit_features": {
+        "low_score_ratio": 0.0,
+        "pos_trace_ratio": 6.796913574006544,
+        "recent_fake_len": 0.15960207612456748,
+        "recent_match_cost_mean": 0.06411075375854143
+      },
+      "avg_penalty": 0.9528842828616365,
+      "class_id": 0,
+      "class_name": "car",
+      "emitted_count": 89641,
+      "evaluated_count": 89641,
+      "hard_reject_count": 0,
+      "profile_name": "stable_large",
+      "soft_hit_count": 20808
+    },
+    {
+      "avg_hit_features": {
+        "low_score_ratio": 0.0,
+        "pos_trace_ratio": 2.4878592148897885,
+        "recent_fake_len": 0.508100695464786,
+        "recent_match_cost_mean": 0.4007175146459443
+      },
+      "avg_penalty": 0.8748309460169499,
+      "class_id": 1,
+      "class_name": "pedestrian",
+      "emitted_count": 87546,
+      "evaluated_count": 87546,
+      "hard_reject_count": 0,
+      "profile_name": "human",
+      "soft_hit_count": 51045
+    },
+    {
+      "avg_hit_features": {
+        "low_score_ratio": 0.0,
+        "pos_trace_ratio": 5.829412347097464,
+        "recent_fake_len": 0.5045991502077789,
+        "recent_match_cost_mean": 0.2573141343764302
+      },
+      "avg_penalty": 0.8148106508875734,
+      "class_id": 2,
+      "class_name": "bicycle",
+      "emitted_count": 25350,
+      "evaluated_count": 25350,
+      "hard_reject_count": 0,
+      "profile_name": "agile_weak",
+      "soft_hit_count": 21417
+    },
+    {
+      "avg_hit_features": {
+        "low_score_ratio": 0.0,
+        "pos_trace_ratio": 2.1424755341593174,
+        "recent_fake_len": 0.4903238168231462,
+        "recent_match_cost_mean": 0.3274867421596264
+      },
+      "avg_penalty": 0.8134374381637097,
+      "class_id": 3,
+      "class_name": "motorcycle",
+      "emitted_count": 30322,
+      "evaluated_count": 30322,
+      "hard_reject_count": 0,
+      "profile_name": "agile_weak",
+      "soft_hit_count": 26095
+    },
+    {
+      "avg_hit_features": {
+        "low_score_ratio": 0.0,
+        "pos_trace_ratio": 3.777222751008822,
+        "recent_fake_len": 0.3088888888888889,
+        "recent_match_cost_mean": 0.20101182086177713
+      },
+      "avg_penalty": 0.785401709401709,
+      "class_id": 4,
+      "class_name": "bus",
+      "emitted_count": 5850,
+      "evaluated_count": 5850,
+      "hard_reject_count": 0,
+      "profile_name": "stable_large",
+      "soft_hit_count": 5850
+    },
+    {
+      "avg_hit_features": {
+        "low_score_ratio": 0.0,
+        "pos_trace_ratio": 29.04124060653602,
+        "recent_fake_len": 0.33613020622725437,
+        "recent_match_cost_mean": 0.18661390944842737
+      },
+      "avg_penalty": 0.7838152042054188,
+      "class_id": 5,
+      "class_name": "trailer",
+      "emitted_count": 9892,
+      "evaluated_count": 9892,
+      "hard_reject_count": 0,
+      "profile_name": "trailer_only",
+      "soft_hit_count": 9892
+    },
+    {
+      "avg_hit_features": {
+        "low_score_ratio": 0.0,
+        "pos_trace_ratio": 30.768678047773683,
+        "recent_fake_len": 0.3184322583599151,
+        "recent_match_cost_mean": 0.2510340531826466
+      },
+      "avg_penalty": 0.7846049358221039,
+      "class_id": 6,
+      "class_name": "truck",
+      "emitted_count": 65521,
+      "evaluated_count": 65521,
+      "hard_reject_count": 0,
+      "profile_name": "heavy_long",
+      "soft_hit_count": 65521
+    }
+  ],
+  "feature_keys": [
+    "recent_fake_len",
+    "low_score_ratio",
+    "pos_trace_ratio",
+    "recent_match_cost_mean"
+  ],
+  "schema_version": 1
+}
