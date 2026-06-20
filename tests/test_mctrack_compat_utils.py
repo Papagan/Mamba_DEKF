@@ -7,6 +7,7 @@ from tracker.compat_utils import (
     compute_track_quality_score,
     dirty_track_suppressor,
     extract_bbox_history_fields,
+    get_dirty_track_profile_cfg,
     initial_status_flag_for_mode,
     map_class_to_dirty_profile,
     sync_bbox_fields_from_state,
@@ -85,6 +86,23 @@ class MCTrackCompatUtilsTest(unittest.TestCase):
         self.assertIsNone(map_class_to_dirty_profile(99))
         self.assertIsNone(map_class_to_dirty_profile(None))
         self.assertIsNone(map_class_to_dirty_profile("not-a-class"))
+
+    def test_dirty_track_profile_cfg_allows_class_override(self):
+        cfg = {
+            "CLASS_PROFILE_OVERRIDES": {5: "trailer_only"},
+            "PROFILES": {
+                "trailer_only": {"soft_fake_len": 1},
+                "heavy_long": {"soft_fake_len": 2},
+            },
+        }
+        self.assertEqual(
+            get_dirty_track_profile_cfg(5, cfg).get("soft_fake_len"),
+            1,
+        )
+        self.assertEqual(
+            get_dirty_track_profile_cfg(6, cfg).get("soft_fake_len"),
+            2,
+        )
 
     def test_dirty_suppressor_returns_identity_for_clean_track(self):
         suppress = dirty_track_suppressor(
