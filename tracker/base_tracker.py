@@ -40,6 +40,7 @@ from tracker.compat_utils import (
     use_mctrack_exact_unmatch_update,
     use_mctrack_single_stage_flow,
 )
+from tracker.dirty_suppressor_audit import DirtySuppressorAuditAccumulator
 from tracker.trajectory import Trajectory
 from tracker.bbox import BBox
 from kalmanfilter.mamba_adaptive_kf import MambaDecoupledEKF, build_noise_audit_samples
@@ -377,6 +378,15 @@ class Base3DTracker:
             NoiseAuditAccumulator() if _noise_audit_enabled(cfg) else None
         )
         self._noise_audit_pending: Optional[Dict] = None
+        self.dirty_suppressor_cfg = (cfg.get("DIRTY_TRACK_SUPPRESSOR", {}) or {})
+        self.dirty_suppressor_audit_cfg = (
+            (self.dirty_suppressor_cfg.get("AUDIT", {}) or {})
+        )
+        self.dirty_suppressor_audit = (
+            DirtySuppressorAuditAccumulator()
+            if bool(self.dirty_suppressor_audit_cfg.get("ENABLED", False))
+            else None
+        )
 
     def _normalize_delta_t(self, dt_raw: float) -> float:
         """
@@ -518,6 +528,49 @@ class Base3DTracker:
         if self.noise_audit is None:
             return None
         return self.noise_audit.export_state()
+
+    def _record_dirty_suppressor_audit_sample(
+        self,
+        *,
+        class_id: int,
+        class_name: str,
+        profile_name: str | None,
+        penalty: float,
+        hard_reject: bool,
+        features: Dict,
+    ) -> None:
+        if self.dirty_suppressor_audit is None:
+            return
+        self.dirty_suppressor_audit.add_sample(
+            class_id=class_id,
+            class_name=class_name,
+            profile_name=profile_name,
+            penalty=penalty,
+            hard_reject=hard_reject,
+            features=features,
+        )
+
+    def dump_dirty_suppressor_audit_if_needed(self) -> None:
+        if self.dirty_suppressor_audit is None:
+            return
+        output_path = self.dirty_suppressor_audit_cfg.get(
+            "INFER_OUTPUT_PATH",
+            "debug/dirty_track_suppressor_audit.json",
+        )
+        try:
+            self.dirty_suppressor_audit.write_json(output_path)
+        except Exception as exc:
+            if self.dirty_suppressor_audit_cfg.get("STRICT", False):
+                raise
+            print(
+                "[Base3DTracker] WARNING: failed to write dirty suppressor audit "
+                f"to {output_path}: {exc}"
+            )
+
+    def export_dirty_suppressor_audit_state(self) -> Optional[Dict]:
+        if self.dirty_suppressor_audit is None:
+            return None
+        return self.dirty_suppressor_audit.export_state()
 
     # ==================================================================
     # History extraction: Trajectory bboxes → [B, T, 12] tensor
@@ -2051,7 +2104,7 @@ class Base3DTracker:
                         compat_mode=self.tracker_compat_mode,
                     )
                 bbox.det_score = quality_score
-                suppressor_cfg = self.cfg.get("DIRTY_TRACK_SUPPRESSOR", {})
+                suppressor_cfg = self.dirty_suppressor_cfg
                 base_score = (
                     bbox.det_score if getattr(bbox, "det_score", None) is not None
                     else getattr(bbox, "score", 0.0)
@@ -2072,6 +2125,14 @@ class Base3DTracker:
                         int(traj.category_num),
                         23.0,
                     ),
+                )
+                self._record_dirty_suppressor_audit_sample(
+                    class_id=int(traj.category_num),
+                    class_name=str(getattr(bbox, "category", "unknown")),
+                    profile_name=suppress_result.get("profile_name"),
+                    penalty=float(suppress_result["penalty"]),
+                    hard_reject=bool(suppress_result["hard_reject"]),
+                    features=suppress_result.get("features", {}),
                 )
                 if suppress_result["hard_reject"]:
                     continue

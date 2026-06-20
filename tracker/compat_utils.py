@@ -124,15 +124,20 @@ def dirty_track_suppressor(*, features: dict, profile_cfg: dict) -> dict:
 
 
 def get_dirty_track_profile_cfg(class_id: int, suppressor_cfg: dict) -> dict:
+    profile_name = get_dirty_track_profile_name(class_id, suppressor_cfg)
+    if not profile_name:
+        return {}
+    return ((suppressor_cfg or {}).get("PROFILES") or {}).get(profile_name, {})
+
+
+def get_dirty_track_profile_name(class_id: int, suppressor_cfg: dict):
     override_map = ((suppressor_cfg or {}).get("CLASS_PROFILE_OVERRIDES") or {})
     profile_name = override_map.get(class_id)
     if profile_name is None:
         profile_name = override_map.get(str(class_id))
     if profile_name is None:
         profile_name = map_class_to_dirty_profile(class_id)
-    if not profile_name:
-        return {}
-    return ((suppressor_cfg or {}).get("PROFILES") or {}).get(profile_name, {})
+    return profile_name
 
 
 def apply_dirty_track_suppressor_to_output(
@@ -148,6 +153,7 @@ def apply_dirty_track_suppressor_to_output(
         return {"final_score": float(base_score), "hard_reject": False, "penalty": 1.0}
 
     profile_cfg = get_dirty_track_profile_cfg(class_id, suppressor_cfg)
+    profile_name = get_dirty_track_profile_name(class_id, suppressor_cfg)
     features = collect_dirty_track_features(
         traj,
         base_score=base_score,
@@ -160,6 +166,7 @@ def apply_dirty_track_suppressor_to_output(
         "hard_reject": bool(suppress["hard_reject"]),
         "penalty": float(suppress["penalty"]),
         "features": features,
+        "profile_name": profile_name,
     }
 
 

@@ -213,6 +213,7 @@ class MCTrackCompatUtilsTest(unittest.TestCase):
 
         self.assertAlmostEqual(result["final_score"], 0.8)
         self.assertFalse(result["hard_reject"])
+        self.assertEqual(result["penalty"], 1.0)
 
     def test_apply_dirty_track_suppressor_softly_downweights_dirty_track(self):
         result = apply_dirty_track_suppressor_to_output(
@@ -239,6 +240,33 @@ class MCTrackCompatUtilsTest(unittest.TestCase):
 
         self.assertLess(result["final_score"], 0.4)
         self.assertFalse(result["hard_reject"])
+        self.assertEqual(result["profile_name"], "heavy_long")
+
+    def test_apply_dirty_track_suppressor_reports_override_profile_name(self):
+        result = apply_dirty_track_suppressor_to_output(
+            base_score=0.4,
+            class_id=5,
+            traj=make_dirty_traj_stub(),
+            suppressor_cfg={
+                "ENABLED": True,
+                "CLASS_PROFILE_OVERRIDES": {5: "trailer_only"},
+                "PROFILES": {
+                    "trailer_only": {
+                        "soft_fake_len": 1,
+                        "hard_fake_len": 3,
+                        "soft_low_score_ratio": 0.35,
+                        "hard_low_score_ratio": 0.60,
+                        "soft_pos_trace_ratio": 1.5,
+                        "hard_pos_trace_ratio": 2.1,
+                        "cost_penalty_start": 0.8,
+                    }
+                },
+            },
+            pos_trace=4.2,
+            pos_trace_prior=2.0,
+        )
+
+        self.assertEqual(result["profile_name"], "trailer_only")
 
     def test_initial_status_flag_matches_mode(self):
         self.assertEqual(initial_status_flag_for_mode("default"), 0)

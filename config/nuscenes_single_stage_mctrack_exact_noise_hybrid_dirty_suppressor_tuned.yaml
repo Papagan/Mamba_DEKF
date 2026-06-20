@@ -52,7 +52,7 @@ MAMBA:
 MATCHING:
   USE_BYTETRACK: False
   BEV:
-    COST_STATE: {0: "BackPredict", 1: "BackPredict", 2: "Predict", 3: "Fusion", 4: "Predict", 5: "BackPredict", 6: "BackPredict"}
+    COST_STATE: {0: "BackPredict", 1: "BackPredict", 2: "Predict", 3: "Fusion", 4: "Predict", 5: "Predict", 6: "BackPredict"}
     COST_MODE: {0: "RO_GDIOU_3D", 1: "RO_GDIOU_3D", 2: "RO_GDIOU_3D", 3: "RO_GDIOU_3D", 4: "RO_GDIOU_3D", 5: "RO_GDIOU_3D", 6: "RO_GDIOU_3D"}
     MATCHING_MODE: Hungarian
   RV:
@@ -68,7 +68,7 @@ THRESHOLD:
   NMS_THRE: {0: 0.04, 1: 0.08, 2: 0.08, 3: 0.06, 4: 0.08, 5: 0.12, 6: 0.05}
   EVAL_MIN_TRACKING_SCORE: {0: 0.00, 1: 0.00, 2: 0.00, 3: 0.00, 4: 0.00, 5: 0.00, 6: 0.00}
   BEV:
-    COST_THRE: {0: 1.10, 1: 2.06, 2: 2.00, 3: 2.06, 4: 1.60, 5: 1.26, 6: 1.16}
+    COST_THRE: {0: 1.10, 1: 2.06, 2: 2.00, 3: 2.06, 4: 1.60, 5: 1.22, 6: 1.16}
     COST_MODE: "geometric"
     WEIGHT_RO_GDIOU: {
       0: {"w1": 1.0, "w2": 1.0},
@@ -183,6 +183,10 @@ DEKF_BASE_NOISE:
 DIRTY_TRACK_SUPPRESSOR:
   ENABLED: true
   RECENT_WINDOW: 5
+  AUDIT:
+    ENABLED: true
+    STRICT: false
+    INFER_OUTPUT_PATH: debug/dirty_suppressor_tuned_audit.json
   CLASS_PROFILE_OVERRIDES:
     5: trailer_only
   PROFILES:
