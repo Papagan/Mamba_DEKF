@@ -15,6 +15,7 @@ class DirtySuppressorAuditAccumulatorTest(unittest.TestCase):
             profile_name="trailer_only",
             penalty=0.8,
             hard_reject=False,
+            triggered_reasons=["recent_fake_len", "pos_trace_ratio"],
             features={
                 "recent_fake_len": 1,
                 "low_score_ratio": 0.0,
@@ -28,6 +29,7 @@ class DirtySuppressorAuditAccumulatorTest(unittest.TestCase):
             profile_name="trailer_only",
             penalty=1.0,
             hard_reject=False,
+            triggered_reasons=[],
             features={
                 "recent_fake_len": 0,
                 "low_score_ratio": 0.0,
@@ -44,6 +46,10 @@ class DirtySuppressorAuditAccumulatorTest(unittest.TestCase):
         self.assertEqual(bucket["hard_reject_count"], 0)
         self.assertAlmostEqual(bucket["avg_penalty"], 0.9)
         self.assertAlmostEqual(bucket["avg_hit_features"]["pos_trace_ratio"], 2.5)
+        self.assertEqual(
+            bucket["reason_counts"],
+            {"recent_fake_len": 1, "pos_trace_ratio": 1},
+        )
 
     def test_merge_and_write_json(self):
         first = DirtySuppressorAuditAccumulator()
@@ -53,6 +59,7 @@ class DirtySuppressorAuditAccumulatorTest(unittest.TestCase):
             profile_name="agile_weak",
             penalty=0.8,
             hard_reject=False,
+            triggered_reasons=["recent_fake_len"],
             features={
                 "recent_fake_len": 1,
                 "low_score_ratio": 0.0,
@@ -67,4 +74,3 @@ class DirtySuppressorAuditAccumulatorTest(unittest.TestCase):
             second.write_json(out)
             payload = json.loads(out.read_text())
         self.assertEqual(payload["buckets"][0]["class_name"], "bicycle")
-

@@ -104,6 +104,32 @@ class MCTrackCompatUtilsTest(unittest.TestCase):
             2,
         )
 
+    def test_dirty_track_profile_cfg_merges_per_class_overrides(self):
+        cfg = {
+            "PROFILES": {
+                "heavy_long": {
+                    "soft_fake_len": 2,
+                    "soft_pos_trace_ratio": 1.7,
+                    "cost_penalty_start": 0.9,
+                },
+            },
+            "CLASS_PROFILES": {
+                5: {
+                    "MODE": "conjunctive_v1",
+                    "MIN_SOFT_SIGNALS": 2,
+                    "soft_pos_trace_ratio": 35.0,
+                },
+            },
+        }
+        trailer_cfg = get_dirty_track_profile_cfg(5, cfg)
+        truck_cfg = get_dirty_track_profile_cfg(6, cfg)
+        self.assertEqual(trailer_cfg.get("soft_fake_len"), 2)
+        self.assertEqual(trailer_cfg.get("soft_pos_trace_ratio"), 35.0)
+        self.assertEqual(trailer_cfg.get("MODE"), "conjunctive_v1")
+        self.assertEqual(trailer_cfg.get("MIN_SOFT_SIGNALS"), 2)
+        self.assertEqual(truck_cfg.get("soft_pos_trace_ratio"), 1.7)
+        self.assertIsNone(truck_cfg.get("MODE"))
+
     def test_dirty_suppressor_returns_identity_for_clean_track(self):
         suppress = dirty_track_suppressor(
             features={
@@ -156,6 +182,63 @@ class MCTrackCompatUtilsTest(unittest.TestCase):
         )
         self.assertAlmostEqual(suppress["penalty"], 0.8)
         self.assertFalse(suppress["hard_reject"])
+
+    def test_dirty_suppressor_conjunctive_mode_ignores_pos_trace_only_hit(self):
+        suppress = dirty_track_suppressor(
+            features={
+                "recent_fake_len": 0,
+                "fake_ratio": 0.0,
+                "recent_low_score_match_count": 0,
+                "low_score_ratio": 0.0,
+                "recent_match_cost_mean": 0.2,
+                "current_det_score": 0.8,
+                "pos_trace_ratio": 40.0,
+            },
+            profile_cfg={
+                "MODE": "conjunctive_v1",
+                "MIN_SOFT_SIGNALS": 2,
+                "soft_fake_len": 3,
+                "hard_fake_len": 5,
+                "soft_low_score_ratio": 0.50,
+                "hard_low_score_ratio": 0.75,
+                "soft_pos_trace_ratio": 35.0,
+                "hard_pos_trace_ratio": 60.0,
+                "cost_penalty_start": 1.05,
+            },
+        )
+        self.assertAlmostEqual(suppress["penalty"], 1.0)
+        self.assertFalse(suppress["hard_reject"])
+        self.assertEqual(suppress["triggered_reasons"], ["pos_trace_ratio"])
+
+    def test_dirty_suppressor_conjunctive_mode_penalizes_multi_signal_dirty_track(self):
+        suppress = dirty_track_suppressor(
+            features={
+                "recent_fake_len": 3,
+                "fake_ratio": 0.5,
+                "recent_low_score_match_count": 0,
+                "low_score_ratio": 0.0,
+                "recent_match_cost_mean": 1.2,
+                "current_det_score": 0.8,
+                "pos_trace_ratio": 40.0,
+            },
+            profile_cfg={
+                "MODE": "conjunctive_v1",
+                "MIN_SOFT_SIGNALS": 2,
+                "soft_fake_len": 3,
+                "hard_fake_len": 5,
+                "soft_low_score_ratio": 0.50,
+                "hard_low_score_ratio": 0.75,
+                "soft_pos_trace_ratio": 35.0,
+                "hard_pos_trace_ratio": 60.0,
+                "cost_penalty_start": 1.05,
+            },
+        )
+        self.assertLess(suppress["penalty"], 1.0)
+        self.assertFalse(suppress["hard_reject"])
+        self.assertEqual(
+            suppress["triggered_reasons"],
+            ["recent_fake_len", "pos_trace_ratio", "recent_match_cost_mean"],
+        )
 
     def test_dirty_suppressor_hard_rejects_extreme_dirty_track(self):
         suppress = dirty_track_suppressor(

@@ -187,8 +187,17 @@ DIRTY_TRACK_SUPPRESSOR:
     ENABLED: true
     STRICT: false
     INFER_OUTPUT_PATH: debug/dirty_suppressor_tuned_audit.json
-  CLASS_PROFILE_OVERRIDES:
-    5: trailer_only
+  CLASS_PROFILES:
+    5:
+      MODE: conjunctive_v1
+      MIN_SOFT_SIGNALS: 2
+      soft_fake_len: 3
+      hard_fake_len: 5
+      soft_low_score_ratio: 0.50
+      hard_low_score_ratio: 0.75
+      soft_pos_trace_ratio: 35.0
+      hard_pos_trace_ratio: 60.0
+      cost_penalty_start: 1.05
   PROFILES:
     stable_large:
       soft_fake_len: 2
@@ -214,14 +223,6 @@ DIRTY_TRACK_SUPPRESSOR:
       soft_pos_trace_ratio: 1.7
       hard_pos_trace_ratio: 2.4
       cost_penalty_start: 0.9
-    trailer_only:
-      soft_fake_len: 3
-      hard_fake_len: 5
-      soft_low_score_ratio: 0.50
-      hard_low_score_ratio: 0.75
-      soft_pos_trace_ratio: 35.0
-      hard_pos_trace_ratio: 60.0
-      cost_penalty_start: 1.05
     human:
       soft_fake_len: 2
       hard_fake_len: 3

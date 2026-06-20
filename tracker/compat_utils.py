@@ -85,6 +85,8 @@ def collect_dirty_track_features(
 def dirty_track_suppressor(*, features: dict, profile_cfg: dict) -> dict:
     features = features or {}
     profile_cfg = profile_cfg or {}
+    mode = str(profile_cfg.get("MODE", "independent_v1")).strip().lower()
+    min_soft_signals = max(1, int(profile_cfg.get("MIN_SOFT_SIGNALS", 1)))
     soft_fake_len = int(profile_cfg.get("soft_fake_len", 99))
     hard_fake_len = int(profile_cfg.get("hard_fake_len", 999))
     soft_low_score_ratio = float(profile_cfg.get("soft_low_score_ratio", 1.0))
@@ -99,17 +101,30 @@ def dirty_track_suppressor(*, features: dict, profile_cfg: dict) -> dict:
     recent_match_cost_mean = float(features.get("recent_match_cost_mean", 0.0))
     current_det_score = float(features.get("current_det_score", 1.0))
 
-    fake_penalty = 1.0
+    penalty_candidates = []
+    triggered_reasons = []
     if recent_fake_len >= soft_fake_len:
-        fake_penalty = min(fake_penalty, 0.85)
+        penalty_candidates.append(0.85)
+        triggered_reasons.append("recent_fake_len")
     if low_score_ratio >= soft_low_score_ratio:
-        fake_penalty = min(fake_penalty, 0.8)
+        penalty_candidates.append(0.8)
+        triggered_reasons.append("low_score_ratio")
     if pos_trace_ratio >= soft_pos_trace_ratio:
-        fake_penalty = min(fake_penalty, 0.8)
+        penalty_candidates.append(0.8)
+        triggered_reasons.append("pos_trace_ratio")
     if recent_match_cost_mean >= cost_penalty_start:
-        fake_penalty = min(fake_penalty, 0.85)
+        penalty_candidates.append(0.85)
+        triggered_reasons.append("recent_match_cost_mean")
     if current_det_score <= 0.1:
-        fake_penalty = min(fake_penalty, 0.75)
+        penalty_candidates.append(0.75)
+        triggered_reasons.append("current_det_score")
+
+    if mode == "conjunctive_v1" and len(triggered_reasons) < min_soft_signals:
+        fake_penalty = 1.0
+    elif penalty_candidates:
+        fake_penalty = min(penalty_candidates)
+    else:
+        fake_penalty = 1.0
 
     hard_reject = (
         recent_fake_len >= hard_fake_len
@@ -120,14 +135,27 @@ def dirty_track_suppressor(*, features: dict, profile_cfg: dict) -> dict:
     return {
         "penalty": max(0.5, float(fake_penalty)),
         "hard_reject": bool(hard_reject),
+        "triggered_reasons": triggered_reasons,
     }
 
 
 def get_dirty_track_profile_cfg(class_id: int, suppressor_cfg: dict) -> dict:
     profile_name = get_dirty_track_profile_name(class_id, suppressor_cfg)
-    if not profile_name:
-        return {}
-    return ((suppressor_cfg or {}).get("PROFILES") or {}).get(profile_name, {})
+    base_cfg = {}
+    if profile_name:
+        base_cfg = dict(
+            ((suppressor_cfg or {}).get("PROFILES") or {}).get(profile_name, {}) or {}
+        )
+
+    class_profiles = ((suppressor_cfg or {}).get("CLASS_PROFILES") or {})
+    class_cfg = class_profiles.get(class_id)
+    if class_cfg is None:
+        class_cfg = class_profiles.get(str(class_id))
+    if class_cfg:
+        merged_cfg = dict(base_cfg)
+        merged_cfg.update(dict(class_cfg))
+        return merged_cfg
+    return base_cfg
 
 
 def get_dirty_track_profile_name(class_id: int, suppressor_cfg: dict):
@@ -165,6 +193,7 @@ def apply_dirty_track_suppressor_to_output(
         "final_score": float(base_score) * float(suppress["penalty"]),
         "hard_reject": bool(suppress["hard_reject"]),
         "penalty": float(suppress["penalty"]),
+        "triggered_reasons": list(suppress.get("triggered_reasons", [])),
         "features": features,
         "profile_name": profile_name,
     }

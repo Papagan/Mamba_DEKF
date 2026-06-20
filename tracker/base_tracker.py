@@ -537,6 +537,7 @@ class Base3DTracker:
         profile_name: str | None,
         penalty: float,
         hard_reject: bool,
+        triggered_reasons: list,
         features: Dict,
     ) -> None:
         if self.dirty_suppressor_audit is None:
@@ -547,6 +548,7 @@ class Base3DTracker:
             profile_name=profile_name,
             penalty=penalty,
             hard_reject=hard_reject,
+            triggered_reasons=triggered_reasons,
             features=features,
         )
 
@@ -2132,6 +2134,7 @@ class Base3DTracker:
                     profile_name=suppress_result.get("profile_name"),
                     penalty=float(suppress_result["penalty"]),
                     hard_reject=bool(suppress_result["hard_reject"]),
+                    triggered_reasons=list(suppress_result.get("triggered_reasons", [])),
                     features=suppress_result.get("features", {}),
                 )
                 if suppress_result["hard_reject"]:

@@ -23,8 +23,9 @@ class _Bucket:
     penalty_sum: float = 0.0
     hit_count: int = 0
     hit_feature_sums: dict = field(default_factory=lambda: {key: 0.0 for key in _FEATURE_KEYS})
+    reason_counts: dict = field(default_factory=dict)
 
-    def add(self, *, penalty: float, hard_reject: bool, features: dict):
+    def add(self, *, penalty: float, hard_reject: bool, triggered_reasons: list, features: dict):
         self.evaluated_count += 1
         self.penalty_sum += float(penalty)
         if hard_reject:
@@ -38,6 +39,9 @@ class _Bucket:
             self.soft_hit_count += 1
         if hit:
             self.hit_count += 1
+            for reason in triggered_reasons or []:
+                reason_key = str(reason)
+                self.reason_counts[reason_key] = self.reason_counts.get(reason_key, 0) + 1
             for key in _FEATURE_KEYS:
                 self.hit_feature_sums[key] += float((features or {}).get(key, 0.0))
 
@@ -65,6 +69,7 @@ class _Bucket:
             "hard_reject_count": self.hard_reject_count,
             "avg_penalty": avg_penalty,
             "avg_hit_features": avg_hit_features,
+            "reason_counts": dict(sorted(self.reason_counts.items())),
         }
 
 
@@ -80,6 +85,7 @@ class DirtySuppressorAuditAccumulator:
         profile_name: str | None,
         penalty: float,
         hard_reject: bool,
+        triggered_reasons: list,
         features: dict,
     ):
         key = (int(class_id), str(class_name), profile_name)
@@ -94,6 +100,7 @@ class DirtySuppressorAuditAccumulator:
         bucket.add(
             penalty=float(penalty),
             hard_reject=bool(hard_reject),
+            triggered_reasons=list(triggered_reasons or []),
             features=features or {},
         )
 
@@ -129,6 +136,10 @@ class DirtySuppressorAuditAccumulator:
             bucket.penalty_sum += float(item.get("avg_penalty") or 0.0) * int(item.get("evaluated_count", 0))
             hit_count = int(item.get("soft_hit_count", 0)) + int(item.get("hard_reject_count", 0))
             bucket.hit_count += hit_count
+            for reason_key, count in (item.get("reason_counts", {}) or {}).items():
+                bucket.reason_counts[str(reason_key)] = (
+                    bucket.reason_counts.get(str(reason_key), 0) + int(count)
+                )
             avg_hit_features = item.get("avg_hit_features", {}) or {}
             for feature_key in _FEATURE_KEYS:
                 avg_value = avg_hit_features.get(feature_key, None)
