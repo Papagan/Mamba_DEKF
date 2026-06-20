@@ -188,6 +188,26 @@ DIRTY_TRACK_SUPPRESSOR:
     STRICT: false
     INFER_OUTPUT_PATH: debug/dirty_suppressor_tuned_audit.json
   CLASS_PROFILES:
+    1:
+      MODE: conjunctive_v1
+      MIN_SOFT_SIGNALS: 2
+      soft_fake_len: 2
+      hard_fake_len: 3
+      soft_low_score_ratio: 0.30
+      hard_low_score_ratio: 0.55
+      soft_pos_trace_ratio: 2.0
+      hard_pos_trace_ratio: 2.8
+      cost_penalty_start: 0.65
+    3:
+      MODE: conjunctive_v1
+      MIN_SOFT_SIGNALS: 2
+      soft_fake_len: 2
+      hard_fake_len: 3
+      soft_low_score_ratio: 0.30
+      hard_low_score_ratio: 0.55
+      soft_pos_trace_ratio: 1.9
+      hard_pos_trace_ratio: 2.5
+      cost_penalty_start: 0.70
     5:
       MODE: conjunctive_v1
       MIN_SOFT_SIGNALS: 2

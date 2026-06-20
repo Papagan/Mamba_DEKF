@@ -14,6 +14,12 @@
       "evaluated_count": 89641,
       "hard_reject_count": 0,
       "profile_name": "stable_large",
+      "reason_counts": {
+        "current_det_score": 2423,
+        "pos_trace_ratio": 19623,
+        "recent_fake_len": 898,
+        "recent_match_cost_mean": 1237
+      },
       "soft_hit_count": 20808
     },
     {
@@ -30,6 +36,12 @@
       "evaluated_count": 87546,
       "hard_reject_count": 0,
       "profile_name": "human",
+      "reason_counts": {
+        "current_det_score": 24593,
+        "pos_trace_ratio": 30664,
+        "recent_fake_len": 1343,
+        "recent_match_cost_mean": 13619
+      },
       "soft_hit_count": 51045
     },
     {
@@ -46,6 +58,12 @@
       "evaluated_count": 25350,
       "hard_reject_count": 0,
       "profile_name": "agile_weak",
+      "reason_counts": {
+        "current_det_score": 10583,
+        "pos_trace_ratio": 19057,
+        "recent_fake_len": 224,
+        "recent_match_cost_mean": 3918
+      },
       "soft_hit_count": 21417
     },
     {
@@ -62,6 +80,12 @@
       "evaluated_count": 30322,
       "hard_reject_count": 0,
       "profile_name": "agile_weak",
+      "reason_counts": {
+        "current_det_score": 12496,
+        "pos_trace_ratio": 22358,
+        "recent_fake_len": 299,
+        "recent_match_cost_mean": 6150
+      },
       "soft_hit_count": 26095
     },
     {
@@ -78,23 +102,33 @@
       "evaluated_count": 5850,
       "hard_reject_count": 0,
       "profile_name": "stable_large",
+      "reason_counts": {
+        "current_det_score": 1708,
+        "pos_trace_ratio": 5850,
+        "recent_fake_len": 99,
+        "recent_match_cost_mean": 204
+      },
       "soft_hit_count": 5850
     },
     {
       "avg_hit_features": {
         "low_score_ratio": 0.0,
-        "pos_trace_ratio": 29.04124060653602,
-        "recent_fake_len": 0.33613020622725437,
-        "recent_match_cost_mean": 0.18661390944842737
+        "pos_trace_ratio": 4.207747771531432,
+        "recent_fake_len": 1.0,
+        "recent_match_cost_mean": 1.142537229665115
       },
-      "avg_penalty": 0.7838152042054188,
+      "avg_penalty": 0.9991912656692277,
       "class_id": 5,
       "class_name": "trailer",
       "emitted_count": 9892,
       "evaluated_count": 9892,
       "hard_reject_count": 0,
-      "profile_name": "trailer_only",
-      "soft_hit_count": 9892
+      "profile_name": "heavy_long",
+      "reason_counts": {
+        "current_det_score": 32,
+        "recent_match_cost_mean": 32
+      },
+      "soft_hit_count": 32
     },
     {
       "avg_hit_features": {
@@ -110,6 +144,12 @@
       "evaluated_count": 65521,
       "hard_reject_count": 0,
       "profile_name": "heavy_long",
+      "reason_counts": {
+        "current_det_score": 20174,
+        "pos_trace_ratio": 48800,
+        "recent_fake_len": 690,
+        "recent_match_cost_mean": 1875
+      },
       "soft_hit_count": 65521
     }
   ],
