@@ -57,6 +57,7 @@ from kalmanfilter.noise_priors import (
     category_to_tracking_name,
     categories_to_class_ids,
 )
+from kalmanfilter.bounded_residual import get_family_ratio_bounds
 
 logger = logging.getLogger("train")
 
@@ -177,6 +178,101 @@ def _dump_train_noise_audit_if_needed(noise_audit, audit_cfg, logger_obj=None):
             logger_obj.warning(message)
         else:
             print(message)
+
+
+def _trace_covariance_batch(cov: torch.Tensor) -> torch.Tensor:
+    return cov.diagonal(dim1=-2, dim2=-1).sum(-1)
+
+
+def _compute_ratio_anchor_regularization(
+    *,
+    raw_tensors: dict,
+    prior_tensors: dict,
+    class_ids: torch.Tensor,
+    state_buckets: list,
+    closure_cfg: dict,
+) -> tuple:
+    device = class_ids.device
+    dtype = next(iter(raw_tensors.values())).dtype
+    zero = torch.zeros((), device=device, dtype=dtype)
+    detail = {
+        "loss_ratio_q_pos": zero,
+        "loss_ratio_r_pos": zero,
+        "loss_ratio_r_siz": zero,
+        "loss_ratio_r_ori": zero,
+    }
+    if not closure_cfg or not bool(closure_cfg.get("ENABLED", False)):
+        return zero, detail
+
+    weight = float(closure_cfg.get("RATIO_ANCHOR_WEIGHT", 0.0))
+    if weight <= 0.0:
+        return zero, detail
+
+    class_id_list = [
+        int(value.item()) if hasattr(value, "item") else int(value)
+        for value in class_ids
+    ]
+    state_bucket_list = [str(bucket) for bucket in state_buckets]
+    if len(class_id_list) != len(state_bucket_list):
+        raise ValueError("class_ids and state_buckets must have the same batch length")
+
+    family_specs = {
+        "loss_ratio_q_pos": ("Q_pos", "Q_pos_base", "q_pos"),
+        "loss_ratio_r_pos": ("R_pos", "R_pos_base", "r_pos"),
+        "loss_ratio_r_siz": ("R_siz", "R_siz_base", "r_siz"),
+        "loss_ratio_r_ori": ("R_ori", "R_ori_base", "r_ori"),
+    }
+    total = zero
+    eps = torch.tensor(1e-8, device=device, dtype=dtype)
+
+    for detail_key, (raw_key, prior_key, family_name) in family_specs.items():
+        raw_cov = raw_tensors.get(raw_key)
+        prior_cov = prior_tensors.get(prior_key)
+        if raw_cov is None or prior_cov is None:
+            continue
+
+        min_ratios = []
+        max_ratios = []
+        mask = []
+        has_bounded_sample = False
+        for class_id, state_bucket in zip(class_id_list, state_bucket_list):
+            bounds = get_family_ratio_bounds(class_id, state_bucket, family_name, closure_cfg)
+            if bounds is None:
+                min_ratios.append(0.0)
+                max_ratios.append(float("inf"))
+                mask.append(False)
+                continue
+            has_bounded_sample = True
+            min_ratios.append(bounds[0])
+            max_ratios.append(bounds[1])
+            mask.append(True)
+
+        if not has_bounded_sample:
+            continue
+
+        min_ratio_t = torch.tensor(min_ratios, device=device, dtype=dtype)
+        max_ratio_t = torch.tensor(max_ratios, device=device, dtype=dtype)
+        mask_t = torch.tensor(mask, device=device, dtype=torch.bool)
+
+        raw_trace = _trace_covariance_batch(raw_cov)
+        prior_trace = torch.clamp(_trace_covariance_batch(prior_cov), min=eps)
+        raw_ratio = raw_trace / prior_trace
+        valid_ratio = torch.isfinite(raw_ratio) & (raw_ratio > eps)
+        safe_ratio = torch.where(valid_ratio, raw_ratio, max_ratio_t)
+
+        log_ratio = torch.log(torch.clamp(safe_ratio, min=eps))
+        log_min = torch.log(torch.clamp(min_ratio_t, min=eps))
+        log_max = torch.log(torch.clamp(max_ratio_t, min=eps))
+        lower_violation = F.relu(log_min - log_ratio)
+        upper_violation = F.relu(log_ratio - log_max)
+        penalty = (lower_violation.pow(2) + upper_violation.pow(2))[mask_t]
+        if penalty.numel() == 0:
+            continue
+        family_loss = penalty.mean() * weight
+        detail[detail_key] = family_loss
+        total = total + family_loss
+
+    return total, detail
 
 
 def resolve_runtime_contract_filter_mode(cfg, train_tracker_compat_mode):
@@ -328,16 +424,18 @@ def training_step(
     noise_scale_siz_lwh = noise_bundle["siz_std_lwh"]
     noise_scale_vel_xy = noise_bundle["vel_std_xy"]
     noise_scale_ori = noise_bundle["ori_std"].view(B, 1, 1)
+    closure_cfg = (base_noise_cfg or {}).get("MAMBA_CLOSURE", {})
+    audit_state = _resolve_train_noise_audit_state(
+        use_det_update,
+        obs_future_pos,
+        obs_future_match,
+    )
+    state_buckets = [audit_state] * B
 
     if train_noise_audit is not None:
         # Training does not have literal tracker matched/unmatched lifecycle
         # states here. Project the teacher-forcing mode onto that shared axis
         # so the audit schema remains comparable with inference output.
-        audit_state = _resolve_train_noise_audit_state(
-            use_det_update,
-            obs_future_pos,
-            obs_future_match,
-        )
         _record_train_noise_audit_samples(
             train_noise_audit,
             filter_mode=filter_mode,
@@ -416,6 +514,23 @@ def training_step(
     R_siz = mamba_out["R_siz"]
     R_ori = mamba_out["R_ori"]
     kappa_ori = mamba_out["kappa_ori"]
+    ratio_anchor_loss, ratio_anchor_detail = _compute_ratio_anchor_regularization(
+        raw_tensors={
+            "Q_pos": Q_pos,
+            "R_pos": R_pos,
+            "R_siz": R_siz,
+            "R_ori": R_ori,
+        },
+        prior_tensors={
+            "Q_pos_base": noise_bundle["Q_pos_base"],
+            "R_pos_base": noise_bundle["R_pos_base"],
+            "R_siz_base": noise_bundle["R_siz_base"],
+            "R_ori_base": noise_bundle["R_ori_base"],
+        },
+        class_ids=class_ids,
+        state_buckets=state_buckets,
+        closure_cfg=closure_cfg,
+    )
 
     # Smoothly release gradients after warmup (avoid abrupt loss cliff).
     def _blend_detach(x: torch.Tensor, alpha: float) -> torch.Tensor:
@@ -579,6 +694,9 @@ def training_step(
     # Δpos L2 penalty: mild regularisation to keep delta_pos bounded.
     delta_pos_reg = 0.01 * mamba_out["delta_pos"].pow(2).mean()
     detail["loss_delta_pos_reg"] = delta_pos_reg.item()
+    for key, value in ratio_anchor_detail.items():
+        detail[key] = value.item()
+    detail["loss_ratio_anchor"] = ratio_anchor_loss.item()
 
     # ---- Step 4: Q/R/kappa variance monitor ----
     with torch.no_grad():
@@ -598,7 +716,7 @@ def training_step(
 
     # ---- Backward loss: total_loss_tensor already contains
     #      physics_scale × state_NLL + lambda × contrast + kappa_var_reg
-    real_loss = total_loss_tensor / norm + kappa_reg + delta_pos_reg
+    real_loss = total_loss_tensor / norm + kappa_reg + delta_pos_reg + ratio_anchor_loss
     detail["loss_real"] = real_loss.item()
     detail["unfreeze_alpha"] = unfreeze_alpha
     detail["effective_rollout_weight"] = float(total_weight)

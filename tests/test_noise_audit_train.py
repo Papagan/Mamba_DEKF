@@ -4,7 +4,13 @@ import pathlib
 import tempfile
 import unittest
 
+try:
+    import torch
+except ImportError:
+    torch = None
+
 from kalmanfilter.noise_audit import NoiseAuditAccumulator
+from kalmanfilter.bounded_residual import get_family_ratio_bounds
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -17,6 +23,16 @@ TRACKING_CAT_ID_MAP = {
     "trailer": 5,
     "truck": 6,
 }
+
+
+class _TorchStub:
+    Tensor = object
+
+
+class _FunctionalStub:
+    @staticmethod
+    def relu(value):
+        return value
 
 
 def _load_module_functions(module_path, function_names, extra_namespace=None):
@@ -56,11 +72,16 @@ class NoiseAuditTrainTest(unittest.TestCase):
                 "_resolve_train_noise_audit_state",
                 "_record_train_noise_audit_samples",
                 "_dump_train_noise_audit_if_needed",
+                "_trace_covariance_batch",
+                "_compute_ratio_anchor_regularization",
             ],
             extra_namespace={
                 "build_noise_audit_samples": mamba_helpers["build_noise_audit_samples"],
                 "category_to_tracking_name": noise_prior_helpers["category_to_tracking_name"],
                 "NoiseAuditAccumulator": NoiseAuditAccumulator,
+                "torch": torch or _TorchStub(),
+                "F": torch.nn.functional if torch is not None else _FunctionalStub(),
+                "get_family_ratio_bounds": get_family_ratio_bounds,
             },
         )
 
@@ -238,6 +259,58 @@ class NoiseAuditTrainTest(unittest.TestCase):
         bucket = payload["buckets"][0]
         self.assertEqual(bucket["class_name"], "truck")
         self.assertEqual(bucket["state"], "unmatched")
+
+    def test_ratio_anchor_regularization_reports_family_losses(self):
+        if torch is None:
+            self.skipTest("torch unavailable in unit-test interpreter")
+        helpers = self._load_train_helpers()
+        trace_covariance_batch = helpers["_trace_covariance_batch"]
+        ratio_regularization = helpers["_compute_ratio_anchor_regularization"]
+
+        def scaled_eye(scale):
+            return torch.eye(2, dtype=torch.float32).unsqueeze(0) * (scale / 2.0)
+
+        closure_cfg = {
+            "ENABLED": True,
+            "RATIO_ANCHOR_WEIGHT": 1.0,
+            "PROFILES": {
+                "heavy_long": {
+                    "unmatched": {
+                        "q_pos": [0.8, 1.2],
+                        "r_pos": [0.8, 1.2],
+                        "r_siz": [0.8, 1.2],
+                        "r_ori": [0.8, 1.2],
+                    }
+                }
+            },
+        }
+        total, detail = ratio_regularization(
+            raw_tensors={
+                "Q_pos": scaled_eye(3.0),
+                "R_pos": scaled_eye(4.0),
+                "R_siz": scaled_eye(5.0),
+                "R_ori": scaled_eye(6.0),
+            },
+            prior_tensors={
+                "Q_pos_base": scaled_eye(1.0),
+                "R_pos_base": scaled_eye(1.0),
+                "R_siz_base": scaled_eye(1.0),
+                "R_ori_base": scaled_eye(1.0),
+            },
+            class_ids=torch.tensor([5], dtype=torch.int64),
+            state_buckets=["unmatched"],
+            closure_cfg=closure_cfg,
+        )
+
+        self.assertAlmostEqual(trace_covariance_batch(scaled_eye(3.0)).item(), 3.0)
+        self.assertGreater(total.item(), 0.0)
+        self.assertEqual(
+            set(detail.keys()),
+            {"loss_ratio_q_pos", "loss_ratio_r_pos", "loss_ratio_r_siz", "loss_ratio_r_ori"},
+        )
+        for value in detail.values():
+            self.assertGreaterEqual(value.item(), 0.0)
+        self.assertGreater(detail["loss_ratio_r_ori"].item(), detail["loss_ratio_q_pos"].item())
 
 
 if __name__ == "__main__":

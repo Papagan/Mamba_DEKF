@@ -2,6 +2,8 @@
 # Mamba-Decoupled-EKF Track — Training Configuration (nuScenes)
 # ============================================================
 
+FILTER_MODE: mamba   # explicit runtime-contract target for bounded-residual closure training
+
 # ---- Data ----
 DATA:
   NUSC_VERSION: v1.0-trainval
@@ -11,8 +13,8 @@ DATA:
   TRAIN_SOURCE: det         # gt / det
   VAL_SOURCE: det           # gt / det
   TRACKLET_CACHE_DIR: /root/autodl-tmp/data/training_cache/nuscenes/
-  TRAIN_TRACKLET_PKL: /root/autodl-tmp/data/training_cache/nuscenes/mini/train_fusion.pkl  # generated from val.json via build_centerpoint_mini_train_dataset.py + augment_tracklet_cache_with_fusion.py
-  VAL_TRACKLET_PKL: /root/autodl-tmp/data/training_cache/nuscenes/mini/train_fusion.pkl    # temporary val-derived cache for pipeline verification
+  TRAIN_TRACKLET_PKL: /root/autodl-tmp/data/training_cache/nuscenes/mini/train_fusion.pkl  # training cache with fusion history
+  VAL_TRACKLET_PKL: /root/autodl-tmp/data/training_cache/nuscenes/mini/val_fusion.pkl      # held-out validation cache; generate before formal training
   HISTORY_SOURCE: fusion    # det / fusion
   INIT_STATE_SOURCE: fusion # det / fusion
   TRAIN_TRACKER_COMPAT_MODE: mctrack  # default / mctrack (saved into checkpoint runtime contract)
@@ -105,37 +107,37 @@ TRAINING:
   LOG_EVERY: 50
   SAVE_EVERY: 10
   SAVE_DIR: checkpoints/mamba_dekf/
-  AUTO_UNSEAL_EPOCH: 25          # epoch at which to auto-toggle cost to "full"
-  INFERENCE_CONFIG: config/nuscenes.yaml   # which inference config to update
+  AUTO_UNSEAL_EPOCH: 0           # disabled for bounded-residual closure training; avoid unrelated cost-mode mutations
+  INFERENCE_CONFIG: config/nuscenes_single_stage_mctrack_exact_noise_hybrid_mamba_closure.yaml
   ROLLOUT_STEPS: 4               # max rollout depth; adaptive training may sample shorter valid futures
-  NOISE_MAP:                     # Category-specific noise injection (from docs/noise.log)
+  NOISE_MAP:                     # Category-specific noise injection (aligned to inference DEKF_BASE_NOISE.R)
     # Order: [Car, Pedestrian, Bicycle, Motorcycle, Bus, Trailer, Truck]
     POS_STD_XY:
       - [0.5210, 0.5045]
       - [0.2745, 0.2731]
       - [0.5562, 0.5444]
       - [0.8646, 0.8695]
-      - [1.3037, 1.2327]
-      - [0.9590, 0.8735]
-      - [0.6580, 0.6269]
+      - [1.2247, 1.2247]
+      - [1.4142, 1.4142]
+      - [1.2247, 1.2247]
     SIZ_STD_LW:
       - [0.2417, 0.0799]
       - [0.0567, 0.0422]
       - [0.1118, 0.0661]
       - [0.1866, 0.0860]
-      - [1.2094, 0.1465]
-      - [1.9336, 0.1782]
-      - [0.7685, 0.1569]
+      - [1.4142, 1.4142]
+      - [1.4142, 1.4142]
+      - [1.4142, 1.4142]
     VEL_STD_XY:
       - [0.7551, 0.7017]
       - [0.2494, 0.2409]
       - [0.3933, 0.3942]
       - [0.8261, 0.8865]
-      - [1.2134, 1.1046]
-      - [0.4770, 0.3982]
-      - [0.6409, 0.6169]
-    ORI_STD: [0.50, 0.91, 0.86, 0.96, 0.48, 0.53, 0.45]
-    MEAS_MULTIPLIER: 0.7
+      - [22.3607, 22.3607]
+      - [1.5811, 1.5811]
+      - [2.0000, 2.0000]
+    ORI_STD: [0.1823, 0.0304, 0.1540, 0.0609, 0.4472, 0.4472, 0.4472]
+    MEAS_MULTIPLIER: 1.0
 
 BASE_NOISE:
   Q:
@@ -156,26 +158,26 @@ BASE_NOISE:
       - [0.2745, 0.2731]
       - [0.5562, 0.5444]
       - [0.8646, 0.8695]
-      - [1.3037, 1.2327]
-      - [0.9590, 0.8735]
-      - [0.6580, 0.6269]
+      - [1.2247, 1.2247]
+      - [1.4142, 1.4142]
+      - [1.2247, 1.2247]
     SIZ_STD_LW:
       - [0.2417, 0.0799]
       - [0.0567, 0.0422]
       - [0.1118, 0.0661]
       - [0.1866, 0.0860]
-      - [1.2094, 0.1465]
-      - [1.9336, 0.1782]
-      - [0.7685, 0.1569]
+      - [1.4142, 1.4142]
+      - [1.4142, 1.4142]
+      - [1.4142, 1.4142]
     VEL_STD_XY:
       - [0.7551, 0.7017]
       - [0.2494, 0.2409]
       - [0.3933, 0.3942]
       - [0.8261, 0.8865]
-      - [1.2134, 1.1046]
-      - [0.4770, 0.3982]
-      - [0.6409, 0.6169]
-    ORI_STD: [0.50, 0.91, 0.86, 0.96, 0.48, 0.53, 0.45]
+      - [22.3607, 22.3607]
+      - [1.5811, 1.5811]
+      - [2.0000, 2.0000]
+    ORI_STD: [0.1823, 0.0304, 0.1540, 0.0609, 0.4472, 0.4472, 0.4472]
   CONDITIONAL_NOISE:
     ENABLED: true
     SCORE_WEIGHT: 0.8
@@ -195,6 +197,54 @@ BASE_NOISE:
     TARGETS: ["Q_pos", "R_pos", "R_siz", "R_ori"]
     MIN_STD_RATIO: 0.60
     MAX_STD_RATIO: 1.80
+  MAMBA_CLOSURE:
+    ENABLED: true
+    RATIO_ANCHOR_WEIGHT: 0.02
+    PROFILES:
+      stable_large:
+        matched:
+          q_pos: [0.70, 1.80]
+          r_pos: [0.70, 2.20]
+          r_siz: [0.70, 2.20]
+          r_ori: [0.70, 3.20]
+        unmatched:
+          q_pos: [0.80, 1.50]
+          r_pos: [0.80, 1.45]
+          r_siz: [0.80, 1.60]
+          r_ori: [0.80, 2.80]
+      agile_weak:
+        matched:
+          q_pos: [0.75, 1.65]
+          r_pos: [0.75, 1.90]
+          r_siz: [0.75, 1.90]
+          r_ori: [0.75, 3.00]
+        unmatched:
+          q_pos: [0.85, 1.40]
+          r_pos: [0.85, 1.35]
+          r_siz: [0.85, 1.50]
+          r_ori: [0.85, 2.60]
+      heavy_long:
+        matched:
+          q_pos: [0.70, 1.90]
+          r_pos: [0.70, 2.30]
+          r_siz: [0.70, 2.10]
+          r_ori: [0.70, 3.00]
+        unmatched:
+          q_pos: [0.80, 1.45]
+          r_pos: [0.80, 1.35]
+          r_siz: [0.80, 1.50]
+          r_ori: [0.80, 2.50]
+      human:
+        matched:
+          q_pos: [0.75, 1.75]
+          r_pos: [0.75, 2.00]
+          r_siz: [0.75, 2.00]
+          r_ori: [0.75, 3.20]
+        unmatched:
+          q_pos: [0.85, 1.45]
+          r_pos: [0.85, 1.40]
+          r_siz: [0.85, 1.55]
+          r_ori: [0.85, 2.80]
   DETECTION_UPDATE:
     ENABLED: true
     MISS_R_SCALE: 1000.0

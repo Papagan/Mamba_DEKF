@@ -30,6 +30,7 @@ from kalmanfilter.noise_priors import (
     apply_residual_anchor,
     build_base_covariances,
 )
+from kalmanfilter.bounded_residual import apply_bounded_residuals
 
 try:
     from mamba_ssm.modules.mamba_simple import Mamba
@@ -1305,6 +1306,7 @@ class MambaDecoupledEKF(nn.Module):
         detection_driven_mask: Optional[Tensor] = None,
         history_mask: Optional[Tensor] = None,
         history_match_mask: Optional[Tensor] = None,
+        state_buckets = None,
     ) -> Tuple[Dict[str, Tensor], Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
         """
         Run Mamba to get adaptive Q/R, then run KF predict.
@@ -1339,6 +1341,24 @@ class MambaDecoupledEKF(nn.Module):
             Q_p, R_p, Q_s, R_s, Q_o, R_o = self._get_base_noise(bsize, dtype, class_ids)
         else:
             Q_p = R_p = Q_s = R_s = Q_o = R_o = None
+
+        if mode == "mamba" and have_base:
+            bounded = apply_bounded_residuals(
+                raw_tensors=mamba_out,
+                prior_tensors={
+                    "Q_pos": Q_p,
+                    "R_pos": R_p,
+                    "R_siz": R_s,
+                    "R_ori": R_o,
+                },
+                class_ids=class_ids,
+                state_buckets=state_buckets,
+                closure_cfg=self.base_noise_cfg.get("MAMBA_CLOSURE", {}),
+            )
+            mamba_out["Q_pos"] = bounded["Q_pos"]
+            mamba_out["R_pos"] = bounded["R_pos"]
+            mamba_out["R_siz"] = bounded["R_siz"]
+            mamba_out["R_ori"] = bounded["R_ori"]
 
         if mode == "pure_dekf":
             # Bypass Mamba noise predictions, inject static DEKF physical priors
@@ -1395,7 +1415,7 @@ class MambaDecoupledEKF(nn.Module):
             # Orientation safety is provided by Q_ori fusion (above) and the
             # per-category baseline R_o accessible via pure_dekf mode when needed.
 
-        mamba_out["noise_audit_values"] = {
+        active_values = {
             "q_pos": _covariance_trace_batch(mamba_out["Q_pos"]),
             "r_pos": _covariance_trace_batch(mamba_out["R_pos"]),
             "r_siz": _covariance_trace_batch(mamba_out["R_siz"]),
@@ -1407,6 +1427,7 @@ class MambaDecoupledEKF(nn.Module):
             "r_siz": _covariance_trace_batch(R_s),
             "r_ori": _covariance_trace_batch(R_o),
         }
+        mamba_out["noise_audit_values"] = active_values
 
         # Execute KF predict step using the active (or fused) noise models
         pos_x, pos_P, siz_x, siz_P, ori_x, ori_P = self.kf.predict(

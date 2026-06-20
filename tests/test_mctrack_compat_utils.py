@@ -22,17 +22,38 @@ def make_traj_stub(
     fake_history=None,
     low_score_history=None,
     recent_match_costs=None,
-    current_score=0.0,
     pos_trace=0.0,
 ):
+    class DummyBBox:
+        pass
+
     class DummyTraj:
         pass
 
+    fake_history = list(fake_history or [])
+    low_score_history = list(low_score_history or [])
+    recent_match_costs = list(recent_match_costs or [])
+
+    real_idx = 0
+    bboxes = []
+    for is_fake in fake_history:
+        bbox = DummyBBox()
+        bbox.is_fake = bool(is_fake)
+        if bbox.is_fake:
+            bbox.is_low_score_match = False
+            bbox.matched_score = 0.0
+        else:
+            bbox.is_low_score_match = (
+                bool(low_score_history[real_idx]) if real_idx < len(low_score_history) else False
+            )
+            bbox.matched_score = (
+                float(recent_match_costs[real_idx]) if real_idx < len(recent_match_costs) else 0.0
+            )
+            real_idx += 1
+        bboxes.append(bbox)
+
     traj = DummyTraj()
-    traj.debug_fake_history = list(fake_history or [])
-    traj.debug_low_score_history = list(low_score_history or [])
-    traj.debug_match_cost_history = list(recent_match_costs or [])
-    traj.debug_current_score = float(current_score)
+    traj.bboxes = bboxes
     traj.debug_pos_trace = float(pos_trace)
     return traj
 
@@ -42,7 +63,6 @@ def make_clean_traj_stub():
         fake_history=[False, False, False],
         low_score_history=[False, False, False],
         recent_match_costs=[0.2, 0.3, 0.25],
-        current_score=0.8,
         pos_trace=1.5,
     )
 
@@ -52,7 +72,6 @@ def make_dirty_traj_stub():
         fake_history=[False, True, True],
         low_score_history=[True, False, True, False, True],
         recent_match_costs=[0.95, 1.05],
-        current_score=0.4,
         pos_trace=4.2,
     )
 
@@ -145,20 +164,20 @@ class MCTrackCompatUtilsTest(unittest.TestCase):
 
     def test_collect_dirty_track_features_uses_recent_fake_and_trace_ratio(self):
         traj = make_traj_stub(
-            fake_history=[False, True, True],
-            low_score_history=[False, True, False],
+            fake_history=[False, False, True],
+            low_score_history=[False, True],
             recent_match_costs=[0.4, 1.1],
-            current_score=0.3,
             pos_trace=4.0,
         )
 
         features = collect_dirty_track_features(
             traj,
             base_score=0.3,
+            pos_trace=4.0,
             pos_trace_prior=2.0,
         )
 
-        self.assertEqual(features["recent_fake_len"], 2)
+        self.assertEqual(features["recent_fake_len"], 1)
         self.assertAlmostEqual(features["low_score_ratio"], 1 / 3)
         self.assertAlmostEqual(features["recent_match_cost_mean"], 0.75)
         self.assertAlmostEqual(features["current_det_score"], 0.3)
@@ -170,6 +189,7 @@ class MCTrackCompatUtilsTest(unittest.TestCase):
             class_id=0,
             traj=make_clean_traj_stub(),
             suppressor_cfg={"ENABLED": False},
+            pos_trace=1.5,
             pos_trace_prior=2.0,
         )
 
@@ -195,6 +215,7 @@ class MCTrackCompatUtilsTest(unittest.TestCase):
                     }
                 },
             },
+            pos_trace=4.2,
             pos_trace_prior=2.0,
         )
 

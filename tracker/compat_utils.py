@@ -25,11 +25,28 @@ def map_class_to_dirty_profile(class_id: int):
     return _DIRTY_CLASS_TO_PROFILE.get(class_id)
 
 
-def collect_dirty_track_features(traj, *, base_score: float, pos_trace_prior: float) -> dict:
-    recent_flags = list(getattr(traj, "debug_fake_history", []))
-    low_score_flags = list(getattr(traj, "debug_low_score_history", []))
-    recent_costs = list(getattr(traj, "debug_match_cost_history", []))
-    pos_trace = float(getattr(traj, "debug_pos_trace", 0.0))
+def collect_dirty_track_features(
+    traj,
+    *,
+    base_score: float,
+    pos_trace: float,
+    pos_trace_prior: float,
+) -> dict:
+    bboxes = list(getattr(traj, "bboxes", []) or [])
+    recent_flags = [bool(getattr(b, "is_fake", False)) for b in bboxes]
+    low_score_flags = [
+        bool(getattr(b, "is_low_score_match", False))
+        for b in bboxes
+    ]
+    recent_costs = [
+        float(getattr(b, "matched_score", 0.0))
+        for b in bboxes
+        if (
+            not getattr(b, "is_fake", False)
+            and getattr(b, "matched_score", None) is not None
+        )
+    ]
+    pos_trace = float(pos_trace)
     prior = max(float(pos_trace_prior), 1e-6)
 
     recent_fake_len = 0
@@ -119,6 +136,7 @@ def apply_dirty_track_suppressor_to_output(
     class_id: int,
     traj,
     suppressor_cfg: dict,
+    pos_trace: float,
     pos_trace_prior: float,
 ) -> dict:
     if not bool((suppressor_cfg or {}).get("ENABLED", False)):
@@ -128,6 +146,7 @@ def apply_dirty_track_suppressor_to_output(
     features = collect_dirty_track_features(
         traj,
         base_score=base_score,
+        pos_trace=pos_trace,
         pos_trace_prior=pos_trace_prior,
     )
     suppress = dirty_track_suppressor(features=features, profile_cfg=profile_cfg)

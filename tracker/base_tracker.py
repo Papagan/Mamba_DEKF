@@ -43,6 +43,7 @@ from tracker.compat_utils import (
 from tracker.trajectory import Trajectory
 from tracker.bbox import BBox
 from kalmanfilter.mamba_adaptive_kf import MambaDecoupledEKF, build_noise_audit_samples
+from kalmanfilter.bounded_residual import infer_state_bucket
 from kalmanfilter.noise_audit import NoiseAuditAccumulator
 from utils.debug_log import emit_debug_line
 from utils.utils import norm_realative_radian
@@ -317,6 +318,7 @@ class Base3DTracker:
             base_noise_cfg=cfg.get("DEKF_BASE_NOISE", None),
             force_gru=force_gru,
         ).to(self.device)
+        self._dirty_pos_trace_priors = self._build_dirty_pos_trace_priors()
 
         # ---- Load trained weights if checkpoint path is provided ----
         if ckpt_path:
@@ -606,6 +608,23 @@ class Base3DTracker:
                 history_match_mask[i, offset] = not getattr(bbox, "is_fake", False)
 
         return history, history_mask, history_match_mask
+
+    def _build_dirty_pos_trace_priors(self) -> Dict[int, float]:
+        fallback_trace = 23.0
+        class_ids = torch.arange(7, device=self.device, dtype=torch.long)
+        try:
+            q_pos, _, _, _, _, _ = self.mamba_ekf._get_base_noise(
+                bsize=class_ids.shape[0],
+                dtype=torch.float32,
+                class_ids=class_ids,
+            )
+            traces = q_pos.diagonal(dim1=-2, dim2=-1).sum(-1).detach().cpu().tolist()
+            return {
+                int(class_id): max(float(trace), 1e-6)
+                for class_id, trace in zip(class_ids.tolist(), traces)
+            }
+        except Exception:
+            return {int(class_id): fallback_trace for class_id in class_ids.tolist()}
 
     # ==================================================================
     # KF state management per track
@@ -958,6 +977,10 @@ class Base3DTracker:
             device=self.device,
         )
         detection_driven_mask = torch.ones(B, dtype=torch.bool, device=self.device)
+        state_buckets = [
+            infer_state_bucket(getattr(traj, "unmatch_length", 0))
+            for traj in trajs
+        ]
         with torch.no_grad():
             mamba_out, px, pP, sx, sP, ox, oP = self.mamba_ekf.predict_with_mamba(
                 history,
@@ -968,6 +991,7 @@ class Base3DTracker:
                 detection_driven_mask=detection_driven_mask,
                 history_mask=history_mask,
                 history_match_mask=history_match_mask,
+                state_buckets=state_buckets,
             )
 
         # ---- 5. Write predicted states back to per-track storage ----
@@ -2032,12 +2056,22 @@ class Base3DTracker:
                     bbox.det_score if getattr(bbox, "det_score", None) is not None
                     else getattr(bbox, "score", 0.0)
                 )
+                pos_trace = 0.0
+                kf_state = self.kf_states.get(track_id, None)
+                if kf_state is not None and kf_state.get("pos_P", None) is not None:
+                    pos_trace = float(
+                        kf_state["pos_P"].diagonal(dim1=-2, dim2=-1).sum().item()
+                    )
                 suppress_result = apply_dirty_track_suppressor_to_output(
                     base_score=base_score,
                     class_id=traj.category_num,
                     traj=traj,
                     suppressor_cfg=suppressor_cfg,
-                    pos_trace_prior=1.0,
+                    pos_trace=pos_trace,
+                    pos_trace_prior=self._dirty_pos_trace_priors.get(
+                        int(traj.category_num),
+                        23.0,
+                    ),
                 )
                 if suppress_result["hard_reject"]:
                     continue

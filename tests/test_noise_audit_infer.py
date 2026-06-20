@@ -1,11 +1,15 @@
 import ast
+import builtins
 import json
 import pathlib
 import tempfile
 import types
 import unittest
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
+import numpy as np
+
+from kalmanfilter.bounded_residual import infer_state_bucket
 from kalmanfilter.noise_audit import NoiseAuditAccumulator
 
 
@@ -96,6 +100,121 @@ class _FakeMatrix:
 class _FakeTorch:
     Tensor = object
     int64 = "int64"
+
+
+class _FakeNoGrad:
+    def __enter__(self):
+        return None
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class _PredictTorch:
+    long = "long"
+    float32 = "float32"
+    bool = "bool"
+
+    @staticmethod
+    def tensor(values, dtype=None, device=None):
+        return list(values)
+
+    @staticmethod
+    def ones(size, dtype=None, device=None):
+        return [True] * int(size)
+
+    @staticmethod
+    def zeros(shape, dtype=None):
+        return {"shape": tuple(shape), "dtype": dtype}
+
+    @staticmethod
+    def no_grad():
+        return _FakeNoGrad()
+
+
+class _FakeTraceValue:
+    def __init__(self, value):
+        self.value = float(value)
+
+    def sum(self, dim=None, keepdim=False):
+        return self
+
+    def unsqueeze(self, dim):
+        return self
+
+    def view(self, *shape):
+        return self
+
+    def __truediv__(self, other):
+        return _FakeTraceValue(self.value / _coerce_trace_value(other))
+
+    def __rtruediv__(self, other):
+        return _FakeTraceValue(_coerce_trace_value(other) / self.value)
+
+    def __mul__(self, other):
+        if isinstance(other, _FakeCovariance):
+            return other * self
+        return _FakeTraceValue(self.value * _coerce_trace_value(other))
+
+    def __rmul__(self, other):
+        return self.__mul__(other)
+
+    def __add__(self, other):
+        return _FakeTraceValue(self.value + _coerce_trace_value(other))
+
+    def __radd__(self, other):
+        return self.__add__(other)
+
+    def __sub__(self, other):
+        return _FakeTraceValue(self.value - _coerce_trace_value(other))
+
+    def __rsub__(self, other):
+        return _FakeTraceValue(_coerce_trace_value(other) - self.value)
+
+
+def _coerce_trace_value(value):
+    if isinstance(value, _FakeTraceValue):
+        return value.value
+    return float(value)
+
+
+class _FakeCovariance:
+    def __init__(self, trace_value, label):
+        self.trace_value = float(trace_value)
+        self.label = label
+        self.device = "cpu"
+        self.dtype = "float32"
+
+    def diagonal(self, dim1=-2, dim2=-1):
+        return _FakeTraceValue(self.trace_value)
+
+    def __mul__(self, other):
+        return _FakeCovariance(self.trace_value * _coerce_trace_value(other), f"{self.label}*")
+
+    def __rmul__(self, other):
+        return self.__mul__(other)
+
+    def __add__(self, other):
+        return _FakeCovariance(self.trace_value + other.trace_value, f"{self.label}+{other.label}")
+
+
+class _FusionTorch:
+    @staticmethod
+    def tensor(value, device=None, dtype=None):
+        if isinstance(value, list):
+            if len(value) != 1:
+                raise AssertionError(f"Unexpected list input: {value}")
+            value = value[0]
+        return _FakeTraceValue(value)
+
+    @staticmethod
+    def clamp(value, min=None, max=None):
+        scalar = _coerce_trace_value(value)
+        if min is not None:
+            scalar = builtins.max(_coerce_trace_value(min), scalar)
+        if max is not None:
+            scalar = builtins.min(_coerce_trace_value(max), scalar)
+        return _FakeTraceValue(scalar)
 
 
 class _FakeBBox:
@@ -255,6 +374,299 @@ class NoiseAuditInferTest(unittest.TestCase):
         self.assertIn("ratios", unmatched_bucket)
         self.assertAlmostEqual(unmatched_bucket["families"]["r_ori"]["median"], 40.0)
         self.assertAlmostEqual(unmatched_bucket["ratios"]["r_ori"]["median"], 2.0)
+
+    def test_predict_before_associate_passes_state_buckets_into_predict_with_mamba(self):
+        predict_before_associate = _load_class_methods(
+            REPO_ROOT / "tracker" / "base_tracker.py",
+            "Base3DTracker",
+            ["predict_before_associate"],
+            extra_namespace={
+                "Dict": Dict,
+                "List": List,
+                "Optional": Optional,
+                "Tuple": Tuple,
+                "Trajectory": _FakeTraj,
+                "np": np,
+                "torch": _PredictTorch,
+                "infer_state_bucket": infer_state_bucket,
+            },
+        )["predict_before_associate"]
+
+        def _make_traj(track_id, category_num, unmatch_length, xy):
+            bbox = types.SimpleNamespace(global_xyz=[xy[0], xy[1], 0.0], category="car")
+            return types.SimpleNamespace(
+                track_id=track_id,
+                category_num=category_num,
+                unmatch_length=unmatch_length,
+                bboxes=[bbox],
+                predict=lambda: None,
+            )
+
+        traj_1 = _make_traj(track_id=1, category_num=0, unmatch_length=0, xy=(3.0, 4.0))
+        traj_2 = _make_traj(track_id=2, category_num=5, unmatch_length=2, xy=(0.0, 5.0))
+        captured = {}
+
+        def _fake_predict_with_mamba(*args, **kwargs):
+            captured["state_buckets"] = kwargs["state_buckets"]
+            raise RuntimeError("stop after capture")
+
+        tracker = types.SimpleNamespace(
+            device="cpu",
+            filter_mode="mamba",
+            _noise_audit_pending=None,
+            all_trajs={1: traj_1, 2: traj_2},
+            _extract_track_history=lambda trajs: (
+                _PredictTorch.zeros((len(trajs), 3, 12), dtype=_PredictTorch.float32),
+                _PredictTorch.ones(len(trajs) * 3, dtype=_PredictTorch.bool),
+                _PredictTorch.ones(len(trajs) * 3, dtype=_PredictTorch.bool),
+            ),
+            _batch_kf_states=lambda track_ids: (
+                _PredictTorch.zeros((len(track_ids), 6, 1), dtype=_PredictTorch.float32),
+                _PredictTorch.zeros((len(track_ids), 6, 6), dtype=_PredictTorch.float32),
+                _PredictTorch.zeros((len(track_ids), 3, 1), dtype=_PredictTorch.float32),
+                _PredictTorch.zeros((len(track_ids), 3, 3), dtype=_PredictTorch.float32),
+                _PredictTorch.zeros((len(track_ids), 2, 1), dtype=_PredictTorch.float32),
+                _PredictTorch.zeros((len(track_ids), 2, 2), dtype=_PredictTorch.float32),
+            ),
+            _unbatch_kf_states=lambda *args, **kwargs: None,
+            _write_predicted_state_to_bbox=lambda *args, **kwargs: None,
+            _stage_noise_audit_samples=lambda *args, **kwargs: None,
+            mamba_ekf=types.SimpleNamespace(
+                kf=types.SimpleNamespace(
+                    pos_filter=types.SimpleNamespace(B=0),
+                    siz_filter=types.SimpleNamespace(B=0),
+                    ori_filter=types.SimpleNamespace(B=0),
+                    init_states=lambda *args, **kwargs: None,
+                ),
+                predict_with_mamba=_fake_predict_with_mamba,
+            ),
+        )
+        tracker.mamba_ekf.kf.B = 0
+
+        with self.assertRaisesRegex(RuntimeError, "stop after capture"):
+            predict_before_associate(tracker, [tracker.all_trajs[1], tracker.all_trajs[2]], delta_t=0.5)
+
+        self.assertEqual(captured["state_buckets"], ["matched", "unmatched"])
+
+    def _load_predict_with_mamba(self, *, torch_namespace, apply_bounded_impl):
+        return _load_class_methods(
+            REPO_ROOT / "kalmanfilter" / "mamba_adaptive_kf.py",
+            "MambaDecoupledEKF",
+            ["predict_with_mamba"],
+            extra_namespace={
+                "Dict": Dict,
+                "Optional": Optional,
+                "Tuple": Tuple,
+                "Tensor": object,
+                "torch": torch_namespace,
+                "_covariance_trace_batch": lambda cov: cov.trace_value if cov is not None else None,
+                "apply_bounded_residuals": apply_bounded_impl,
+            },
+        )["predict_with_mamba"]
+
+    def test_predict_with_mamba_mamba_mode_applies_closure_to_raw_outputs_and_preserves_audit_contract(self):
+        captured = {}
+        closure_cfg = {"ENABLED": True, "PROFILES": {"stable_large": {"matched": {"q_pos": [0.8, 1.8]}}}}
+        class_ids = [0]
+        state_buckets = ["matched"]
+
+        def _fake_apply_bounded_residuals(**kwargs):
+            captured["called"] = True
+            captured["raw_q_pos_trace"] = kwargs["raw_tensors"]["Q_pos"].trace_value
+            captured["prior_q_pos_trace"] = kwargs["prior_tensors"]["Q_pos"].trace_value
+            captured["prior_r_pos_trace"] = kwargs["prior_tensors"]["R_pos"].trace_value
+            captured["prior_r_siz_trace"] = kwargs["prior_tensors"]["R_siz"].trace_value
+            captured["prior_r_ori_trace"] = kwargs["prior_tensors"]["R_ori"].trace_value
+            captured["class_ids"] = kwargs["class_ids"]
+            captured["state_buckets"] = kwargs["state_buckets"]
+            captured["closure_cfg"] = kwargs["closure_cfg"]
+            return {
+                **kwargs["raw_tensors"],
+                "Q_pos": _FakeCovariance(2.0, "bounded_q"),
+                "R_pos": _FakeCovariance(3.0, "bounded_rp"),
+                "R_siz": _FakeCovariance(4.0, "bounded_rs"),
+                "R_ori": _FakeCovariance(5.0, "bounded_ro"),
+            }
+
+        predict_with_mamba = self._load_predict_with_mamba(
+            torch_namespace=_PredictTorch,
+            apply_bounded_impl=_fake_apply_bounded_residuals,
+        )
+
+        class _TrackHistory:
+            dtype = "float32"
+
+            def size(self, dim):
+                self_dim = 1
+                if dim != 0:
+                    raise AssertionError(f"Unexpected dim: {dim}")
+                return self_dim
+
+        tracker = types.SimpleNamespace(
+            mamba=lambda *args, **kwargs: {
+                "Q_pos": _FakeCovariance(10.0, "raw_q"),
+                "Q_siz": _FakeCovariance(20.0, "raw_qs"),
+                "Q_ori": _FakeCovariance(30.0, "raw_qo"),
+                "R_pos": _FakeCovariance(40.0, "raw_rp"),
+                "R_siz": _FakeCovariance(50.0, "raw_rs"),
+                "R_ori": _FakeCovariance(60.0, "raw_ro"),
+                "embedding": "embed",
+            },
+            base_noise_cfg={"MAMBA_CLOSURE": closure_cfg},
+            _get_base_noise=lambda bsize, dtype, class_ids: (
+                _FakeCovariance(1.0, "prior_q"),
+                _FakeCovariance(2.0, "prior_rp"),
+                _FakeCovariance(3.0, "prior_qs"),
+                _FakeCovariance(4.0, "prior_rs"),
+                _FakeCovariance(5.0, "prior_qo"),
+                _FakeCovariance(6.0, "prior_ro"),
+            ),
+            kf=types.SimpleNamespace(
+                predict=lambda *args, **kwargs: ("px", "pP", "sx", "sP", "ox", "oP")
+            ),
+        )
+
+        mamba_out, *_ = predict_with_mamba(
+            tracker,
+            _TrackHistory(),
+            delta_t=0.5,
+            class_ids=class_ids,
+            mode="mamba",
+            state_buckets=state_buckets,
+        )
+
+        self.assertTrue(captured["called"])
+        self.assertEqual(captured["raw_q_pos_trace"], 10.0)
+        self.assertEqual(captured["prior_q_pos_trace"], 1.0)
+        self.assertEqual(captured["prior_r_pos_trace"], 2.0)
+        self.assertEqual(captured["prior_r_siz_trace"], 4.0)
+        self.assertEqual(captured["prior_r_ori_trace"], 6.0)
+        self.assertIs(captured["class_ids"], class_ids)
+        self.assertIs(captured["state_buckets"], state_buckets)
+        self.assertIs(captured["closure_cfg"], closure_cfg)
+        self.assertEqual(mamba_out["Q_pos"].trace_value, 2.0)
+        self.assertEqual(mamba_out["R_pos"].trace_value, 3.0)
+        self.assertEqual(mamba_out["R_siz"].trace_value, 4.0)
+        self.assertEqual(mamba_out["R_ori"].trace_value, 5.0)
+        self.assertEqual(mamba_out["noise_audit_values"]["q_pos"], 2.0)
+        self.assertEqual(mamba_out["noise_audit_values"]["r_pos"], 3.0)
+        self.assertEqual(mamba_out["noise_audit_values"]["r_siz"], 4.0)
+        self.assertEqual(mamba_out["noise_audit_values"]["r_ori"], 5.0)
+        self.assertEqual(mamba_out["noise_audit_priors"]["q_pos"], 1.0)
+        self.assertEqual(mamba_out["noise_audit_priors"]["r_pos"], 2.0)
+        self.assertEqual(mamba_out["noise_audit_priors"]["r_siz"], 4.0)
+        self.assertEqual(mamba_out["noise_audit_priors"]["r_ori"], 6.0)
+        self.assertNotIn("noise_audit_raw_values", mamba_out)
+
+    def test_predict_with_mamba_pure_dekf_mode_skips_closure_and_keeps_prior_audit_semantics(self):
+        def _forbidden_apply_bounded_residuals(**kwargs):
+            raise AssertionError("closure must not run in pure_dekf mode")
+
+        predict_with_mamba = self._load_predict_with_mamba(
+            torch_namespace=_PredictTorch,
+            apply_bounded_impl=_forbidden_apply_bounded_residuals,
+        )
+
+        class _TrackHistory:
+            dtype = "float32"
+
+            def size(self, dim):
+                if dim != 0:
+                    raise AssertionError(f"Unexpected dim: {dim}")
+                return 1
+
+        tracker = types.SimpleNamespace(
+            mamba=lambda *args, **kwargs: {
+                "Q_pos": _FakeCovariance(10.0, "raw_q"),
+                "Q_siz": _FakeCovariance(20.0, "raw_qs"),
+                "Q_ori": _FakeCovariance(30.0, "raw_qo"),
+                "R_pos": _FakeCovariance(40.0, "raw_rp"),
+                "R_siz": _FakeCovariance(50.0, "raw_rs"),
+                "R_ori": _FakeCovariance(60.0, "raw_ro"),
+                "embedding": "embed",
+            },
+            base_noise_cfg={"MAMBA_CLOSURE": {"ENABLED": True}},
+            _get_base_noise=lambda bsize, dtype, class_ids: (
+                _FakeCovariance(1.0, "prior_q"),
+                _FakeCovariance(2.0, "prior_rp"),
+                _FakeCovariance(3.0, "prior_qs"),
+                _FakeCovariance(4.0, "prior_rs"),
+                _FakeCovariance(5.0, "prior_qo"),
+                _FakeCovariance(6.0, "prior_ro"),
+            ),
+            kf=types.SimpleNamespace(
+                predict=lambda *args, **kwargs: ("px", "pP", "sx", "sP", "ox", "oP")
+            ),
+        )
+
+        mamba_out, *_ = predict_with_mamba(
+            tracker,
+            _TrackHistory(),
+            delta_t=0.5,
+            class_ids=[0],
+            mode="pure_dekf",
+            state_buckets=["matched"],
+        )
+
+        self.assertEqual(mamba_out["Q_pos"].trace_value, 1.0)
+        self.assertEqual(mamba_out["noise_audit_values"]["q_pos"], 1.0)
+        self.assertEqual(mamba_out["noise_audit_priors"]["q_pos"], 1.0)
+
+    def test_predict_with_mamba_fusion_mode_skips_closure(self):
+        def _forbidden_apply_bounded_residuals(**kwargs):
+            raise AssertionError("closure must not run in fusion mode")
+
+        predict_with_mamba = self._load_predict_with_mamba(
+            torch_namespace=_FusionTorch,
+            apply_bounded_impl=_forbidden_apply_bounded_residuals,
+        )
+
+        class _TrackHistory:
+            dtype = "float32"
+
+            def size(self, dim):
+                if dim != 0:
+                    raise AssertionError(f"Unexpected dim: {dim}")
+                return 1
+
+        tracker = types.SimpleNamespace(
+            mamba=lambda *args, **kwargs: {
+                "Q_pos": _FakeCovariance(10.0, "raw_q"),
+                "Q_siz": _FakeCovariance(20.0, "raw_qs"),
+                "Q_ori": _FakeCovariance(30.0, "raw_qo"),
+                "R_pos": _FakeCovariance(40.0, "raw_rp"),
+                "R_siz": _FakeCovariance(50.0, "raw_rs"),
+                "R_ori": _FakeCovariance(60.0, "raw_ro"),
+                "embedding": "embed",
+            },
+            base_noise_cfg={
+                "MAMBA_CLOSURE": {"ENABLED": True},
+                "FUSION": {"STRICT_RATIO": {0: 2.0}},
+            },
+            _get_base_noise=lambda bsize, dtype, class_ids: (
+                _FakeCovariance(1.0, "prior_q"),
+                _FakeCovariance(2.0, "prior_rp"),
+                _FakeCovariance(3.0, "prior_qs"),
+                _FakeCovariance(4.0, "prior_rs"),
+                _FakeCovariance(5.0, "prior_qo"),
+                _FakeCovariance(6.0, "prior_ro"),
+            ),
+            kf=types.SimpleNamespace(
+                predict=lambda *args, **kwargs: ("px", "pP", "sx", "sP", "ox", "oP")
+            ),
+        )
+
+        mamba_out, *_ = predict_with_mamba(
+            tracker,
+            _TrackHistory(),
+            delta_t=0.5,
+            class_ids=[0],
+            mode="fusion",
+            state_buckets=["matched"],
+        )
+
+        self.assertAlmostEqual(mamba_out["noise_audit_values"]["q_pos"], 1.0)
+        self.assertAlmostEqual(mamba_out["noise_audit_priors"]["q_pos"], 1.0)
 
     def test_main_helpers_collect_and_merge_run_level_inference_audit(self):
         main_helpers = _load_module_functions(
