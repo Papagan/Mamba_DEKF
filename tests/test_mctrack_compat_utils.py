@@ -566,6 +566,82 @@ class MCTrackCompatUtilsTest(unittest.TestCase):
             0.23,
         )
 
+    def test_track_quality_score_can_be_enabled_for_trailer_only(self):
+        class DummyBBox:
+            def __init__(self, score, *, matched_score=None, is_fake=False, is_low_score_match=False):
+                self.det_score = score
+                self.is_fake = is_fake
+                self.is_low_score_match = is_low_score_match
+                if matched_score is not None:
+                    self.matched_score = matched_score
+
+        class DummyTraj:
+            pass
+
+        score_cfg = {
+            "ENABLED": True,
+            "MODE": "quality_v1",
+            "ENABLED_CLASS_IDS": [5],
+            "REAL_SCORE_TOPK": 3,
+            "RECENT_WINDOW": 3,
+            "MIN_SCORE": 0.01,
+            "MAX_SCORE": 0.995,
+            "DEFAULT_CURRENT_FAKE_SCALE": 0.75,
+            "MATURE_LEN": {5: 3},
+            "CURRENT_FAKE_SCALE": {5: 0.78},
+            "W_DET": {5: 0.42},
+            "W_ASSOC": {5: 0.14},
+            "W_CONT": {5: 0.12},
+            "W_MATURE": {5: 0.32},
+        }
+
+        trailer = DummyTraj()
+        trailer.cfg = {"TRACK_SCORE": score_cfg}
+        trailer.category_num = 5
+        trailer._output_score = 0.47
+        trailer._confirmed_match_score = 0.35
+        trailer._confirmed_track_length = 1
+        trailer.bboxes = [
+            DummyBBox(0.62, matched_score=0.18),
+            DummyBBox(0.66, matched_score=0.20),
+            DummyBBox(0.71, matched_score=0.16),
+        ]
+
+        score = compute_track_quality_score(trailer, current_score=0.71)
+        self.assertIsNotNone(score)
+        self.assertNotEqual(score, 0.71)
+
+    def test_track_quality_score_returns_none_for_non_enabled_class(self):
+        class DummyBBox:
+            def __init__(self, score, *, matched_score=None):
+                self.det_score = score
+                self.is_fake = False
+                self.is_low_score_match = False
+                if matched_score is not None:
+                    self.matched_score = matched_score
+
+        class DummyTraj:
+            pass
+
+        traj = DummyTraj()
+        traj.cfg = {
+            "TRACK_SCORE": {
+                "ENABLED": True,
+                "MODE": "quality_v1",
+                "ENABLED_CLASS_IDS": [5],
+            }
+        }
+        traj.category_num = 3
+        traj._output_score = 0.46
+        traj._confirmed_match_score = 0.38
+        traj._confirmed_track_length = 3
+        traj.bboxes = [
+            DummyBBox(0.60, matched_score=0.20),
+            DummyBBox(0.58, matched_score=0.18),
+        ]
+
+        self.assertIsNone(compute_track_quality_score(traj, current_score=0.58))
+
 
 if __name__ == "__main__":
     unittest.main()

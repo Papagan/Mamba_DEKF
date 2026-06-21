@@ -25,11 +25,11 @@
     {
       "avg_hit_features": {
         "low_score_ratio": 0.0,
-        "pos_trace_ratio": 2.4878592148897885,
-        "recent_fake_len": 0.508100695464786,
-        "recent_match_cost_mean": 0.4007175146459443
+        "pos_trace_ratio": 3.527611987818358,
+        "recent_fake_len": 1.067133216695826,
+        "recent_match_cost_mean": 0.3491055608109204
       },
-      "avg_penalty": 0.8748309460169499,
+      "avg_penalty": 0.9428728896808535,
       "class_id": 1,
       "class_name": "pedestrian",
       "emitted_count": 87546,
@@ -37,12 +37,12 @@
       "hard_reject_count": 0,
       "profile_name": "human",
       "reason_counts": {
-        "current_det_score": 24593,
-        "pos_trace_ratio": 30664,
+        "current_det_score": 20005,
+        "pos_trace_ratio": 13169,
         "recent_fake_len": 1343,
-        "recent_match_cost_mean": 13619
+        "recent_match_cost_mean": 6836
       },
-      "soft_hit_count": 51045
+      "soft_hit_count": 20005
     },
     {
       "avg_hit_features": {
@@ -69,11 +69,11 @@
     {
       "avg_hit_features": {
         "low_score_ratio": 0.0,
-        "pos_trace_ratio": 2.1424755341593174,
-        "recent_fake_len": 0.4903238168231462,
-        "recent_match_cost_mean": 0.3274867421596264
+        "pos_trace_ratio": 2.875259605028803,
+        "recent_fake_len": 1.0230217014605165,
+        "recent_match_cost_mean": 0.3084811360002544
       },
-      "avg_penalty": 0.8134374381637097,
+      "avg_penalty": 0.9001137787744868,
       "class_id": 3,
       "class_name": "motorcycle",
       "emitted_count": 30322,
@@ -81,12 +81,12 @@
       "hard_reject_count": 0,
       "profile_name": "agile_weak",
       "reason_counts": {
-        "current_det_score": 12496,
-        "pos_trace_ratio": 22358,
+        "current_det_score": 12099,
+        "pos_trace_ratio": 11468,
         "recent_fake_len": 299,
-        "recent_match_cost_mean": 6150
+        "recent_match_cost_mean": 2857
       },
-      "soft_hit_count": 26095
+      "soft_hit_count": 12119
     },
     {
       "avg_hit_features": {

@@ -284,6 +284,15 @@ def compute_track_quality_score(
         return None
     if str(score_cfg.get("MODE", "quality_v1")).strip().lower() != "quality_v1":
         return None
+    enabled_class_ids = score_cfg.get("ENABLED_CLASS_IDS", None)
+    if enabled_class_ids is not None:
+        try:
+            category_num = int(getattr(traj, "category_num", 0))
+        except (TypeError, ValueError):
+            return None
+        enabled_set = {int(v) for v in enabled_class_ids}
+        if category_num not in enabled_set:
+            return None
 
     bboxes = list(getattr(traj, "bboxes", []) or [])
     if not bboxes:
