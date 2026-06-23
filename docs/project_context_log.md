@@ -7,7 +7,7 @@
 - `training/`
 - `kalmanfilter/`
 - `dataset/`
-- `config/nuscenes.yaml`
+- `config/nuscenes_single_stage_mctrack_exact_noise_hybrid_dirty_suppressor_tuned.yaml`
 - `config/train_nuscenes.yaml`
 - `tools/build_centerpoint_mini_train_dataset.py`
 
@@ -265,41 +265,27 @@
 - `COST_STATE`
 - `OUTPUT_SCORE`
 
-### 5.4 单阶段比 ByteTrack 强，主因通常是 birth 策略，不是 stage2 匹配坏了
+### 5.4 ByteTrack 与 TRACK_SCORE 已退出主线
 
-这在当前项目里已经确认过。
+当前仓库主线已经冻结为：
 
-原因：
+- 单阶段匹配
+- `TRACKER_COMPAT_MODE: mctrack`
+- `DIRTY_TRACK_SUPPRESSOR` 保留
+- 后续主要优化方向是 `Mamba` 训练与推理闭环
 
-- 单阶段：所有未匹配检测都能 birth
-- `ByteTrack`：原本只有 `high_dets` 能 birth
-- 当前 CenterPoint 的分数标定偏保守，很多真阳性在 `INPUT_SCORE < score < BIRTH_SCORE`
+因此以下内容不再作为后续工作的可选路径：
 
-当前已经补了：
+- ByteTrack 两阶段 rescue / birth
+- `TRACK_SCORE` 的后处理重排
+- 校准-比较-建议参数的自动调参环
 
-- [tracker/bytetrack_utils.py](/home/alvin/demo/Mamba-DEKF/tracker/bytetrack_utils.py)
-- `TENTATIVE_BIRTH_SCORE`
+后续如果指标下降，优先检查：
 
-现在 ByteTrack 支持：
-
-- `high`：严格 birth
-- `tentative`：可建临时轨
-- `low`：只救活不建轨
-
-### 5.5 `BIRTH_SCORE` 在单阶段下基本不重要
-
-当 `USE_BYTETRACK=False` 时：
-
-- 单阶段里所有未匹配检测都 birth
-- 真正重要的是：
-  - `INPUT_SCORE`
-  - `COST_THRE`
-  - `CONFIRMED_TRACK_LENGTH`
-  - `CONFIRMED_DET_SCORE`
-  - `CONFIRMED_MATCHED_SCORE`
-  - `OUTPUT_SCORE`
-
-不要把 `ByteTrack` 的 birth 经验直接套到单阶段。
+- 训练 cache 质量
+- 训练/推理历史语义是否一致
+- `DEKF_BASE_NOISE` 与 `Mamba` 输出契约
+- 生命周期阈值与输出分数聚合
 
 ---
 
@@ -357,7 +343,11 @@
 
 ## 7. 关键配置的解释
 
-### 7.1 `config/nuscenes.yaml`
+### 7.1 冻结基线配置
+
+当前默认 nuScenes 推理配置是：
+
+- [config/nuscenes_single_stage_mctrack_exact_noise_hybrid_dirty_suppressor_tuned.yaml](/home/alvin/demo/Mamba-DEKF/config/nuscenes_single_stage_mctrack_exact_noise_hybrid_dirty_suppressor_tuned.yaml)
 
 最关键的是这几组：
 
@@ -367,8 +357,6 @@
   - 匹配门限
 - `THRESHOLD.TRAJECTORY_THRE.*`
   - 生命周期门控
-- `MATCHING.USE_BYTETRACK`
-  - 单阶段 / 两阶段
 - `MATCHING.BEV.COST_STATE`
   - `Predict / BackPredict / Fusion`
 - `DEKF_BASE_NOISE`

@@ -4,7 +4,6 @@ from tracker.compat_utils import (
     apply_dirty_track_suppressor_to_output,
     allow_single_stage_birth_under_mode,
     collect_dirty_track_features,
-    compute_track_quality_score,
     dirty_track_suppressor,
     extract_bbox_history_fields,
     get_dirty_track_profile_cfg,
@@ -14,7 +13,6 @@ from tracker.compat_utils import (
     select_filtered_tracking_score,
     score_for_unmatched_fake_bbox,
     select_output_tracking_score,
-    use_mctrack_single_stage_flow,
 )
 
 
@@ -382,40 +380,6 @@ class MCTrackCompatUtilsTest(unittest.TestCase):
             0.52,
         )
 
-    def test_output_score_selection_supports_trailer_real_score_average_mode(self):
-        self.assertEqual(
-            select_output_tracking_score(
-                current_score=0.41,
-                real_scores=[0.41, 0.52, 0.61],
-                quality_scores=[0.61],
-                compat_mode="mctrack",
-                cfg={
-                    "OUTPUT_SCORE_STRATEGY": {
-                        "CLASS_MODES": {5: "mctrack_real_avg"},
-                    }
-                },
-                category_num=5,
-            ),
-            (0.41 + 0.52 + 0.61) / 3.0,
-        )
-
-    def test_output_score_selection_keeps_non_trailer_classes_on_legacy_path(self):
-        self.assertEqual(
-            select_output_tracking_score(
-                current_score=0.41,
-                real_scores=[0.41, 0.52, 0.61],
-                quality_scores=[0.61],
-                compat_mode="mctrack",
-                cfg={
-                    "OUTPUT_SCORE_STRATEGY": {
-                        "CLASS_MODES": {5: "mctrack_real_avg"},
-                    }
-                },
-                category_num=6,
-            ),
-            0.41,
-        )
-
     def test_mctrack_mode_bypasses_single_stage_birth_gate(self):
         self.assertFalse(
             allow_single_stage_birth_under_mode(
@@ -429,11 +393,6 @@ class MCTrackCompatUtilsTest(unittest.TestCase):
                 gate_allowed=False,
             )
         )
-
-    def test_use_mctrack_single_stage_flow_only_for_single_stage_mctrack(self):
-        self.assertTrue(use_mctrack_single_stage_flow("mctrack", use_bytetrack=False))
-        self.assertFalse(use_mctrack_single_stage_flow("mctrack", use_bytetrack=True))
-        self.assertFalse(use_mctrack_single_stage_flow("default", use_bytetrack=False))
 
     def test_filtered_score_selection_matches_mode(self):
         transformed_scores = [-0.4, -0.1]
@@ -517,165 +476,6 @@ class MCTrackCompatUtilsTest(unittest.TestCase):
         self.assertEqual(vel, [3.0, 4.0])
         self.assertEqual(lwh, [4.5, 1.9, 1.6])
         self.assertEqual(yaw, 0.8)
-
-    def test_track_quality_score_prefers_clean_stable_tracks(self):
-        class DummyBBox:
-            def __init__(self, score, *, is_fake=False, is_low_score_match=False, matched_score=None):
-                self.det_score = score
-                self.is_fake = is_fake
-                self.is_low_score_match = is_low_score_match
-                if matched_score is not None:
-                    self.matched_score = matched_score
-
-        class DummyTraj:
-            pass
-
-        score_cfg = {
-            "ENABLED": True,
-            "MODE": "quality_v1",
-            "REAL_SCORE_TOPK": 3,
-            "RECENT_WINDOW": 3,
-            "MIN_SCORE": 0.01,
-            "MAX_SCORE": 0.995,
-            "DEFAULT_CURRENT_FAKE_SCALE": 0.75,
-            "MATURE_LEN": {2: 4},
-            "CURRENT_FAKE_SCALE": {2: 0.70},
-            "W_DET": {2: 0.28},
-            "W_ASSOC": {2: 0.28},
-            "W_CONT": {2: 0.26},
-            "W_MATURE": {2: 0.18},
-        }
-
-        good = DummyTraj()
-        good.cfg = {"TRACK_SCORE": score_cfg}
-        good.category_num = 2
-        good._output_score = 0.45
-        good._confirmed_match_score = 0.38
-        good._confirmed_track_length = 3
-        good.bboxes = [
-            DummyBBox(0.62, matched_score=0.18),
-            DummyBBox(0.68, matched_score=0.15),
-            DummyBBox(0.71, matched_score=0.12),
-            DummyBBox(0.66, matched_score=0.14),
-        ]
-
-        bad = DummyTraj()
-        bad.cfg = {"TRACK_SCORE": score_cfg}
-        bad.category_num = 2
-        bad._output_score = 0.45
-        bad._confirmed_match_score = 0.38
-        bad._confirmed_track_length = 3
-        bad.bboxes = [
-            DummyBBox(0.28, matched_score=0.62, is_low_score_match=True),
-            DummyBBox(0.31, matched_score=0.71, is_low_score_match=True),
-            DummyBBox(0.00, is_fake=True),
-            DummyBBox(0.00, is_fake=True),
-        ]
-
-        self.assertGreater(
-            compute_track_quality_score(good),
-            compute_track_quality_score(bad),
-        )
-
-    def test_track_quality_score_falls_back_to_current_score_without_real_hits(self):
-        class DummyBBox:
-            def __init__(self, score, *, is_fake=False):
-                self.det_score = score
-                self.is_fake = is_fake
-                self.is_low_score_match = False
-
-        class DummyTraj:
-            pass
-
-        traj = DummyTraj()
-        traj.cfg = {"TRACK_SCORE": {"ENABLED": True, "MODE": "quality_v1"}}
-        traj.category_num = 0
-        traj._output_score = 0.4
-        traj._confirmed_match_score = 0.35
-        traj._confirmed_track_length = 1
-        traj.bboxes = [DummyBBox(0.0, is_fake=True), DummyBBox(0.0, is_fake=True)]
-
-        self.assertEqual(
-            compute_track_quality_score(traj, current_score=0.23),
-            0.23,
-        )
-
-    def test_track_quality_score_can_be_enabled_for_trailer_only(self):
-        class DummyBBox:
-            def __init__(self, score, *, matched_score=None, is_fake=False, is_low_score_match=False):
-                self.det_score = score
-                self.is_fake = is_fake
-                self.is_low_score_match = is_low_score_match
-                if matched_score is not None:
-                    self.matched_score = matched_score
-
-        class DummyTraj:
-            pass
-
-        score_cfg = {
-            "ENABLED": True,
-            "MODE": "quality_v1",
-            "ENABLED_CLASS_IDS": [5],
-            "REAL_SCORE_TOPK": 3,
-            "RECENT_WINDOW": 3,
-            "MIN_SCORE": 0.01,
-            "MAX_SCORE": 0.995,
-            "DEFAULT_CURRENT_FAKE_SCALE": 0.75,
-            "MATURE_LEN": {5: 3},
-            "CURRENT_FAKE_SCALE": {5: 0.78},
-            "W_DET": {5: 0.42},
-            "W_ASSOC": {5: 0.14},
-            "W_CONT": {5: 0.12},
-            "W_MATURE": {5: 0.32},
-        }
-
-        trailer = DummyTraj()
-        trailer.cfg = {"TRACK_SCORE": score_cfg}
-        trailer.category_num = 5
-        trailer._output_score = 0.47
-        trailer._confirmed_match_score = 0.35
-        trailer._confirmed_track_length = 1
-        trailer.bboxes = [
-            DummyBBox(0.62, matched_score=0.18),
-            DummyBBox(0.66, matched_score=0.20),
-            DummyBBox(0.71, matched_score=0.16),
-        ]
-
-        score = compute_track_quality_score(trailer, current_score=0.71)
-        self.assertIsNotNone(score)
-        self.assertNotEqual(score, 0.71)
-
-    def test_track_quality_score_returns_none_for_non_enabled_class(self):
-        class DummyBBox:
-            def __init__(self, score, *, matched_score=None):
-                self.det_score = score
-                self.is_fake = False
-                self.is_low_score_match = False
-                if matched_score is not None:
-                    self.matched_score = matched_score
-
-        class DummyTraj:
-            pass
-
-        traj = DummyTraj()
-        traj.cfg = {
-            "TRACK_SCORE": {
-                "ENABLED": True,
-                "MODE": "quality_v1",
-                "ENABLED_CLASS_IDS": [5],
-            }
-        }
-        traj.category_num = 3
-        traj._output_score = 0.46
-        traj._confirmed_match_score = 0.38
-        traj._confirmed_track_length = 3
-        traj.bboxes = [
-            DummyBBox(0.60, matched_score=0.20),
-            DummyBBox(0.58, matched_score=0.18),
-        ]
-
-        self.assertIsNone(compute_track_quality_score(traj, current_score=0.58))
-
 
 if __name__ == "__main__":
     unittest.main()

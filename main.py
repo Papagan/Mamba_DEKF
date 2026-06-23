@@ -258,7 +258,7 @@ if __name__ == "__main__":
         if args.dataset == "kitti":
             cfg_path = "./config/kitti.yaml"
         elif args.dataset == "nuscenes":
-            cfg_path = "./config/nuscenes.yaml"
+            cfg_path = "./config/nuscenes_single_stage_mctrack_exact_noise_hybrid_dirty_suppressor_tuned.yaml"
         elif args.dataset == "waymo":
             cfg_path = "./config/waymo.yaml"
         else:

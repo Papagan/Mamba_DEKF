@@ -1209,7 +1209,10 @@ def main():
         auto_unseal_epoch = train_cfg.get("AUTO_UNSEAL_EPOCH", 0)
         if auto_unseal_epoch > 0 and (epoch + 1) == auto_unseal_epoch:
             auto_unseal_write_back = bool(train_cfg.get("AUTO_UNSEAL_WRITE_BACK", False))
-            inf_cfg_path = train_cfg.get("INFERENCE_CONFIG", "config/nuscenes.yaml")
+            inf_cfg_path = train_cfg.get(
+                "INFERENCE_CONFIG",
+                "config/nuscenes_single_stage_mctrack_exact_noise_hybrid_dirty_suppressor_tuned.yaml",
+            )
             if os.path.exists(inf_cfg_path):
                 with open(inf_cfg_path, "r") as f:
                     inf_cfg = yaml.safe_load(f)

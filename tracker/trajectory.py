@@ -17,7 +17,6 @@ from .bbox import BBox
 from typing import List
 from scipy.optimize import curve_fit, OptimizeWarning
 from .compat_utils import (
-    compute_track_quality_score,
     initial_status_flag_for_mode,
     normalize_tracker_compat_mode,
     select_filtered_tracking_score,
@@ -286,14 +285,14 @@ class Trajectory:
 
     def filtering(self) -> None:
         """
-        Offline interpolation of missing detections + quality-aware score assignment.
+        Offline interpolation of missing detections + final score assignment.
 
         Interpolation: linearly fills gaps in global_xyz_lwh_yaw_fusion for fake bboxes.
 
-        Score assignment: only real detections above the configured OUTPUT_SCORE
-        threshold determine the final trajectory score. Lower-score rescue dets and
-        fake coasted bboxes are excluded — they exist to maintain track continuity
-        through occlusion, not to represent object existence probability.
+        Score assignment:
+          - `mctrack` compat mode averages all valid real-detection logits.
+          - default mode averages only real detections above OUTPUT_SCORE and
+            otherwise falls back to the best original detection score.
         """
         # snapshot original scores before logit transform
         original_scores = [
@@ -346,22 +345,14 @@ class Trajectory:
             if not bbox.is_fake and orig_score >= self._output_score:
                 quality_logit_scores.append(bbox.det_score)
 
-        quality_score = compute_track_quality_score(
-            self,
-            raw_scores=original_scores,
-            current_score=max(original_scores) if original_scores else 0.5,
+        best_orig = max(original_scores) if original_scores else 0.5
+        final_score = select_filtered_tracking_score(
+            compat_mode=self._tracker_compat_mode,
+            original_scores=original_scores,
+            transformed_scores=transformed_scores,
+            quality_scores=quality_logit_scores,
+            fallback_score=self.logit(best_orig),
         )
-        if quality_score is None:
-            best_orig = max(original_scores) if original_scores else 0.5
-            final_score = select_filtered_tracking_score(
-                compat_mode=self._tracker_compat_mode,
-                original_scores=original_scores,
-                transformed_scores=transformed_scores,
-                quality_scores=quality_logit_scores,
-                fallback_score=self.logit(best_orig),
-            )
-        else:
-            final_score = quality_score
 
         for bbox in self.bboxes:
             bbox.det_score = final_score

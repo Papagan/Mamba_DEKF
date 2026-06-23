@@ -22,23 +22,16 @@ from tracker.matching import (
     match_trajs_and_dets,
     match_trajs_and_dets_uncertainty_aware,
 )
-from tracker.bytetrack_utils import (
-    build_stage2_relaxed_thresholds,
-    build_stage2_rescue_groups,
-    classify_single_stage_birth,
-    split_bytetrack_detections,
-)
 from tracker.compat_utils import (
     apply_dirty_track_suppressor_to_output,
     allow_single_stage_birth_under_mode,
-    compute_track_quality_score,
+    classify_single_stage_birth,
     extract_bbox_history_fields,
     normalize_tracker_compat_mode,
     select_output_tracking_score,
     sync_bbox_fields_from_state,
     use_mctrack_exact_matched_update,
     use_mctrack_exact_unmatch_update,
-    use_mctrack_single_stage_flow,
 )
 from tracker.dirty_suppressor_audit import DirtySuppressorAuditAccumulator
 from tracker.trajectory import Trajectory
@@ -1556,9 +1549,6 @@ class Base3DTracker:
                 for t in trajs
             ]
 
-        # ---- ByteTrack toggle ----
-        use_bytetrack = self.cfg.get("MATCHING", {}).get("USE_BYTETRACK", True)
-
         # ---- detection embeddings (shared by both paths) ----
         cost_mode = self.cfg.get("THRESHOLD", {}).get("BEV", {}).get("COST_MODE", "geometric")
         if dets_cnt > 0 and cost_mode == "full" and self.filter_mode in ["mamba", "fusion"]:
@@ -1602,7 +1592,7 @@ class Base3DTracker:
         else:
             cal_flags = []
 
-        if use_mctrack_single_stage_flow(self.tracker_compat_mode, use_bytetrack):
+        if self.tracker_compat_mode == "mctrack":
             self._track_single_stage_mctrack_compat(
                 frame_info=frame_info,
                 trajs=trajs,
@@ -1615,289 +1605,9 @@ class Base3DTracker:
                 _dbg=_dbg,
                 _dbg_small=_dbg_small,
             )
-
-        elif use_bytetrack:
-            # ================================================================
-            # ByteTrack ON: two-stage matching
-            #   Stage 1: all trajs vs high-score dets (strict, can birth)
-            #   Stage 2: unmatched trajs vs low-score dets (relaxed, no birth)
-            # ================================================================
-            high_det_indices: List[int] = []
-            tentative_det_indices: List[int] = []
-            low_det_indices: List[int] = []
-            high_dets: List[BBox] = []
-            tentative_dets: List[BBox] = []
-            low_dets: List[BBox] = []
-            birth_cfg = self.cfg["THRESHOLD"]["TRAJECTORY_THRE"].get("BIRTH_SCORE", {})
-            tentative_birth_cfg = self.cfg["THRESHOLD"]["TRAJECTORY_THRE"].get(
-                "TENTATIVE_BIRTH_SCORE", {}
-            )
-            tentative_birth_enabled = self.cfg["THRESHOLD"]["TRAJECTORY_THRE"].get(
-                "ALLOW_TENTATIVE_BIRTH", False
-            )
-            (
-                high_det_indices,
-                tentative_det_indices,
-                low_det_indices,
-            ) = split_bytetrack_detections(
-                frame_info.bboxes,
-                category_map=self.cfg["CATEGORY_MAP_TO_NUMBER"],
-                birth_cfg=birth_cfg,
-                tentative_birth_cfg=tentative_birth_cfg,
-                low_score_floor=0.1,
-                tentative_birth_enabled=tentative_birth_enabled,
-            )
-            high_dets = [frame_info.bboxes[i] for i in high_det_indices]
-            tentative_dets = [frame_info.bboxes[i] for i in tentative_det_indices]
-            low_dets = [frame_info.bboxes[i] for i in low_det_indices]
-            rescue_det_indices = tentative_det_indices + low_det_indices
-            rescue_dets = tentative_dets + low_dets
-
-            matched_track_ids: List[int] = []
-            matched_bboxes: List[BBox] = []
-            matched_traj_full_set: set = set()
-            matched_det_global_set: set = set()
-            high_global_to_sub = {g: s for s, g in enumerate(high_det_indices)}
-
-            # ---- Stage 1: all active trajs vs high-score dets (strict) ----
-            if trajs_cnt > 0 and len(high_dets) > 0:
-                det_emb_high = det_embeddings_all[high_det_indices] \
-                    if det_embeddings_all is not None else None
-                match_res_1, costs_1 = match_trajs_and_dets_uncertainty_aware(
-                    trajs, high_dets, self.cfg,
-                    trk_embeddings=trk_embeddings,
-                    det_embeddings=det_emb_high,
-                    trk_pos_P=trk_pos_P,
-                    trk_ori_P=trk_ori_P,
-                    cal_flag=cal_flags,
-                )
-            else:
-                match_res_1 = np.empty((0, 2), dtype=int)
-                costs_1 = np.empty((0,), dtype=float)
-
-            matched_high_sub_set: set = set()
-            for match_idx, row in enumerate(match_res_1 if len(match_res_1) > 0 else []):
-                traj_idx = int(row[0])
-                high_sub_idx = int(row[1])
-                det_global_idx = high_det_indices[high_sub_idx]
-                track_id = trajs[traj_idx].track_id
-                det_bbox = frame_info.bboxes[det_global_idx]
-                match_cost = float(costs_1[match_idx]) if match_idx < len(costs_1) else float("inf")
-                self.all_trajs[track_id].update(det_bbox, match_cost)
-                matched_track_ids.append(track_id)
-                matched_bboxes.append(det_bbox)
-                matched_traj_full_set.add(traj_idx)
-                matched_high_sub_set.add(high_sub_idx)
-                matched_det_global_set.add(det_global_idx)
-                if _dbg_small and det_bbox.category in matched_counts:
-                    matched_counts[det_bbox.category] += 1
-                    assoc_cost = float(costs_1[match_idx]) if match_idx < len(costs_1) else float("nan")
-                    emit_debug_line(
-                        f"[TRK-SMALL] frame={frame_info.frame_id} cls={det_bbox.category} "
-                        f"stage=1 event=match tid={track_id} det_score={det_bbox.det_score:.4f} "
-                        f"assoc_cost={assoc_cost:.4f} track_len={self.all_trajs[track_id].track_length} "
-                        f"status={self.all_trajs[track_id].status_flag}"
-                    )
-            if _dbg:
-                emit_debug_line(
-                    f"[TRK] frame={frame_info.frame_id} stage1 "
-                    f"high_dets={len(high_dets)} matched={len(match_res_1)}"
-                )
-
-            # ---- Stage 2: unmatched trajs vs low-score dets (relaxed) ----
-            unmatched_traj_full_indices = [
-                i for i in range(trajs_cnt) if i not in matched_traj_full_set
-            ]
-
-            if len(unmatched_traj_full_indices) > 0 and len(rescue_dets) > 0:
-                cfg_relaxed = copy.deepcopy(self.cfg)
-                orig_thre = cfg_relaxed["THRESHOLD"]["BEV"]["COST_THRE"]
-                bev_cfg = cfg_relaxed["THRESHOLD"]["BEV"]
-                cfg_relaxed["THRESHOLD"]["BEV"]["COST_THRE"] = build_stage2_relaxed_thresholds(
-                    orig_thre,
-                    relax_ratio=float(bev_cfg.get("STAGE2_RELAX_RATIO", 1.0)),
-                    per_class_overrides=bev_cfg.get("STAGE2_COST_THRE", {}),
-                )
-                cfg_relaxed["THRESHOLD"]["BEV"]["COST_MODE"] = "geometric"
-                stage2_groups = build_stage2_rescue_groups(
-                    unmatched_traj_indices=unmatched_traj_full_indices,
-                    trajs=trajs,
-                    rescue_det_indices=rescue_det_indices,
-                    dets=frame_info.bboxes,
-                    category_map=self.cfg["CATEGORY_MAP_TO_NUMBER"],
-                )
-                stage2_rows = []
-                stage2_costs = []
-                for _, traj_group, det_group in stage2_groups:
-                    group_trajs = [trajs[i] for i in traj_group]
-                    group_dets = [frame_info.bboxes[i] for i in det_group]
-                    group_match_res, group_costs = match_trajs_and_dets(
-                        group_trajs,
-                        group_dets,
-                        cfg_relaxed,
-                    )
-                    for match_idx, row in enumerate(group_match_res if len(group_match_res) > 0 else []):
-                        stage2_rows.append(
-                            [traj_group[int(row[0])], det_group[int(row[1])]]
-                        )
-                        stage2_costs.append(
-                            float(group_costs[match_idx]) if match_idx < len(group_costs) else float("inf")
-                        )
-                match_res_2 = (
-                    np.asarray(stage2_rows, dtype=int)
-                    if stage2_rows
-                    else np.empty((0, 2), dtype=int)
-                )
-                costs_2 = (
-                    np.asarray(stage2_costs, dtype=float)
-                    if stage2_costs
-                    else np.empty((0,), dtype=float)
-                )
-            else:
-                match_res_2 = np.empty((0, 2), dtype=int)
-                costs_2 = np.empty((0,), dtype=float)
-
-            for match_idx, row in enumerate(match_res_2 if len(match_res_2) > 0 else []):
-                traj_full_idx = int(row[0])
-                det_global_idx = int(row[1])
-                track_id = trajs[traj_full_idx].track_id
-                det_bbox = frame_info.bboxes[det_global_idx]
-                # Mark Stage-2 rescue matches so they help continuity
-                # without inflating final trajectory confidence.
-                det_bbox.is_low_score_match = True
-                match_cost = float(costs_2[match_idx]) if match_idx < len(costs_2) else float("inf")
-                self.all_trajs[track_id].update(det_bbox, match_cost)
-                matched_track_ids.append(track_id)
-                matched_bboxes.append(det_bbox)
-                matched_traj_full_set.add(traj_full_idx)
-                matched_det_global_set.add(det_global_idx)
-                if _dbg_small and det_bbox.category in matched_counts:
-                    matched_counts[det_bbox.category] += 1
-                    assoc_cost = float(costs_2[match_idx]) if match_idx < len(costs_2) else float("nan")
-                    emit_debug_line(
-                        f"[TRK-SMALL] frame={frame_info.frame_id} cls={det_bbox.category} "
-                        f"stage=2 event=match tid={track_id} det_score={det_bbox.det_score:.4f} "
-                        f"assoc_cost={assoc_cost:.4f} track_len={self.all_trajs[track_id].track_length} "
-                        f"status={self.all_trajs[track_id].status_flag}"
-                    )
-            if _dbg:
-                emit_debug_line(
-                    f"[TRK] frame={frame_info.frame_id} stage2 "
-                    f"low_dets={len(rescue_dets)} matched={len(match_res_2)}"
-                )
-
-            # ---- Optional MCTrack-style RV rescue on remaining unmatched pairs ----
-            rv_matched = 0
-            remaining_traj_full_indices = [
-                i for i in range(trajs_cnt) if i not in matched_traj_full_set
-            ]
-            remaining_det_global_indices = [
-                i for i in range(dets_cnt) if i not in matched_det_global_set
-            ]
-            if self.cfg.get("IS_RV_MATCHING", False):
-                rescued_matches = self._rv_rescue_match(
-                    frame_info,
-                    [trajs[i] for i in remaining_traj_full_indices],
-                    remaining_det_global_indices,
-                )
-                for traj_sub_idx, det_global_idx, det_bbox, match_cost in rescued_matches:
-                    traj_full_idx = remaining_traj_full_indices[traj_sub_idx]
-                    track_id = trajs[traj_full_idx].track_id
-                    cat_num = self.cfg["CATEGORY_MAP_TO_NUMBER"].get(det_bbox.category, 0)
-                    birth_thre = birth_cfg.get(cat_num, 0.4)
-                    if det_bbox.det_score < birth_thre:
-                        det_bbox.is_low_score_match = True
-                    self.all_trajs[track_id].update(det_bbox, match_cost)
-                    matched_track_ids.append(track_id)
-                    matched_bboxes.append(det_bbox)
-                    matched_traj_full_set.add(traj_full_idx)
-                    matched_det_global_set.add(det_global_idx)
-                    if det_global_idx in high_global_to_sub:
-                        matched_high_sub_set.add(high_global_to_sub[det_global_idx])
-                    rv_matched += 1
-                    if _dbg_small and det_bbox.category in matched_counts:
-                        matched_counts[det_bbox.category] += 1
-                        emit_debug_line(
-                            f"[TRK-SMALL] frame={frame_info.frame_id} cls={det_bbox.category} "
-                            f"stage=rv event=match tid={track_id} det_score={det_bbox.det_score:.4f} "
-                            f"assoc_cost={match_cost:.4f} track_len={self.all_trajs[track_id].track_length} "
-                            f"status={self.all_trajs[track_id].status_flag}"
-                        )
-                if _dbg and (len(remaining_traj_full_indices) > 0 or len(remaining_det_global_indices) > 0):
-                    emit_debug_line(
-                        f"[TRK] frame={frame_info.frame_id} stage_rv "
-                        f"candidate_trajs={len(remaining_traj_full_indices)} "
-                        f"candidate_dets={len(remaining_det_global_indices)} matched={rv_matched}"
-                    )
-
-            # ---- coast: trajectories that missed all stages ----
-            for i in range(trajs_cnt):
-                if i not in matched_traj_full_set:
-                    track_id = trajs[i].track_id
-                    self.all_trajs[track_id].unmatch_update(frame_info.frame_id, timestamp=frame_info.timestamp)
-                    if _dbg_small and trajs[i].bboxes[-1].category in coast_counts:
-                        coast_counts[trajs[i].bboxes[-1].category] += 1
-
-            # ---- batch KF update for all matched tracks ----
-            if mamba_out is not None and len(matched_track_ids) > 0:
-                self._update_matched_tracks(
-                    matched_track_ids, matched_bboxes, mamba_out, traj_index_map,
-                )
-
-            # ---- Strict Birth: ONLY from unmatched HIGH-score dets ----
-            for sub_idx in range(len(high_dets)):
-                if sub_idx not in matched_high_sub_set:
-                    det_bbox = high_dets[sub_idx]
-                    new_traj = Trajectory(
-                        track_id=self.track_id_counter,
-                        init_bbox=det_bbox,
-                        cfg=self.cfg,
-                    )
-                    self.all_trajs[self.track_id_counter] = new_traj
-                    self._init_kf_state(self.track_id_counter, det_bbox)
-                    self.track_id_counter += 1
-                    if _dbg_small and det_bbox.category in birth_counts:
-                        birth_counts[det_bbox.category] += 1
-                        emit_debug_line(
-                            f"[TRK-SMALL] frame={frame_info.frame_id} cls={det_bbox.category} "
-                            f"event=birth tid={self.track_id_counter - 1} det_score={det_bbox.det_score:.4f}"
-                        )
-            if tentative_birth_enabled:
-                matched_tentative_sub_set = {
-                    tentative_det_indices.index(det_idx)
-                    for det_idx in matched_det_global_set
-                    if det_idx in tentative_det_indices
-                }
-                for sub_idx in range(len(tentative_dets)):
-                    if sub_idx not in matched_tentative_sub_set:
-                        det_bbox = tentative_dets[sub_idx]
-                        new_traj = Trajectory(
-                            track_id=self.track_id_counter,
-                            init_bbox=det_bbox,
-                            cfg=self.cfg,
-                        )
-                        self.all_trajs[self.track_id_counter] = new_traj
-                        self._init_kf_state(self.track_id_counter, det_bbox)
-                        self.track_id_counter += 1
-                        if _dbg_small and det_bbox.category in birth_counts:
-                            birth_counts[det_bbox.category] += 1
-                            emit_debug_line(
-                                f"[TRK-SMALL] frame={frame_info.frame_id} cls={det_bbox.category} "
-                                f"event=tentative_birth tid={self.track_id_counter - 1} det_score={det_bbox.det_score:.4f}"
-                            )
-            if _dbg:
-                births = len(high_dets) - len(matched_high_sub_set)
-                if tentative_birth_enabled:
-                    births += len(tentative_dets) - len(matched_tentative_sub_set)
-                coasts = trajs_cnt - len(matched_traj_full_set)
-                emit_debug_line(
-                    f"[TRK] frame={frame_info.frame_id} births={births} coasts={coasts} "
-                    f"matched_total={len(matched_track_ids)}"
-                )
-
         else:
             # ================================================================
-            # ByteTrack OFF: single-stage matching (MCTrack-style)
+            # Default single-stage matching with uncertainty-aware association.
             #   All dets participate in one matching round; all unmatched
             #   dets can birth new tracks.
             # ================================================================
@@ -2094,19 +1804,12 @@ class Base3DTracker:
                         and float(getattr(b, "raw_det_score", b.det_score)) >= output_score_thre
                     )
                 ]
-                quality_score = compute_track_quality_score(
-                    traj,
+                quality_score = select_output_tracking_score(
                     current_score=bbox.det_score,
+                    real_scores=real_scores,
+                    quality_scores=quality_scores,
+                    compat_mode=self.tracker_compat_mode,
                 )
-                if quality_score is None:
-                    quality_score = select_output_tracking_score(
-                        current_score=bbox.det_score,
-                        real_scores=real_scores,
-                        quality_scores=quality_scores,
-                        compat_mode=self.tracker_compat_mode,
-                        cfg=traj.cfg,
-                        category_num=traj.category_num,
-                    )
                 bbox.det_score = quality_score
                 suppressor_cfg = self.dirty_suppressor_cfg
                 base_score = (
