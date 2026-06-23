@@ -2104,6 +2104,8 @@ class Base3DTracker:
                         real_scores=real_scores,
                         quality_scores=quality_scores,
                         compat_mode=self.tracker_compat_mode,
+                        cfg=traj.cfg,
+                        category_num=traj.category_num,
                     )
                 bbox.det_score = quality_score
                 suppressor_cfg = self.dirty_suppressor_cfg

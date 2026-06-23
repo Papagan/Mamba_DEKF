@@ -210,6 +210,17 @@ def initial_status_flag_for_mode(mode) -> int:
     return 1 if mode == "mctrack" else 0
 
 
+def get_output_score_mode(cfg, category_num: int):
+    strategy_cfg = ((cfg or {}).get("OUTPUT_SCORE_STRATEGY", {}) or {})
+    class_modes = strategy_cfg.get("CLASS_MODES", {}) or {}
+    mode = class_modes.get(category_num)
+    if mode is None:
+        mode = class_modes.get(str(category_num))
+    if mode is None:
+        return None
+    return str(mode).strip().lower()
+
+
 def score_for_unmatched_fake_bbox(last_real_score: float, unmatch_length: int, mode) -> float:
     mode = normalize_tracker_compat_mode(mode)
     if mode == "mctrack":
@@ -222,8 +233,15 @@ def select_output_tracking_score(
     real_scores,
     quality_scores,
     compat_mode,
+    cfg=None,
+    category_num=None,
 ) -> float:
     compat_mode = normalize_tracker_compat_mode(compat_mode)
+    score_mode = get_output_score_mode(cfg, category_num) if category_num is not None else None
+    if score_mode == "mctrack_real_avg":
+        if real_scores:
+            return float(sum(real_scores) / len(real_scores))
+        return float(current_score)
     if compat_mode == "mctrack":
         return float(current_score)
     if quality_scores:

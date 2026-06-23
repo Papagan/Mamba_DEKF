@@ -98,9 +98,8 @@ THRESHOLD:
     CONFIRMED_MATCHED_SCORE: {0: 0.35, 1: 0.35, 2: 0.38, 3: 0.38, 4: 0.32, 5: 0.35, 6: 0.33}
 
 TRACK_SCORE:
-  ENABLED: true
+  ENABLED: false
   MODE: quality_v1
-  ENABLED_CLASS_IDS: [5]
   REAL_SCORE_TOPK: 5
   RECENT_WINDOW: 5
   MIN_SCORE: 0.01
@@ -112,6 +111,10 @@ TRACK_SCORE:
   W_ASSOC:  {0: 0.20, 1: 0.16, 2: 0.08, 3: 0.08, 4: 0.16, 5: 0.14, 6: 0.16}
   W_CONT:   {0: 0.18, 1: 0.18, 2: 0.08, 3: 0.08, 4: 0.16, 5: 0.12, 6: 0.14}
   W_MATURE: {0: 0.24, 1: 0.30, 2: 0.38, 3: 0.38, 4: 0.32, 5: 0.32, 6: 0.30}
+
+OUTPUT_SCORE_STRATEGY:
+  CLASS_MODES:
+    5: "mctrack_real_avg"
 
 DEKF_BASE_NOISE:
   Q:
@@ -184,10 +187,6 @@ DEKF_BASE_NOISE:
 DIRTY_TRACK_SUPPRESSOR:
   ENABLED: true
   RECENT_WINDOW: 5
-  AUDIT:
-    ENABLED: true
-    STRICT: false
-    INFER_OUTPUT_PATH: debug/dirty_suppressor_tuned_audit.json
   CLASS_PROFILES:
     0:
       soft_fake_len: 2
@@ -198,33 +197,29 @@ DIRTY_TRACK_SUPPRESSOR:
       hard_pos_trace_ratio: 2.6
       cost_penalty_start: 0.9
     1:
-      MODE: conjunctive_v1
-      MIN_SOFT_SIGNALS: 2
       soft_fake_len: 2
       hard_fake_len: 3
       soft_low_score_ratio: 0.30
       hard_low_score_ratio: 0.55
-      soft_pos_trace_ratio: 2.0
-      hard_pos_trace_ratio: 2.8
-      cost_penalty_start: 0.65
+      soft_pos_trace_ratio: 1.7
+      hard_pos_trace_ratio: 2.4
+      cost_penalty_start: 0.85
     2:
       soft_fake_len: 2
       hard_fake_len: 3
       soft_low_score_ratio: 0.30
       hard_low_score_ratio: 0.55
-      soft_pos_trace_ratio: 1.65
+      soft_pos_trace_ratio: 1.6
       hard_pos_trace_ratio: 2.2
       cost_penalty_start: 0.85
     3:
-      MODE: conjunctive_v1
-      MIN_SOFT_SIGNALS: 2
       soft_fake_len: 2
       hard_fake_len: 3
       soft_low_score_ratio: 0.30
       hard_low_score_ratio: 0.55
-      soft_pos_trace_ratio: 1.9
-      hard_pos_trace_ratio: 2.5
-      cost_penalty_start: 0.70
+      soft_pos_trace_ratio: 1.6
+      hard_pos_trace_ratio: 2.2
+      cost_penalty_start: 0.85
     4:
       soft_fake_len: 2
       hard_fake_len: 4
@@ -234,15 +229,13 @@ DIRTY_TRACK_SUPPRESSOR:
       hard_pos_trace_ratio: 2.6
       cost_penalty_start: 0.9
     5:
-      MODE: conjunctive_v1
-      MIN_SOFT_SIGNALS: 2
-      soft_fake_len: 3
-      hard_fake_len: 5
-      soft_low_score_ratio: 0.50
-      hard_low_score_ratio: 0.75
-      soft_pos_trace_ratio: 35.0
-      hard_pos_trace_ratio: 60.0
-      cost_penalty_start: 1.05
+      soft_fake_len: 2
+      hard_fake_len: 4
+      soft_low_score_ratio: 0.35
+      hard_low_score_ratio: 0.60
+      soft_pos_trace_ratio: 1.7
+      hard_pos_trace_ratio: 2.4
+      cost_penalty_start: 0.9
     6:
       soft_fake_len: 2
       hard_fake_len: 4

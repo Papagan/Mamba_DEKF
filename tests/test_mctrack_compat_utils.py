@@ -382,6 +382,40 @@ class MCTrackCompatUtilsTest(unittest.TestCase):
             0.52,
         )
 
+    def test_output_score_selection_supports_trailer_real_score_average_mode(self):
+        self.assertEqual(
+            select_output_tracking_score(
+                current_score=0.41,
+                real_scores=[0.41, 0.52, 0.61],
+                quality_scores=[0.61],
+                compat_mode="mctrack",
+                cfg={
+                    "OUTPUT_SCORE_STRATEGY": {
+                        "CLASS_MODES": {5: "mctrack_real_avg"},
+                    }
+                },
+                category_num=5,
+            ),
+            (0.41 + 0.52 + 0.61) / 3.0,
+        )
+
+    def test_output_score_selection_keeps_non_trailer_classes_on_legacy_path(self):
+        self.assertEqual(
+            select_output_tracking_score(
+                current_score=0.41,
+                real_scores=[0.41, 0.52, 0.61],
+                quality_scores=[0.61],
+                compat_mode="mctrack",
+                cfg={
+                    "OUTPUT_SCORE_STRATEGY": {
+                        "CLASS_MODES": {5: "mctrack_real_avg"},
+                    }
+                },
+                category_num=6,
+            ),
+            0.41,
+        )
+
     def test_mctrack_mode_bypasses_single_stage_birth_gate(self):
         self.assertFalse(
             allow_single_stage_birth_under_mode(
