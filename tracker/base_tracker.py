@@ -71,14 +71,32 @@ def _noise_audit_enabled(cfg):
 
 def parse_residual_history_window_cfg(
     history_len: int,
-    residual_window_cfg: Optional[Dict],
+    cfg: Optional[Dict],
 ) -> Tuple[Dict[str, int], Dict[str, Dict[str, int]]]:
-    residual_window_cfg = residual_window_cfg or {}
+    cfg = cfg or {}
+    data_cfg = (cfg.get("DATA", {}) or {})
+    residual_window_cfg = (cfg.get("RESIDUAL_HISTORY", {}) or {})
+
+    merged_window_cfg = {
+        "MIN_HISTORY_LEN": data_cfg.get("MIN_HISTORY_LEN", min(history_len, 4)),
+        "MAX_HISTORY_LEN": data_cfg.get("MAX_HISTORY_LEN", history_len),
+    }
+    merged_window_cfg["CLASS_WINDOW"] = dict(data_cfg.get("CLASS_WINDOW", {}) or {})
+
+    if residual_window_cfg:
+        if "MIN_HISTORY_LEN" in residual_window_cfg:
+            merged_window_cfg["MIN_HISTORY_LEN"] = residual_window_cfg["MIN_HISTORY_LEN"]
+        if "MAX_HISTORY_LEN" in residual_window_cfg:
+            merged_window_cfg["MAX_HISTORY_LEN"] = residual_window_cfg["MAX_HISTORY_LEN"]
+        override_class_window = residual_window_cfg.get("CLASS_WINDOW", {}) or {}
+        if override_class_window:
+            merged_window_cfg["CLASS_WINDOW"].update(override_class_window)
+
     default_min_history = int(
-        residual_window_cfg.get("MIN_HISTORY_LEN", min(history_len, 4))
+        merged_window_cfg.get("MIN_HISTORY_LEN", min(history_len, 4))
     )
     default_max_history = int(
-        residual_window_cfg.get("MAX_HISTORY_LEN", history_len)
+        merged_window_cfg.get("MAX_HISTORY_LEN", history_len)
     )
     default_window_cfg = {
         "MIN_HISTORY_LEN": max(1, min(default_min_history, history_len)),
@@ -86,7 +104,7 @@ def parse_residual_history_window_cfg(
     }
 
     runtime_window_cfg: Dict[str, Dict[str, int]] = {}
-    for class_name, class_cfg in (residual_window_cfg.get("CLASS_WINDOW", {}) or {}).items():
+    for class_name, class_cfg in (merged_window_cfg.get("CLASS_WINDOW", {}) or {}).items():
         if not isinstance(class_cfg, dict):
             continue
         min_history = int(
@@ -348,7 +366,7 @@ class Base3DTracker:
         self.mamba_input_dim: int = int(getattr(self.mamba_ekf.mamba, "INPUT_DIM", 12))
         self.default_window_cfg, self.runtime_window_cfg = parse_residual_history_window_cfg(
             history_len=self.history_len,
-            residual_window_cfg=(cfg.get("RESIDUAL_HISTORY", {}) or {}),
+            cfg=cfg,
         )
         self._dirty_pos_trace_priors = self._build_dirty_pos_trace_priors()
 

@@ -374,12 +374,13 @@ class ResidualHistoryTest(unittest.TestCase):
 
         default_window_cfg, runtime_window_cfg = parse_cfg(
             history_len=8,
-            residual_window_cfg={
-                "MIN_HISTORY_LEN": 4,
-                "MAX_HISTORY_LEN": 8,
-                "CLASS_WINDOW": {
-                    "bicycle": {"MIN_HISTORY_LEN": 3, "MAX_HISTORY_LEN": 6},
-                    "truck": {"MIN_HISTORY_LEN": 5, "MAX_HISTORY_LEN": 7},
+            cfg={
+                "DATA": {
+                    "MIN_HISTORY_LEN": 4,
+                    "CLASS_WINDOW": {
+                        "bicycle": {"MIN_HISTORY_LEN": 3, "MAX_HISTORY_LEN": 6},
+                        "truck": {"MIN_HISTORY_LEN": 5, "MAX_HISTORY_LEN": 7},
+                    },
                 },
             },
         )
@@ -387,6 +388,33 @@ class ResidualHistoryTest(unittest.TestCase):
         self.assertEqual(default_window_cfg, {"MIN_HISTORY_LEN": 4, "MAX_HISTORY_LEN": 8})
         self.assertEqual(runtime_window_cfg["bicycle"], {"MIN_HISTORY_LEN": 3, "MAX_HISTORY_LEN": 6})
         self.assertEqual(runtime_window_cfg["truck"], {"MIN_HISTORY_LEN": 5, "MAX_HISTORY_LEN": 7})
+
+    def test_parse_residual_history_window_cfg_prefers_top_level_override_when_present(self):
+        parse_cfg = _load_residual_window_parser()
+
+        default_window_cfg, runtime_window_cfg = parse_cfg(
+            history_len=8,
+            cfg={
+                "DATA": {
+                    "MIN_HISTORY_LEN": 4,
+                    "CLASS_WINDOW": {
+                        "bicycle": {"MIN_HISTORY_LEN": 3, "MAX_HISTORY_LEN": 6},
+                    },
+                },
+                "RESIDUAL_HISTORY": {
+                    "MIN_HISTORY_LEN": 2,
+                    "MAX_HISTORY_LEN": 5,
+                    "CLASS_WINDOW": {
+                        "bicycle": {"MIN_HISTORY_LEN": 2, "MAX_HISTORY_LEN": 4},
+                        "truck": {"MIN_HISTORY_LEN": 4, "MAX_HISTORY_LEN": 5},
+                    },
+                },
+            },
+        )
+
+        self.assertEqual(default_window_cfg, {"MIN_HISTORY_LEN": 2, "MAX_HISTORY_LEN": 5})
+        self.assertEqual(runtime_window_cfg["bicycle"], {"MIN_HISTORY_LEN": 2, "MAX_HISTORY_LEN": 4})
+        self.assertEqual(runtime_window_cfg["truck"], {"MIN_HISTORY_LEN": 4, "MAX_HISTORY_LEN": 5})
 
 
 if __name__ == "__main__":
