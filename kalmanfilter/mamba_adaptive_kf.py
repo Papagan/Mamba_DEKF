@@ -30,6 +30,13 @@ from kalmanfilter.noise_priors import (
     apply_residual_anchor,
     build_base_covariances,
 )
+from kalmanfilter.prior_conditioned_heads import (
+    PriorConditionedHeadBank,
+    apply_factorized_ratio_to_q_pos,
+    apply_factorized_ratio_to_r_ori,
+    apply_factorized_ratio_to_r_pos,
+    apply_factorized_ratio_to_r_siz,
+)
 from kalmanfilter.bounded_residual import apply_bounded_residuals
 
 try:
@@ -908,6 +915,7 @@ class TemporalMamba(nn.Module):
         self.embed_dim = embed_dim
         self.min_diag_siz = min_diag_siz
         self.min_kappa = min_kappa
+        self.num_classes = num_classes
         self.base_noise_cfg = base_noise_cfg
 
         # input projection: 13 → d_model
@@ -944,6 +952,7 @@ class TemporalMamba(nn.Module):
         # ---- Position Noise (Cholesky heads — only Mamba-adaptive module) ----
         self.head_Q_pos = CholeskyHead(d_model, mat_dim=6, min_diag=min_diag_q)   # Q for Pos  [B,6,6]
         self.head_R_pos = CholeskyHead(d_model, mat_dim=5, min_diag=min_diag_r)   # R for Pos  [B,5,5] (x,y,z,vx,vy)
+        self.head_bank = PriorConditionedHeadBank(d_model=d_model, num_classes=num_classes)
 
         # ---- Size Noise (category-aware embeddings — rigid-body prior) ----
         # Initialised from CenterPoint nuScenes detection statistics
@@ -1015,6 +1024,7 @@ class TemporalMamba(nn.Module):
         detection_driven_mask: Optional[Tensor] = None,
         history_mask: Optional[Tensor] = None,
         history_match_mask: Optional[Tensor] = None,
+        mode: str = "mamba",
     ) -> Dict[str, Tensor]:
         """
         Process joint historical states and produce noise matrices + embedding.
@@ -1067,6 +1077,55 @@ class TemporalMamba(nn.Module):
         B = h_last.shape[0]
         dev = h_last.device
 
+        if class_ids is None:
+            class_ids = torch.zeros(B, dtype=torch.long, device=dev)
+        class_ids = torch.clamp(class_ids.to(device=dev, dtype=torch.long), 0, self.num_classes - 1)
+
+        embedding = self.embed_head(h_last)  # [B, embed_dim]
+        delta_pos = self.head_delta_pos(h_last)   # [B, 6]
+
+        if mode == "mamba_multihead_closure":
+            if self.base_noise_cfg is None:
+                raise ValueError("mamba_multihead_closure requires base_noise_cfg priors")
+
+            prior_cov = build_base_covariances(
+                base_noise_cfg=self.base_noise_cfg,
+                class_ids=class_ids,
+                dtype=h_last.dtype,
+                device=dev,
+                track_history=track_history,
+                current_range=current_range,
+                detection_driven_mask=detection_driven_mask,
+                history_mask=history_mask,
+                history_match_mask=history_match_mask,
+            )
+            ratios = self.head_bank(h_last, class_ids)
+            Q_pos = apply_factorized_ratio_to_q_pos(prior_cov["Q_pos_base"], ratios)
+            R_pos = apply_factorized_ratio_to_r_pos(prior_cov["R_pos_base"], ratios)
+            Q_siz = prior_cov["Q_siz_base"]
+            R_siz = apply_factorized_ratio_to_r_siz(prior_cov["R_siz_base"], ratios)
+            Q_ori = prior_cov["Q_ori_base"]
+            R_ori = apply_factorized_ratio_to_r_ori(prior_cov["R_ori_base"], ratios)
+            kappa_ori = torch.reciprocal(torch.clamp(R_ori.squeeze(-1), min=1e-8))
+            kappa_ori_unc = kappa_ori
+            return {
+                "Q_pos": Q_pos, "Q_siz": Q_siz, "Q_ori": Q_ori,
+                "R_pos": R_pos, "R_siz": R_siz, "R_ori": R_ori,
+                "kappa_ori": kappa_ori,
+                "kappa_ori_unc": kappa_ori_unc,
+                "ratios": ratios,
+                "prior_covariances": {
+                    "Q_pos": prior_cov["Q_pos_base"],
+                    "Q_siz": prior_cov["Q_siz_base"],
+                    "Q_ori": prior_cov["Q_ori_base"],
+                    "R_pos": prior_cov["R_pos_base"],
+                    "R_siz": prior_cov["R_siz_base"],
+                    "R_ori": prior_cov["R_ori_base"],
+                },
+                "embedding": embedding,
+                "delta_pos": delta_pos,
+            }
+
         # ---- Position Noise (Cholesky heads) ----
         Q_pos = self.head_Q_pos(h_last)    # [B, 6, 6]
         R_pos = self.head_R_pos(h_last)    # [B, 5, 5]
@@ -1074,8 +1133,6 @@ class TemporalMamba(nn.Module):
         # ---- Size Noise (category-aware embeddings) ----
         # Each category learns its own Q/R diagonal in log-space.
         # Pedestrians (~0.06m noise) vs trailers (~1.93m noise) differ by 30×.
-        if class_ids is None:
-            class_ids = torch.zeros(B, dtype=torch.long, device=dev)
         q_siz_diag = F.softplus(self.raw_q_siz(class_ids)) + self.min_diag_siz  # [B, 3]
         r_siz_diag = F.softplus(self.raw_r_siz(class_ids)) + self.min_diag_siz  # [B, 3]
         Q_siz = torch.diag_embed(q_siz_diag)                           # [B, 3, 3]
@@ -1097,11 +1154,6 @@ class TemporalMamba(nn.Module):
         q_val = F.softplus(self.raw_q_ori) + 1e-4                     # scalar
         Q_ori = torch.eye(2, device=dev, dtype=h_last.dtype) * q_val  # [2, 2]
         Q_ori = Q_ori.unsqueeze(0).expand(B, -1, -1)                  # [B, 2, 2]
-
-        # ---- Temporal Embedding for semantic association ----
-        embedding = self.embed_head(h_last)  # [B, embed_dim]
-
-        delta_pos = self.head_delta_pos(h_last)   # [B, 6]
 
         if self.base_noise_cfg is not None:
             anchor_cfg = self.base_noise_cfg.get("RESIDUAL_ANCHOR", {})
@@ -1333,6 +1385,7 @@ class MambaDecoupledEKF(nn.Module):
             detection_driven_mask=detection_driven_mask,
             history_mask=history_mask,
             history_match_mask=history_match_mask,
+            mode=mode,
         )
         bsize = track_history.size(0)
         dtype = track_history.dtype
@@ -1341,6 +1394,15 @@ class MambaDecoupledEKF(nn.Module):
             Q_p, R_p, Q_s, R_s, Q_o, R_o = self._get_base_noise(bsize, dtype, class_ids)
         else:
             Q_p = R_p = Q_s = R_s = Q_o = R_o = None
+
+        prior_covariances = mamba_out.get("prior_covariances")
+        if prior_covariances is not None:
+            Q_p = prior_covariances.get("Q_pos", Q_p)
+            R_p = prior_covariances.get("R_pos", R_p)
+            Q_s = prior_covariances.get("Q_siz", Q_s)
+            R_s = prior_covariances.get("R_siz", R_s)
+            Q_o = prior_covariances.get("Q_ori", Q_o)
+            R_o = prior_covariances.get("R_ori", R_o)
 
         if mode == "mamba" and have_base:
             bounded = apply_bounded_residuals(
