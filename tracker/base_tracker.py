@@ -69,6 +69,39 @@ def _noise_audit_enabled(cfg):
     return bool(_build_noise_audit_cfg(cfg).get("ENABLED", False))
 
 
+def parse_residual_history_window_cfg(
+    history_len: int,
+    residual_window_cfg: Optional[Dict],
+) -> Tuple[Dict[str, int], Dict[str, Dict[str, int]]]:
+    residual_window_cfg = residual_window_cfg or {}
+    default_min_history = int(
+        residual_window_cfg.get("MIN_HISTORY_LEN", min(history_len, 4))
+    )
+    default_max_history = int(
+        residual_window_cfg.get("MAX_HISTORY_LEN", history_len)
+    )
+    default_window_cfg = {
+        "MIN_HISTORY_LEN": max(1, min(default_min_history, history_len)),
+        "MAX_HISTORY_LEN": max(1, min(default_max_history, history_len)),
+    }
+
+    runtime_window_cfg: Dict[str, Dict[str, int]] = {}
+    for class_name, class_cfg in (residual_window_cfg.get("CLASS_WINDOW", {}) or {}).items():
+        if not isinstance(class_cfg, dict):
+            continue
+        min_history = int(
+            class_cfg.get("MIN_HISTORY_LEN", default_window_cfg["MIN_HISTORY_LEN"])
+        )
+        max_history = int(
+            class_cfg.get("MAX_HISTORY_LEN", default_window_cfg["MAX_HISTORY_LEN"])
+        )
+        runtime_window_cfg[str(class_name).strip().lower()] = {
+            "MIN_HISTORY_LEN": max(1, min(min_history, history_len)),
+            "MAX_HISTORY_LEN": max(1, min(max_history, history_len)),
+        }
+    return default_window_cfg, runtime_window_cfg
+
+
 def build_runtime_contract_warnings(
     runtime_contract,
     tracker_compat_mode,
@@ -313,31 +346,10 @@ class Base3DTracker:
             force_gru=force_gru,
         ).to(self.device)
         self.mamba_input_dim: int = int(getattr(self.mamba_ekf.mamba, "INPUT_DIM", 12))
-        residual_window_cfg = (cfg.get("RESIDUAL_HISTORY", {}) or {})
-        default_min_history = int(
-            residual_window_cfg.get("MIN_HISTORY_LEN", min(self.history_len, 4))
+        self.default_window_cfg, self.runtime_window_cfg = parse_residual_history_window_cfg(
+            history_len=self.history_len,
+            residual_window_cfg=(cfg.get("RESIDUAL_HISTORY", {}) or {}),
         )
-        default_max_history = int(
-            residual_window_cfg.get("MAX_HISTORY_LEN", self.history_len)
-        )
-        self.default_window_cfg = {
-            "MIN_HISTORY_LEN": max(1, min(default_min_history, self.history_len)),
-            "MAX_HISTORY_LEN": max(1, min(default_max_history, self.history_len)),
-        }
-        self.runtime_window_cfg: Dict[str, Dict[str, int]] = {}
-        for class_name, class_cfg in (residual_window_cfg.get("CLASS_WINDOW", {}) or {}).items():
-            if not isinstance(class_cfg, dict):
-                continue
-            min_history = int(
-                class_cfg.get("MIN_HISTORY_LEN", self.default_window_cfg["MIN_HISTORY_LEN"])
-            )
-            max_history = int(
-                class_cfg.get("MAX_HISTORY_LEN", self.default_window_cfg["MAX_HISTORY_LEN"])
-            )
-            self.runtime_window_cfg[str(class_name).strip().lower()] = {
-                "MIN_HISTORY_LEN": max(1, min(min_history, self.history_len)),
-                "MAX_HISTORY_LEN": max(1, min(max_history, self.history_len)),
-            }
         self._dirty_pos_trace_priors = self._build_dirty_pos_trace_priors()
 
         # ---- Load trained weights if checkpoint path is provided ----
@@ -708,8 +720,9 @@ class Base3DTracker:
         unmatch_length = int(getattr(traj, "unmatch_length", 0) or 0)
         if unmatch_length > 0:
             effective_len = max(int(window_cfg["MIN_HISTORY_LEN"]), effective_len - 2)
-        if unmatch_length > 1 and str(class_name).strip().lower() in {"bicycle", "motorcycle"}:
+        if unmatch_length > 1:
             effective_len = min(effective_len, 3)
+        effective_len = min(effective_len, int(valid_history_len))
         return max(1, effective_len)
 
     def _encode_residual_token(

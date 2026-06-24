@@ -54,6 +54,24 @@ def _load_class_methods(module_path, class_name, method_names, extra_namespace=N
     return loaded
 
 
+def _load_module_functions(module_path, function_names, extra_namespace=None):
+    source = module_path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(module_path))
+    namespace = dict(extra_namespace or {})
+    loaded = {}
+
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name in function_names:
+            fn_source = ast.get_source_segment(source, node)
+            exec(fn_source, namespace)
+            loaded[node.name] = namespace[node.name]
+
+    missing = [name for name in function_names if name not in loaded]
+    if missing:
+        raise AssertionError(f"Missing functions in {module_path}: {missing}")
+    return loaded
+
+
 class DummyBBox:
     def __init__(self, *, frame_id=0, timestamp=0.0, det_score=0.8):
         self.category = "bicycle"
@@ -176,6 +194,19 @@ def _build_tracker_stub(history_len=8):
     for name, fn in methods.items():
         setattr(tracker, name, types.MethodType(fn, tracker))
     return tracker
+
+
+def _load_residual_window_parser():
+    helpers = _load_module_functions(
+        REPO_ROOT / "tracker" / "base_tracker.py",
+        ["parse_residual_history_window_cfg"],
+        extra_namespace={
+            "Dict": Dict,
+            "Tuple": Tuple,
+            "Optional": Optional,
+        },
+    )
+    return helpers["parse_residual_history_window_cfg"]
 
 
 class ResidualHistoryTest(unittest.TestCase):
@@ -313,6 +344,49 @@ class ResidualHistoryTest(unittest.TestCase):
         effective = tracker._resolve_effective_history_len(traj, valid_history_len=8)
 
         self.assertLessEqual(effective, 4)
+
+    def test_effective_history_second_stage_clamp_applies_to_non_bicycle_classes(self):
+        tracker = _build_tracker_stub(history_len=8)
+        traj = _make_traj_with_residual_history(
+            class_name="truck",
+            unmatch_length=2,
+            matched_flags=[True] * 8,
+        )
+
+        effective = tracker._resolve_effective_history_len(traj, valid_history_len=8)
+
+        self.assertEqual(effective, 3)
+
+    def test_effective_history_never_exceeds_available_short_unmatched_history(self):
+        tracker = _build_tracker_stub(history_len=8)
+        traj = _make_traj_with_residual_history(
+            class_name="truck",
+            unmatch_length=1,
+            matched_flags=[True, False],
+        )
+
+        effective = tracker._resolve_effective_history_len(traj, valid_history_len=2)
+
+        self.assertLessEqual(effective, 2)
+
+    def test_parse_residual_history_window_cfg_reads_normal_config_shape(self):
+        parse_cfg = _load_residual_window_parser()
+
+        default_window_cfg, runtime_window_cfg = parse_cfg(
+            history_len=8,
+            residual_window_cfg={
+                "MIN_HISTORY_LEN": 4,
+                "MAX_HISTORY_LEN": 8,
+                "CLASS_WINDOW": {
+                    "bicycle": {"MIN_HISTORY_LEN": 3, "MAX_HISTORY_LEN": 6},
+                    "truck": {"MIN_HISTORY_LEN": 5, "MAX_HISTORY_LEN": 7},
+                },
+            },
+        )
+
+        self.assertEqual(default_window_cfg, {"MIN_HISTORY_LEN": 4, "MAX_HISTORY_LEN": 8})
+        self.assertEqual(runtime_window_cfg["bicycle"], {"MIN_HISTORY_LEN": 3, "MAX_HISTORY_LEN": 6})
+        self.assertEqual(runtime_window_cfg["truck"], {"MIN_HISTORY_LEN": 5, "MAX_HISTORY_LEN": 7})
 
 
 if __name__ == "__main__":
