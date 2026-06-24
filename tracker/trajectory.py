@@ -70,6 +70,7 @@ class Trajectory:
         )
         self.bboxes: List[BBox] = [init_bbox]
         self.matched_scores: List[float] = []
+        self.residual_history: List[dict] = []
 
         # ---- Size locking (rigid-body prior) ----
         # Physical objects don't change size. We fuse early observations via
@@ -130,7 +131,39 @@ class Trajectory:
         """
         pass
 
-    def update(self, bbox: BBox, matched_score: float) -> BBox:
+    def record_matched_residual(
+        self,
+        *,
+        pos_residual,
+        siz_residual,
+        ori_residual,
+        det_score,
+        timestamp,
+    ) -> None:
+        self.residual_history.append(
+            {
+                "is_matched": True,
+                "pos_residual": list(pos_residual),
+                "siz_residual": list(siz_residual),
+                "ori_residual": float(ori_residual),
+                "det_score": float(det_score),
+                "timestamp": float(timestamp) if timestamp is not None else None,
+            }
+        )
+
+    def record_coast_residual(self, *, timestamp) -> None:
+        self.residual_history.append(
+            {
+                "is_matched": False,
+                "pos_residual": [0.0] * 5,
+                "siz_residual": [0.0] * 3,
+                "ori_residual": 0.0,
+                "det_score": 0.0,
+                "timestamp": float(timestamp) if timestamp is not None else None,
+            }
+        )
+
+    def update(self, bbox: BBox, matched_score: float, matched_residual: dict = None) -> BBox:
         """
         Called when this trajectory is matched to a detection.
 
@@ -175,6 +208,14 @@ class Trajectory:
         self.bboxes[-1].global_velocity_diff = self.cal_diff_velocity()
         self.bboxes[-1].global_velocity_curve = self.cal_curve_velocity()
         self.bboxes[-1].matched_score = matched_score
+        if matched_residual is not None:
+            self.record_matched_residual(
+                pos_residual=matched_residual["pos"],
+                siz_residual=matched_residual["siz"],
+                ori_residual=matched_residual["ori"],
+                det_score=bbox.det_score,
+                timestamp=bbox.timestamp,
+            )
 
         # status promotion
         # matched_score is an association cost: lower is better.
@@ -251,6 +292,7 @@ class Trajectory:
         # xyz/lwh/yaw into fake_bbox fields via DecoupledAdaptiveKF output.
         # If not yet integrated, the deep-copied values serve as fallback.
 
+        self.record_coast_residual(timestamp=fake_bbox.timestamp)
         self.bboxes.append(fake_bbox)
         self.matched_scores.append(0)
         self.bboxes[-1].matched_score = 0
