@@ -119,6 +119,38 @@ class ResidualHistoryTest(unittest.TestCase):
         self.assertAlmostEqual(traj.residual_history[-1]["det_score"], 0.9)
         self.assertAlmostEqual(traj.residual_history[-1]["timestamp"], 0.5)
 
+    def test_update_without_matched_residual_keeps_residual_history_unchanged(self):
+        traj = Trajectory(track_id=11, init_bbox=DummyBBox(), cfg=_make_cfg())
+
+        traj.update(DummyBBox(frame_id=1, timestamp=0.5, det_score=0.9), 0.2)
+
+        self.assertEqual(traj.track_length, 2)
+        self.assertEqual(len(traj.bboxes), 2)
+        self.assertEqual(traj.matched_scores, [0.2])
+        self.assertEqual(traj.residual_history, [])
+
+    def test_update_rejects_malformed_matched_residual_before_mutating_trajectory(self):
+        traj = Trajectory(track_id=12, init_bbox=DummyBBox(), cfg=_make_cfg())
+        bbox = DummyBBox(frame_id=1, timestamp=0.5, det_score=0.9)
+
+        with self.assertRaises(ValueError):
+            traj.update(
+                bbox,
+                0.2,
+                matched_residual={
+                    "pos": [0.3, -0.2, 0.1, 0.0],
+                    "siz": [0.1, 0.2, -0.3],
+                    "ori": -0.05,
+                },
+            )
+
+        self.assertEqual(traj.track_length, 1)
+        self.assertEqual(len(traj.bboxes), 1)
+        self.assertEqual(traj.matched_scores, [])
+        self.assertEqual(traj.residual_history, [])
+        self.assertEqual(traj.last_updated_frame, 0)
+        self.assertFalse(hasattr(bbox, "track_id"))
+
     def test_unmatch_update_records_coast_placeholder(self):
         traj = Trajectory(track_id=10, init_bbox=DummyBBox(), cfg=_make_cfg())
 

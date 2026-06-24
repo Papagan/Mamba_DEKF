@@ -131,6 +131,73 @@ class Trajectory:
         """
         pass
 
+    @staticmethod
+    def _normalize_residual_vector(
+        values,
+        *,
+        field_name: str,
+        expected_len: int,
+    ) -> List[float]:
+        try:
+            normalized = [float(value) for value in values]
+        except TypeError as exc:
+            raise TypeError(f"matched_residual['{field_name}'] must be a flat iterable") from exc
+        except ValueError as exc:
+            raise ValueError(
+                f"matched_residual['{field_name}'] must contain only numeric values"
+            ) from exc
+        if len(normalized) != expected_len:
+            raise ValueError(
+                f"matched_residual['{field_name}'] must have length {expected_len}"
+            )
+        return normalized
+
+    def _normalize_matched_residual_payload(self, matched_residual: dict) -> dict:
+        if not isinstance(matched_residual, dict):
+            raise TypeError("matched_residual must be a dict with 'pos', 'siz', and 'ori'")
+        missing = [key for key in ("pos", "siz", "ori") if key not in matched_residual]
+        if missing:
+            raise ValueError(
+                "matched_residual missing required keys: " + ", ".join(sorted(missing))
+            )
+        try:
+            ori_residual = float(matched_residual["ori"])
+        except TypeError as exc:
+            raise TypeError("matched_residual['ori'] must be a numeric scalar") from exc
+        except ValueError as exc:
+            raise ValueError("matched_residual['ori'] must be a numeric scalar") from exc
+        return {
+            "pos": self._normalize_residual_vector(
+                matched_residual["pos"],
+                field_name="pos",
+                expected_len=5,
+            ),
+            "siz": self._normalize_residual_vector(
+                matched_residual["siz"],
+                field_name="siz",
+                expected_len=3,
+            ),
+            "ori": ori_residual,
+        }
+
+    def _append_matched_residual_entry(
+        self,
+        *,
+        normalized_residual: dict,
+        det_score,
+        timestamp,
+    ) -> None:
+        self.residual_history.append(
+            {
+                "is_matched": True,
+                "pos_residual": list(normalized_residual["pos"]),
+                "siz_residual": list(normalized_residual["siz"]),
+                "ori_residual": float(normalized_residual["ori"]),
+                "det_score": float(det_score),
+                "timestamp": float(timestamp) if timestamp is not None else None,
+            }
+        )
+
     def record_matched_residual(
         self,
         *,
@@ -140,15 +207,17 @@ class Trajectory:
         det_score,
         timestamp,
     ) -> None:
-        self.residual_history.append(
+        normalized_residual = self._normalize_matched_residual_payload(
             {
-                "is_matched": True,
-                "pos_residual": list(pos_residual),
-                "siz_residual": list(siz_residual),
-                "ori_residual": float(ori_residual),
-                "det_score": float(det_score),
-                "timestamp": float(timestamp) if timestamp is not None else None,
+                "pos": pos_residual,
+                "siz": siz_residual,
+                "ori": ori_residual,
             }
+        )
+        self._append_matched_residual_entry(
+            normalized_residual=normalized_residual,
+            det_score=det_score,
+            timestamp=timestamp,
         )
 
     def record_coast_residual(self, *, timestamp) -> None:
@@ -178,6 +247,12 @@ class Trajectory:
         Returns:
             The appended bbox (with updated metadata).
         """
+        normalized_matched_residual = None
+        if matched_residual is not None:
+            normalized_matched_residual = self._normalize_matched_residual_payload(
+                matched_residual
+            )
+
         bbox.track_id = self.track_id
         self.track_length += 1
         bbox.track_length = self.track_length
@@ -208,11 +283,9 @@ class Trajectory:
         self.bboxes[-1].global_velocity_diff = self.cal_diff_velocity()
         self.bboxes[-1].global_velocity_curve = self.cal_curve_velocity()
         self.bboxes[-1].matched_score = matched_score
-        if matched_residual is not None:
-            self.record_matched_residual(
-                pos_residual=matched_residual["pos"],
-                siz_residual=matched_residual["siz"],
-                ori_residual=matched_residual["ori"],
+        if normalized_matched_residual is not None:
+            self._append_matched_residual_entry(
+                normalized_residual=normalized_matched_residual,
                 det_score=bbox.det_score,
                 timestamp=bbox.timestamp,
             )
