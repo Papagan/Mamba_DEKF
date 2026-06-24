@@ -312,6 +312,32 @@ class Base3DTracker:
             base_noise_cfg=cfg.get("DEKF_BASE_NOISE", None),
             force_gru=force_gru,
         ).to(self.device)
+        self.mamba_input_dim: int = int(getattr(self.mamba_ekf.mamba, "INPUT_DIM", 12))
+        residual_window_cfg = (cfg.get("RESIDUAL_HISTORY", {}) or {})
+        default_min_history = int(
+            residual_window_cfg.get("MIN_HISTORY_LEN", min(self.history_len, 4))
+        )
+        default_max_history = int(
+            residual_window_cfg.get("MAX_HISTORY_LEN", self.history_len)
+        )
+        self.default_window_cfg = {
+            "MIN_HISTORY_LEN": max(1, min(default_min_history, self.history_len)),
+            "MAX_HISTORY_LEN": max(1, min(default_max_history, self.history_len)),
+        }
+        self.runtime_window_cfg: Dict[str, Dict[str, int]] = {}
+        for class_name, class_cfg in (residual_window_cfg.get("CLASS_WINDOW", {}) or {}).items():
+            if not isinstance(class_cfg, dict):
+                continue
+            min_history = int(
+                class_cfg.get("MIN_HISTORY_LEN", self.default_window_cfg["MIN_HISTORY_LEN"])
+            )
+            max_history = int(
+                class_cfg.get("MAX_HISTORY_LEN", self.default_window_cfg["MAX_HISTORY_LEN"])
+            )
+            self.runtime_window_cfg[str(class_name).strip().lower()] = {
+                "MIN_HISTORY_LEN": max(1, min(min_history, self.history_len)),
+                "MAX_HISTORY_LEN": max(1, min(max_history, self.history_len)),
+            }
         self._dirty_pos_trace_priors = self._build_dirty_pos_trace_priors()
 
         # ---- Load trained weights if checkpoint path is provided ----
@@ -654,6 +680,88 @@ class Base3DTracker:
                 ], device=self.device)
                 history_mask[i, offset] = True
                 history_match_mask[i, offset] = not getattr(bbox, "is_fake", False)
+
+        return history, history_mask, history_match_mask
+
+    def _class_window_cfg(self, class_name: str) -> Dict[str, int]:
+        normalized = "" if class_name is None else str(class_name).strip().lower()
+        cfg = dict(self.default_window_cfg)
+        cfg.update(self.runtime_window_cfg.get(normalized, {}))
+        min_history = max(1, int(cfg.get("MIN_HISTORY_LEN", 1)))
+        max_history = max(min_history, int(cfg.get("MAX_HISTORY_LEN", self.history_len)))
+        return {
+            "MIN_HISTORY_LEN": min_history,
+            "MAX_HISTORY_LEN": min(max_history, self.history_len),
+        }
+
+    def _resolve_effective_history_len(self, traj, valid_history_len: int) -> int:
+        if valid_history_len <= 0:
+            return 0
+
+        class_name = getattr(traj.bboxes[-1], "category", None) if getattr(traj, "bboxes", None) else None
+        window_cfg = self._class_window_cfg(class_name)
+        effective_len = min(
+            int(valid_history_len),
+            int(window_cfg["MAX_HISTORY_LEN"]),
+            int(self.history_len),
+        )
+        unmatch_length = int(getattr(traj, "unmatch_length", 0) or 0)
+        if unmatch_length > 0:
+            effective_len = max(int(window_cfg["MIN_HISTORY_LEN"]), effective_len - 2)
+        if unmatch_length > 1 and str(class_name).strip().lower() in {"bicycle", "motorcycle"}:
+            effective_len = min(effective_len, 3)
+        return max(1, effective_len)
+
+    def _encode_residual_token(
+        self,
+        traj: Trajectory,
+        residual_entry: Dict,
+        *,
+        age_index: int,
+        effective_len: int,
+    ) -> torch.Tensor:
+        del traj  # reserved for future branch-specific token features
+        pos_residual = [float(value) for value in residual_entry.get("pos_residual", [0.0] * 5)]
+        siz_residual = [float(value) for value in residual_entry.get("siz_residual", [0.0] * 3)]
+        ori_residual = float(residual_entry.get("ori_residual", 0.0))
+        det_score = float(residual_entry.get("det_score", 0.0))
+        match_flag = 1.0 if bool(residual_entry.get("is_matched", False)) else 0.0
+        age_feature = 0.0
+        if effective_len > 1:
+            age_feature = float(age_index) / float(effective_len - 1)
+        return torch.tensor(
+            pos_residual + siz_residual + [ori_residual, det_score, match_flag, age_feature],
+            device=self.device,
+        )
+
+    def _extract_residual_token_history(
+        self, trajs: List[Trajectory],
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        B = len(trajs)
+        T = self.history_len
+        D = self.mamba_input_dim
+        history = torch.zeros(B, T, D, device=self.device)
+        history_mask = torch.zeros(B, T, dtype=torch.bool, device=self.device)
+        history_match_mask = torch.zeros(B, T, dtype=torch.bool, device=self.device)
+
+        for i, traj in enumerate(trajs):
+            residual_history = list(getattr(traj, "residual_history", []) or [])
+            effective_len = self._resolve_effective_history_len(traj, len(residual_history))
+            if effective_len <= 0:
+                continue
+
+            recent = residual_history[-effective_len:]
+            start = T - len(recent)
+            for local_idx, residual_entry in enumerate(recent):
+                offset = start + local_idx
+                history[i, offset, :] = self._encode_residual_token(
+                    traj,
+                    residual_entry,
+                    age_index=local_idx,
+                    effective_len=len(recent),
+                )
+                history_mask[i, offset] = True
+                history_match_mask[i, offset] = bool(residual_entry.get("is_matched", False))
 
         return history, history_mask, history_match_mask
 
@@ -1004,7 +1112,10 @@ class Base3DTracker:
         B = len(trajs)
 
         # ---- 1. Extract history [B, T, 12] ----
-        history, history_mask, history_match_mask = self._extract_track_history(trajs)
+        if self.filter_mode == "mamba_multihead_closure":
+            history, history_mask, history_match_mask = self._extract_residual_token_history(trajs)
+        else:
+            history, history_mask, history_match_mask = self._extract_track_history(trajs)
 
         # ---- 2. Load per-track KF states into batch ----
         pos_x, pos_P, siz_x, siz_P, ori_x, ori_P = self._batch_kf_states(track_ids)

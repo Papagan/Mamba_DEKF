@@ -415,6 +415,9 @@ class NoiseAuditInferTest(unittest.TestCase):
             filter_mode="mamba",
             _noise_audit_pending=None,
             all_trajs={1: traj_1, 2: traj_2},
+            _extract_residual_token_history=lambda trajs: (_ for _ in ()).throw(
+                AssertionError("residual extractor must stay branch-gated")
+            ),
             _extract_track_history=lambda trajs: (
                 _PredictTorch.zeros((len(trajs), 3, 12), dtype=_PredictTorch.float32),
                 _PredictTorch.ones(len(trajs) * 3, dtype=_PredictTorch.bool),
@@ -447,6 +450,84 @@ class NoiseAuditInferTest(unittest.TestCase):
             predict_before_associate(tracker, [tracker.all_trajs[1], tracker.all_trajs[2]], delta_t=0.5)
 
         self.assertEqual(captured["state_buckets"], ["matched", "unmatched"])
+
+    def test_predict_before_associate_uses_residual_history_extractor_for_multihead_closure(self):
+        predict_before_associate = _load_class_methods(
+            REPO_ROOT / "tracker" / "base_tracker.py",
+            "Base3DTracker",
+            ["predict_before_associate"],
+            extra_namespace={
+                "Dict": Dict,
+                "List": List,
+                "Optional": Optional,
+                "Tuple": Tuple,
+                "Trajectory": _FakeTraj,
+                "np": np,
+                "torch": _PredictTorch,
+                "infer_state_bucket": infer_state_bucket,
+            },
+        )["predict_before_associate"]
+
+        bbox = types.SimpleNamespace(global_xyz=[3.0, 4.0, 0.0], category="bicycle")
+        traj = types.SimpleNamespace(
+            track_id=1,
+            category_num=2,
+            unmatch_length=1,
+            bboxes=[bbox],
+            predict=lambda: None,
+        )
+        captured = {}
+
+        def _fake_predict_with_mamba(*args, **kwargs):
+            captured["history"] = args[0]
+            captured["mode"] = kwargs["mode"]
+            raise RuntimeError("stop after residual capture")
+
+        def _residual_history(trajs):
+            captured["history_source"] = "residual"
+            return (
+                _PredictTorch.zeros((len(trajs), 3, 12), dtype=_PredictTorch.float32),
+                _PredictTorch.ones(len(trajs) * 3, dtype=_PredictTorch.bool),
+                _PredictTorch.ones(len(trajs) * 3, dtype=_PredictTorch.bool),
+            )
+
+        tracker = types.SimpleNamespace(
+            device="cpu",
+            filter_mode="mamba_multihead_closure",
+            _noise_audit_pending=None,
+            all_trajs={1: traj},
+            _extract_track_history=lambda trajs: (_ for _ in ()).throw(
+                AssertionError("legacy extractor must not run for the closure branch")
+            ),
+            _extract_residual_token_history=_residual_history,
+            _batch_kf_states=lambda track_ids: (
+                _PredictTorch.zeros((len(track_ids), 6, 1), dtype=_PredictTorch.float32),
+                _PredictTorch.zeros((len(track_ids), 6, 6), dtype=_PredictTorch.float32),
+                _PredictTorch.zeros((len(track_ids), 3, 1), dtype=_PredictTorch.float32),
+                _PredictTorch.zeros((len(track_ids), 3, 3), dtype=_PredictTorch.float32),
+                _PredictTorch.zeros((len(track_ids), 2, 1), dtype=_PredictTorch.float32),
+                _PredictTorch.zeros((len(track_ids), 2, 2), dtype=_PredictTorch.float32),
+            ),
+            _unbatch_kf_states=lambda *args, **kwargs: None,
+            _write_predicted_state_to_bbox=lambda *args, **kwargs: None,
+            _stage_noise_audit_samples=lambda *args, **kwargs: None,
+            mamba_ekf=types.SimpleNamespace(
+                kf=types.SimpleNamespace(
+                    B=0,
+                    pos_filter=types.SimpleNamespace(B=0),
+                    siz_filter=types.SimpleNamespace(B=0),
+                    ori_filter=types.SimpleNamespace(B=0),
+                    init_states=lambda *args, **kwargs: None,
+                ),
+                predict_with_mamba=_fake_predict_with_mamba,
+            ),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "stop after residual capture"):
+            predict_before_associate(tracker, [traj], delta_t=0.5)
+
+        self.assertEqual(captured["history_source"], "residual")
+        self.assertEqual(captured["mode"], "mamba_multihead_closure")
 
     def _load_predict_with_mamba(self, *, torch_namespace, apply_bounded_impl):
         return _load_class_methods(
