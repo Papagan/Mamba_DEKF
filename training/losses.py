@@ -219,6 +219,33 @@ def wrapped_orientation_nll(
     return (per_sample * w).sum()
 
 
+def circular_orientation_state_loss(
+    pred_yaw: torch.Tensor,
+    gt_yaw: torch.Tensor,
+    sample_weights: torch.Tensor = None,
+) -> torch.Tensor:
+    pred = pred_yaw.squeeze(-1)
+    gt = gt_yaw.squeeze(-1)
+    per_sample = 1.0 - torch.cos(wrap_to_pi_torch(pred - gt))
+    if sample_weights is None:
+        return per_sample.mean()
+    w = sample_weights / (sample_weights.sum() + 1e-8)
+    return (per_sample * w).sum()
+
+
+def orientation_saturation_penalty(
+    kappa_ori_unc: torch.Tensor,
+    *,
+    max_effective_kappa: float,
+    sample_weights: torch.Tensor = None,
+) -> torch.Tensor:
+    per_sample = F.relu(kappa_ori_unc.squeeze(-1) - float(max_effective_kappa)).pow(2)
+    if sample_weights is None:
+        return per_sample.mean()
+    w = sample_weights / (sample_weights.sum() + 1e-8)
+    return (per_sample * w).sum()
+
+
 def log_ratio_anchor_loss(
     gamma: torch.Tensor,
     sample_weights: torch.Tensor = None,

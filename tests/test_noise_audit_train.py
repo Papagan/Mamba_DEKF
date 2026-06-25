@@ -35,7 +35,7 @@ class _TorchStub:
 class _FunctionalStub:
     @staticmethod
     def relu(value):
-        return value
+        return _ArrayTensor(np.maximum(np.asarray(value), 0.0))
 
 
 class _ArrayTensor:
@@ -134,6 +134,10 @@ class _NumpyTorchStub:
         return _ArrayTensor(np.abs(np.asarray(value)))
 
     @staticmethod
+    def cos(value):
+        return _ArrayTensor(np.cos(np.asarray(value)))
+
+    @staticmethod
     def isfinite(value):
         return bool(np.isfinite(np.asarray(value)).all())
 
@@ -165,10 +169,13 @@ class NoiseAuditTrainTest(unittest.TestCase):
                 "wrap_to_pi_torch",
                 "wrapped_orientation_nll",
                 "log_ratio_anchor_loss",
+                "circular_orientation_state_loss",
+                "orientation_saturation_penalty",
             ],
             extra_namespace={
                 "math": math,
                 "torch": torch_namespace,
+                "F": torch.nn.functional if torch is not None else _FunctionalStub(),
             },
         )
 
@@ -412,6 +419,39 @@ class NoiseAuditTrainTest(unittest.TestCase):
         loss = log_ratio_anchor_loss(gamma)
 
         self.assertAlmostEqual(float(loss.item()), 0.0, places=6)
+
+    def test_circular_orientation_state_loss_wraps_pi_boundary(self):
+        helpers = self._load_loss_helpers()
+        circular_orientation_state_loss = helpers["circular_orientation_state_loss"]
+        tensor = torch.tensor if torch is not None else _NumpyTorchStub.tensor
+
+        pred = tensor([[3.13]], dtype=torch.float32 if torch is not None else np.float32)
+        gt = tensor([[-3.13]], dtype=torch.float32 if torch is not None else np.float32)
+        loss = circular_orientation_state_loss(pred, gt)
+
+        self.assertLess(float(loss.item()), 0.01)
+
+    def test_orientation_saturation_penalty_is_zero_below_threshold(self):
+        helpers = self._load_loss_helpers()
+        orientation_saturation_penalty = helpers["orientation_saturation_penalty"]
+        tensor = torch.tensor if torch is not None else _NumpyTorchStub.tensor
+
+        penalty = orientation_saturation_penalty(
+            tensor([[3.0]], dtype=torch.float32 if torch is not None else np.float32),
+            max_effective_kappa=5.0,
+        )
+        self.assertAlmostEqual(float(penalty.item()), 0.0, places=6)
+
+    def test_orientation_saturation_penalty_is_positive_above_threshold(self):
+        helpers = self._load_loss_helpers()
+        orientation_saturation_penalty = helpers["orientation_saturation_penalty"]
+        tensor = torch.tensor if torch is not None else _NumpyTorchStub.tensor
+
+        penalty = orientation_saturation_penalty(
+            tensor([[25.0]], dtype=torch.float32 if torch is not None else np.float32),
+            max_effective_kappa=5.0,
+        )
+        self.assertGreater(float(penalty.item()), 0.0)
 
     def test_ratio_anchor_regularization_reports_family_losses(self):
         if torch is None:
