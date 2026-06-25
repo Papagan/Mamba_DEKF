@@ -198,6 +198,69 @@ def wrap_to_pi_torch(x: torch.Tensor) -> torch.Tensor:
     return x - 2.0 * math.pi * torch.round(x / (2.0 * math.pi))
 
 
+def wrapped_orientation_nll(
+    pred_yaw: torch.Tensor,
+    gt_yaw: torch.Tensor,
+    r_ori: torch.Tensor,
+    sample_weights: torch.Tensor = None,
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    """
+    Wrapped Gaussian NLL on the circle using the runtime R_ori variance.
+    """
+    pred = pred_yaw.squeeze(-1)
+    gt = gt_yaw.squeeze(-1)
+    diff = wrap_to_pi_torch(pred - gt)
+    var = torch.clamp(r_ori.squeeze(-1).squeeze(-1), min=eps)
+    per_sample = 0.5 * (torch.log(var) + diff.pow(2) / var)
+    if sample_weights is None:
+        return per_sample.mean()
+    w = sample_weights / (sample_weights.sum() + 1e-8)
+    return (per_sample * w).sum()
+
+
+def log_ratio_anchor_loss(
+    gamma: torch.Tensor,
+    sample_weights: torch.Tensor = None,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    """
+    Penalise deviation from the prior ratio gamma=1 in log-space.
+    """
+    per_sample = torch.abs(torch.log(torch.clamp(gamma.squeeze(-1), min=eps)))
+    if sample_weights is None:
+        return per_sample.mean()
+    w = sample_weights / (sample_weights.sum() + 1e-8)
+    return (per_sample * w).sum()
+
+
+def log_ratio_bound_loss(
+    gamma: torch.Tensor,
+    min_ratio,
+    max_ratio,
+    sample_weights: torch.Tensor = None,
+    lower_weight: float = 0.25,
+    upper_weight: float = 1.0,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    """
+    Penalise log-space bound violations with stronger upper-bound pressure.
+    """
+    gamma_flat = gamma.squeeze(-1)
+    min_ratio_t = torch.as_tensor(min_ratio, device=gamma_flat.device, dtype=gamma_flat.dtype)
+    max_ratio_t = torch.as_tensor(max_ratio, device=gamma_flat.device, dtype=gamma_flat.dtype)
+    log_gamma = torch.log(torch.clamp(gamma_flat, min=eps))
+    log_min = torch.log(torch.clamp(min_ratio_t, min=eps))
+    log_max = torch.log(torch.clamp(max_ratio_t, min=eps))
+    lower_violation = F.relu(log_min - log_gamma)
+    upper_violation = F.relu(log_gamma - log_max)
+    per_sample = lower_weight * lower_violation.pow(2) + upper_weight * upper_violation.pow(2)
+    if sample_weights is None:
+        return per_sample.mean()
+    w = sample_weights / (sample_weights.sum() + 1e-8)
+    return (per_sample * w).sum()
+
+
 # ======================================================================
 # Smooth Angle Loss (retained for reference; NOT used in training)
 # ======================================================================
@@ -286,13 +349,14 @@ class StatePredictionLoss(nn.Module):
         gt_next_ori: torch.Tensor,   # [B, 1]
         R_pos: torch.Tensor,         # [B, 5, 5]
         R_siz: torch.Tensor,         # [B, 3, 3]
-        R_ori: torch.Tensor,         # [B, 1, 1]  (unused, kept for API compat)
+        R_ori: torch.Tensor,         # [B, 1, 1]
         kappa_ori: torch.Tensor = None,  # [B, 1] — Von Mises concentration
         gt_next_vel: torch.Tensor = None,  # [B, 2] — GT velocity for vel NLL
         in_warmup: bool = False,
         ori_nll_alpha: float = None,       # smooth transition 0(angle) -> 1(VM-NLL)
         class_ids: torch.Tensor = None,     # [B]
         class_weights: torch.Tensor = None,  # [C]
+        use_wrapped_orientation_nll: bool = False,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
         Returns:
@@ -352,18 +416,28 @@ class StatePredictionLoss(nn.Module):
             w = sample_weights / (sample_weights.sum() + 1e-8)
             loss_ori_angle = (ori_per_sample * w).sum()
 
-        loss_ori_vm = von_mises_loss(
-            pred_yaw=ori_x_pred[:, 0, 0],
+        loss_ori_wrapped = wrapped_orientation_nll(
+            pred_yaw=ori_x_pred[:, 0:1, 0],
             gt_yaw=gt_next_ori,
-            kappa=kappa_ori,
+            r_ori=R_ori,
             sample_weights=sample_weights,
         )
 
-        if ori_nll_alpha is None:
-            loss_ori = loss_ori_angle if in_warmup else loss_ori_vm
+        if use_wrapped_orientation_nll:
+            loss_ori_vm = torch.tensor(0.0, device=pos_x_pred.device)
+            loss_ori = loss_ori_wrapped
         else:
-            alpha = float(max(0.0, min(1.0, ori_nll_alpha)))
-            loss_ori = (1.0 - alpha) * loss_ori_angle + alpha * loss_ori_vm
+            loss_ori_vm = von_mises_loss(
+                pred_yaw=ori_x_pred[:, 0, 0],
+                gt_yaw=gt_next_ori,
+                kappa=kappa_ori,
+                sample_weights=sample_weights,
+            )
+            if ori_nll_alpha is None:
+                loss_ori = loss_ori_angle if in_warmup else loss_ori_vm
+            else:
+                alpha = float(max(0.0, min(1.0, ori_nll_alpha)))
+                loss_ori = (1.0 - alpha) * loss_ori_angle + alpha * loss_ori_vm
 
         loss_nis = torch.tensor(0.0, device=pos_x_pred.device)
         if self.w_nis > 0:
@@ -422,6 +496,7 @@ class StatePredictionLoss(nn.Module):
             "loss_ori": loss_ori.item(),
             "loss_ori_angle": loss_ori_angle.item(),
             "loss_ori_vm": loss_ori_vm.item(),
+            "loss_ori_wrapped": loss_ori_wrapped.item(),
             "loss_vel": loss_vel_val,
             "loss_nis": loss_nis.item(),
         }
@@ -566,6 +641,7 @@ class JointLoss(nn.Module):
         in_warmup: bool = False,
         ori_nll_alpha: float = None,
         class_ids: torch.Tensor = None,  # [B]
+        use_wrapped_orientation_nll: bool = False,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
         Returns:
@@ -590,6 +666,7 @@ class JointLoss(nn.Module):
             ori_nll_alpha=ori_nll_alpha,
             class_ids=class_ids,
             class_weights=class_weights_tensor,
+            use_wrapped_orientation_nll=use_wrapped_orientation_nll,
         )
 
         # Contrastive loss only on step 0 (embeddings not None).

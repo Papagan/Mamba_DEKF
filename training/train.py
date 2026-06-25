@@ -45,7 +45,12 @@ from training.det_tracklet_dataset import (
     DetectionTrackletDataset,
     detection_tracklet_collate_fn,
 )
-from training.losses import JointLoss
+from training.losses import (
+    JointLoss,
+    log_ratio_anchor_loss,
+    log_ratio_bound_loss,
+    wrap_to_pi_torch,
+)
 from kalmanfilter.mamba_adaptive_kf import (
     TemporalMamba,
     DecoupledAdaptiveKF,
@@ -275,6 +280,111 @@ def _compute_ratio_anchor_regularization(
     return total, detail
 
 
+def _compute_closure_ratio_regularization(
+    *,
+    ratios: dict,
+    class_ids: torch.Tensor,
+    state_buckets: list,
+    closure_cfg: dict,
+) -> tuple:
+    device = class_ids.device
+    dtype = next(iter(ratios.values())).dtype if ratios else torch.float32
+    zero = torch.zeros((), device=device, dtype=dtype)
+    detail = {
+        "loss_ratio_anchor_q_pos": zero,
+        "loss_ratio_anchor_r_pos": zero,
+        "loss_ratio_anchor_r_siz": zero,
+        "loss_ratio_anchor_r_ori": zero,
+        "loss_ratio_bound_q_pos": zero,
+        "loss_ratio_bound_r_pos": zero,
+        "loss_ratio_bound_r_siz": zero,
+        "loss_ratio_bound_r_ori": zero,
+    }
+    if not ratios or not closure_cfg or not bool(closure_cfg.get("ENABLED", False)):
+        return zero, zero, detail
+
+    anchor_weight = float(closure_cfg.get("RATIO_ANCHOR_WEIGHT", 0.0))
+    bound_weight = float(closure_cfg.get("RATIO_BOUND_WEIGHT", anchor_weight))
+    lower_weight = float(closure_cfg.get("RATIO_BOUND_LOWER_WEIGHT", 0.25))
+    upper_weight = float(closure_cfg.get("RATIO_BOUND_UPPER_WEIGHT", 1.0))
+    if anchor_weight <= 0.0 and bound_weight <= 0.0:
+        return zero, zero, detail
+
+    class_id_list = [
+        int(value.item()) if hasattr(value, "item") else int(value)
+        for value in class_ids
+    ]
+    state_bucket_list = [str(bucket) for bucket in state_buckets]
+    if len(class_id_list) != len(state_bucket_list):
+        raise ValueError("class_ids and state_buckets must have the same batch length")
+
+    family_groups = {
+        "q_pos": ("q_pos_xyz", "q_pos_vxyz"),
+        "r_pos": ("r_pos_xyz", "r_pos_vxy"),
+        "r_siz": ("r_siz_lw", "r_siz_h"),
+        "r_ori": ("r_ori",),
+    }
+
+    total_anchor = zero
+    total_bound = zero
+    for family_name, ratio_keys in family_groups.items():
+        min_ratios = []
+        max_ratios = []
+        mask = []
+        has_bounded_sample = False
+        for class_id, state_bucket in zip(class_id_list, state_bucket_list):
+            bounds = get_family_ratio_bounds(class_id, state_bucket, family_name, closure_cfg)
+            if bounds is None:
+                min_ratios.append(1.0)
+                max_ratios.append(1.0)
+                mask.append(False)
+                continue
+            has_bounded_sample = True
+            min_ratios.append(bounds[0])
+            max_ratios.append(bounds[1])
+            mask.append(True)
+
+        if not has_bounded_sample:
+            continue
+
+        mask_t = torch.tensor(mask, device=device, dtype=torch.bool)
+        min_ratio_t = torch.tensor(min_ratios, device=device, dtype=dtype)[mask_t]
+        max_ratio_t = torch.tensor(max_ratios, device=device, dtype=dtype)[mask_t]
+
+        anchor_terms = []
+        bound_terms = []
+        for ratio_key in ratio_keys:
+            gamma = ratios.get(ratio_key)
+            if gamma is None:
+                continue
+            gamma_masked = gamma[mask_t]
+            if gamma_masked.numel() == 0:
+                continue
+            if anchor_weight > 0.0:
+                anchor_terms.append(log_ratio_anchor_loss(gamma_masked))
+            if bound_weight > 0.0:
+                bound_terms.append(
+                    log_ratio_bound_loss(
+                        gamma_masked,
+                        min_ratio_t,
+                        max_ratio_t,
+                        lower_weight=lower_weight,
+                        upper_weight=upper_weight,
+                    )
+                )
+
+        if anchor_terms:
+            family_anchor = torch.stack(anchor_terms).mean() * anchor_weight
+            detail[f"loss_ratio_anchor_{family_name}"] = family_anchor
+            total_anchor = total_anchor + family_anchor
+        if bound_terms:
+            family_bound = torch.stack(bound_terms).mean() * bound_weight
+            detail[f"loss_ratio_bound_{family_name}"] = family_bound
+            total_bound = total_bound + family_bound
+
+    return total_anchor, total_bound, detail
+
+
 def resolve_runtime_contract_filter_mode(cfg, train_tracker_compat_mode):
     valid_modes = {"mamba", "pure_dekf", "fusion"}
 
@@ -362,6 +472,9 @@ def training_step(
     class_ids = categories_to_class_ids(categories, device=device)  # [B]
 
     # ---- Step 1: TemporalMamba forward (ONCE) → Q/R/embedding ----
+    branch_name = str(filter_mode).strip().lower()
+    use_closure_loss_path = branch_name == "mamba_multihead_closure"
+
     mamba_out = mamba(
         history,
         class_ids=class_ids,
@@ -369,6 +482,7 @@ def training_step(
         detection_driven_mask=detection_driven_mask,
         history_mask=history_mask,
         history_match_mask=history_match_mask,
+        mode=branch_name,
     )
 
     # ---- Step 2: Init KF from GT state at frame T (+ noise) ----
@@ -514,23 +628,39 @@ def training_step(
     R_siz = mamba_out["R_siz"]
     R_ori = mamba_out["R_ori"]
     kappa_ori = mamba_out["kappa_ori"]
-    ratio_anchor_loss, ratio_anchor_detail = _compute_ratio_anchor_regularization(
-        raw_tensors={
-            "Q_pos": Q_pos,
-            "R_pos": R_pos,
-            "R_siz": R_siz,
-            "R_ori": R_ori,
-        },
-        prior_tensors={
-            "Q_pos_base": noise_bundle["Q_pos_base"],
-            "R_pos_base": noise_bundle["R_pos_base"],
-            "R_siz_base": noise_bundle["R_siz_base"],
-            "R_ori_base": noise_bundle["R_ori_base"],
-        },
-        class_ids=class_ids,
-        state_buckets=state_buckets,
-        closure_cfg=closure_cfg,
-    )
+    if use_closure_loss_path:
+        ratio_anchor_loss, ratio_bound_loss, ratio_detail = _compute_closure_ratio_regularization(
+            ratios=mamba_out.get("ratios") or {},
+            class_ids=class_ids,
+            state_buckets=state_buckets,
+            closure_cfg=closure_cfg,
+        )
+        ratio_anchor_detail = {
+            "loss_ratio_q_pos": ratio_detail["loss_ratio_anchor_q_pos"],
+            "loss_ratio_r_pos": ratio_detail["loss_ratio_anchor_r_pos"],
+            "loss_ratio_r_siz": ratio_detail["loss_ratio_anchor_r_siz"],
+            "loss_ratio_r_ori": ratio_detail["loss_ratio_anchor_r_ori"],
+        }
+    else:
+        ratio_anchor_loss, ratio_anchor_detail = _compute_ratio_anchor_regularization(
+            raw_tensors={
+                "Q_pos": Q_pos,
+                "R_pos": R_pos,
+                "R_siz": R_siz,
+                "R_ori": R_ori,
+            },
+            prior_tensors={
+                "Q_pos_base": noise_bundle["Q_pos_base"],
+                "R_pos_base": noise_bundle["R_pos_base"],
+                "R_siz_base": noise_bundle["R_siz_base"],
+                "R_ori_base": noise_bundle["R_ori_base"],
+            },
+            class_ids=class_ids,
+            state_buckets=state_buckets,
+            closure_cfg=closure_cfg,
+        )
+        ratio_bound_loss = torch.zeros((), device=device, dtype=history.dtype)
+        ratio_detail = {}
 
     # Smoothly release gradients after warmup (avoid abrupt loss cliff).
     def _blend_detach(x: torch.Tensor, alpha: float) -> torch.Tensor:
@@ -553,6 +683,7 @@ def training_step(
     detail_accum = {}
     detail_contrastive = {"loss_contrastive": 0.0, "n_valid_anchors": 0}
     total_weight = 0.0
+    total_aux_loss_tensor = torch.zeros((), device=device, dtype=history.dtype)
 
     # Accumulate loss tensors across rollout steps for proper gradient flow.
     for k in range(K):
@@ -585,6 +716,7 @@ def training_step(
             in_warmup=in_warmup,
             ori_nll_alpha=unfreeze_alpha,
             class_ids=class_ids[active_k],
+            use_wrapped_orientation_nll=use_closure_loss_path,
         )
 
         total_state_loss += detail_k["loss_state"] * step_weight   # for logging only
@@ -593,6 +725,33 @@ def training_step(
             total_contrast_loss = detail_k["loss_contrastive"]
         else:
             total_loss_tensor = total_loss_tensor + loss_k * step_weight
+
+        if use_closure_loss_path:
+            aux_pos = F.huber_loss(
+                pos_x_pred[active_k, 0:3, 0],
+                gt_future_pos[:, k, :][active_k],
+                reduction="mean",
+            )
+            aux_siz = F.huber_loss(
+                siz_x_pred[active_k, :, 0],
+                gt_future_siz[:, k, :][active_k],
+                reduction="mean",
+            )
+            aux_ori = (
+                1.0
+                - torch.cos(
+                    wrap_to_pi_torch(
+                        ori_x_pred[active_k, 0, 0] - gt_future_ori[:, k, 0][active_k]
+                    )
+                )
+            ).mean()
+            aux_loss_k = 0.05 * aux_pos + 0.02 * aux_siz + 0.02 * aux_ori
+            total_aux_loss_tensor = total_aux_loss_tensor + aux_loss_k * step_weight
+            detail_accum["loss_aux_pos"] = detail_accum.get("loss_aux_pos", 0.0) + aux_pos.item() * step_weight
+            detail_accum["loss_aux_siz"] = detail_accum.get("loss_aux_siz", 0.0) + aux_siz.item() * step_weight
+            detail_accum["loss_aux_ori"] = detail_accum.get("loss_aux_ori", 0.0) + aux_ori.item() * step_weight
+            detail_accum["loss_aux_total"] = detail_accum.get("loss_aux_total", 0.0) + aux_loss_k.item() * step_weight
+
         for key, val in detail_k.items():
             if key == "loss_contrastive":
                 detail_contrastive["loss_contrastive"] = max(
@@ -688,7 +847,10 @@ def training_step(
     # κ overconfidence penalty: fires when pre-clamp κ > 5.0 (R_ori < 0.2).
     # Must use kappa_ori_unc (pre-clamp) — kappa_ori is already clamped to ≤ 5.0
     # so ReLU(kappa_ori - 5.0) would always be zero.
-    kappa_reg = 5e-3 * F.relu(mamba_out["kappa_ori_unc"] - 5.0).mean()
+    if use_closure_loss_path:
+        kappa_reg = torch.zeros((), device=device, dtype=history.dtype)
+    else:
+        kappa_reg = 5e-3 * F.relu(mamba_out["kappa_ori_unc"] - 5.0).mean()
     detail["loss_kappa_reg"] = kappa_reg.item()
 
     # Δpos L2 penalty: mild regularisation to keep delta_pos bounded.
@@ -696,7 +858,10 @@ def training_step(
     detail["loss_delta_pos_reg"] = delta_pos_reg.item()
     for key, value in ratio_anchor_detail.items():
         detail[key] = value.item()
+    for key, value in ratio_detail.items():
+        detail[key] = value.item()
     detail["loss_ratio_anchor"] = ratio_anchor_loss.item()
+    detail["loss_ratio_bound"] = ratio_bound_loss.item()
 
     # ---- Step 4: Q/R/kappa variance monitor ----
     with torch.no_grad():
@@ -714,9 +879,15 @@ def training_step(
         detail["cond_siz_scale"] = noise_bundle["scales"]["siz"].mean().item()
         detail["matched_ratio"] = noise_bundle["scales"]["matched_ratio"].mean().item()
 
-    # ---- Backward loss: total_loss_tensor already contains
-    #      physics_scale × state_NLL + lambda × contrast + kappa_var_reg
-    real_loss = total_loss_tensor / norm + kappa_reg + delta_pos_reg + ratio_anchor_loss
+    # ---- Backward loss: base rollout objective plus branch-local regularisers.
+    real_loss = (
+        total_loss_tensor / norm
+        + total_aux_loss_tensor / norm
+        + kappa_reg
+        + delta_pos_reg
+        + ratio_anchor_loss
+        + ratio_bound_loss
+    )
     detail["loss_real"] = real_loss.item()
     detail["unfreeze_alpha"] = unfreeze_alpha
     detail["effective_rollout_weight"] = float(total_weight)

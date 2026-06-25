@@ -1,8 +1,11 @@
 import ast
 import json
+import math
 import pathlib
 import tempfile
 import unittest
+
+import numpy as np
 
 try:
     import torch
@@ -35,6 +38,106 @@ class _FunctionalStub:
         return value
 
 
+class _ArrayTensor:
+    __array_priority__ = 1000
+
+    def __init__(self, value):
+        self._value = np.asarray(value, dtype=np.float64)
+
+    def squeeze(self, axis=None):
+        return _ArrayTensor(np.squeeze(self._value, axis=axis))
+
+    def pow(self, exponent):
+        return _ArrayTensor(np.power(self._value, exponent))
+
+    def mean(self):
+        return _ArrayTensor(np.asarray(self._value.mean(), dtype=np.float64))
+
+    def sum(self):
+        return _ArrayTensor(np.asarray(self._value.sum(), dtype=np.float64))
+
+    def item(self):
+        return float(np.asarray(self._value).reshape(-1)[0])
+
+    def tolist(self):
+        return self._value.tolist()
+
+    def __float__(self):
+        return self.item()
+
+    def __array__(self, dtype=None):
+        return np.asarray(self._value, dtype=dtype)
+
+    def __len__(self):
+        return len(self._value)
+
+    @property
+    def shape(self):
+        return self._value.shape
+
+    def __add__(self, other):
+        return _ArrayTensor(self._value + np.asarray(other))
+
+    def __radd__(self, other):
+        return _ArrayTensor(np.asarray(other) + self._value)
+
+    def __sub__(self, other):
+        return _ArrayTensor(self._value - np.asarray(other))
+
+    def __rsub__(self, other):
+        return _ArrayTensor(np.asarray(other) - self._value)
+
+    def __mul__(self, other):
+        return _ArrayTensor(self._value * np.asarray(other))
+
+    def __rmul__(self, other):
+        return _ArrayTensor(np.asarray(other) * self._value)
+
+    def __truediv__(self, other):
+        return _ArrayTensor(self._value / np.asarray(other))
+
+    def __rtruediv__(self, other):
+        return _ArrayTensor(np.asarray(other) / self._value)
+
+    def __neg__(self):
+        return _ArrayTensor(-self._value)
+
+
+class _NumpyTorchStub:
+    Tensor = _ArrayTensor
+    float32 = np.float32
+
+    @staticmethod
+    def tensor(value, dtype=None):
+        return _ArrayTensor(np.asarray(value, dtype=np.float64 if dtype is None else dtype))
+
+    @staticmethod
+    def ones(*shape, dtype=None):
+        return _ArrayTensor(np.ones(shape, dtype=np.float64 if dtype is None else dtype))
+
+    @staticmethod
+    def round(value):
+        return _ArrayTensor(np.round(np.asarray(value)))
+
+    @staticmethod
+    def clamp(value, min=None, max=None):
+        lo = -np.inf if min is None else min
+        hi = np.inf if max is None else max
+        return _ArrayTensor(np.clip(np.asarray(value), lo, hi))
+
+    @staticmethod
+    def log(value):
+        return _ArrayTensor(np.log(np.asarray(value)))
+
+    @staticmethod
+    def abs(value):
+        return _ArrayTensor(np.abs(np.asarray(value)))
+
+    @staticmethod
+    def isfinite(value):
+        return bool(np.isfinite(np.asarray(value)).all())
+
+
 def _load_module_functions(module_path, function_names, extra_namespace=None):
     source = module_path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(module_path))
@@ -54,6 +157,21 @@ def _load_module_functions(module_path, function_names, extra_namespace=None):
 
 
 class NoiseAuditTrainTest(unittest.TestCase):
+    def _load_loss_helpers(self):
+        torch_namespace = torch if torch is not None else _NumpyTorchStub()
+        return _load_module_functions(
+            REPO_ROOT / "training" / "losses.py",
+            [
+                "wrap_to_pi_torch",
+                "wrapped_orientation_nll",
+                "log_ratio_anchor_loss",
+            ],
+            extra_namespace={
+                "math": math,
+                "torch": torch_namespace,
+            },
+        )
+
     def _load_train_helpers(self):
         mamba_helpers = _load_module_functions(
             REPO_ROOT / "kalmanfilter" / "mamba_adaptive_kf.py",
@@ -259,6 +377,30 @@ class NoiseAuditTrainTest(unittest.TestCase):
         bucket = payload["buckets"][0]
         self.assertEqual(bucket["class_name"], "truck")
         self.assertEqual(bucket["state"], "unmatched")
+
+    def test_wrapped_gaussian_orientation_loss_handles_pi_boundary(self):
+        helpers = self._load_loss_helpers()
+        wrapped_orientation_nll = helpers["wrapped_orientation_nll"]
+        tensor = torch.tensor if torch is not None else _NumpyTorchStub.tensor
+
+        pred = tensor([[3.13]], dtype=torch.float32 if torch is not None else np.float32)
+        gt = tensor([[-3.13]], dtype=torch.float32 if torch is not None else np.float32)
+        var = tensor([[[0.1]]], dtype=torch.float32 if torch is not None else np.float32)
+        loss = wrapped_orientation_nll(pred, gt, var)
+
+        is_finite = bool(torch.isfinite(loss).all().item()) if torch is not None else _NumpyTorchStub.isfinite(loss)
+        self.assertTrue(is_finite)
+        self.assertLess(float(loss.item()), 0.01)
+
+    def test_log_ratio_anchor_loss_is_zero_when_gamma_is_one(self):
+        helpers = self._load_loss_helpers()
+        log_ratio_anchor_loss = helpers["log_ratio_anchor_loss"]
+        tensor = torch.tensor if torch is not None else _NumpyTorchStub.tensor
+
+        gamma = tensor([[1.0], [1.0], [1.0], [1.0]], dtype=torch.float32 if torch is not None else np.float32)
+        loss = log_ratio_anchor_loss(gamma)
+
+        self.assertAlmostEqual(float(loss.item()), 0.0, places=6)
 
     def test_ratio_anchor_regularization_reports_family_losses(self):
         if torch is None:
