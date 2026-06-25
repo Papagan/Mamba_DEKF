@@ -1,7 +1,9 @@
 import unittest
+from unittest import mock
 
 import torch
 
+import kalmanfilter.mamba_adaptive_kf as mamba_adaptive_kf_module
 from kalmanfilter.mamba_adaptive_kf import TemporalMamba
 from kalmanfilter.prior_conditioned_heads import PriorConditionedHeadBank
 
@@ -111,3 +113,138 @@ class TemporalMambaPriorConditionedBranchTest(unittest.TestCase):
         )
         self.assertTrue(torch.allclose(out["R_ori"], torch.tensor([[[36.0]]])))
         self.assertTrue(torch.allclose(out["kappa_ori"], torch.tensor([[1.0 / 36.0]])))
+
+    def test_multihead_closure_builds_neutral_priors_without_track_history_conditioning(self):
+        model = TemporalMamba(
+            d_model=8,
+            d_state=4,
+            d_conv=2,
+            expand=2,
+            n_mamba_layers=1,
+            embed_dim=4,
+            num_classes=7,
+            force_gru=True,
+            base_noise_cfg={
+                "Q": {"POS": [1.0] * 6, "SIZ": [0.05, 0.06, 0.07], "ORI": [0.1]},
+                "R": {
+                    "MEAS_MULTIPLIER": 1.0,
+                    "POS_STD_XY": [[2.0, 3.0]],
+                    "SIZ_STD_LW": [[6.0, 8.0]],
+                    "VEL_STD_XY": [[4.0, 5.0]],
+                    "ORI_STD": [3.0],
+                },
+                "CONDITIONAL_NOISE": {"ENABLED": True},
+            },
+        )
+
+        class _IdentityHeadBank(torch.nn.Module):
+            def forward(self, h, class_ids):
+                return {
+                    "q_pos_xyz": h.new_ones((h.shape[0], 1)),
+                    "q_pos_vxyz": h.new_ones((h.shape[0], 1)),
+                    "r_pos_xyz": h.new_ones((h.shape[0], 1)),
+                    "r_pos_vxy": h.new_ones((h.shape[0], 1)),
+                    "r_siz_lw": h.new_ones((h.shape[0], 1)),
+                    "r_siz_h": h.new_ones((h.shape[0], 1)),
+                    "r_ori": h.new_ones((h.shape[0], 1)),
+                }
+
+        model.head_bank = _IdentityHeadBank()
+        base_cov = {
+            "Q_pos_base": torch.diag_embed(torch.tensor([[1.0] * 6])),
+            "Q_siz_base": torch.diag_embed(torch.tensor([[0.05, 0.06, 0.07]])),
+            "Q_ori_base": torch.diag_embed(torch.tensor([[0.1, 0.5]])),
+            "R_pos_base": torch.diag_embed(torch.tensor([[4.0, 9.0, 6.25, 16.0, 25.0]])),
+            "R_siz_base": torch.diag_embed(torch.tensor([[36.0, 64.0, 49.0]])),
+            "R_ori_base": torch.diag_embed(torch.tensor([[9.0]])),
+        }
+        captured = {}
+
+        def _stub_build_base_covariances(**kwargs):
+            captured.update(kwargs)
+            return {
+                key: value.to(dtype=kwargs["dtype"], device=kwargs["device"])
+                for key, value in base_cov.items()
+            }
+
+        residual_token_history = torch.tensor(
+            [[[101.0, -5.0, 2.0, 7.0, -3.0, 1.0, 0.5, 0.2, -0.1, 0.0, 4.0, 0.9]]]
+        )
+
+        with mock.patch.object(
+            mamba_adaptive_kf_module,
+            "build_base_covariances",
+            side_effect=_stub_build_base_covariances,
+        ):
+            out = model(
+                residual_token_history,
+                class_ids=torch.tensor([0], dtype=torch.long),
+                current_range=torch.tensor([42.0]),
+                detection_driven_mask=torch.tensor([True]),
+                history_mask=torch.ones(1, 1, dtype=torch.bool),
+                history_match_mask=torch.ones(1, 1, dtype=torch.bool),
+                mode="mamba_multihead_closure",
+            )
+
+        self.assertNotIn("track_history", captured)
+        self.assertNotIn("current_range", captured)
+        self.assertNotIn("detection_driven_mask", captured)
+        self.assertNotIn("history_mask", captured)
+        self.assertNotIn("history_match_mask", captured)
+        self.assertTrue(torch.allclose(out["prior_covariances"]["Q_pos"], base_cov["Q_pos_base"]))
+        self.assertTrue(torch.allclose(out["prior_covariances"]["R_ori"], base_cov["R_ori_base"]))
+
+    def test_multihead_closure_keeps_kappa_outputs_and_legacy_clamp_ceiling(self):
+        model = TemporalMamba(
+            d_model=8,
+            d_state=4,
+            d_conv=2,
+            expand=2,
+            n_mamba_layers=1,
+            embed_dim=4,
+            num_classes=7,
+            force_gru=True,
+            base_noise_cfg={
+                "Q": {
+                    "POS": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+                    "SIZ": [0.05, 0.06, 0.07],
+                    "ORI": [0.1],
+                },
+                "R": {
+                    "MEAS_MULTIPLIER": 1.0,
+                    "POS_STD_XY": [[2.0, 3.0]],
+                    "SIZ_STD_LW": [[6.0, 8.0]],
+                    "VEL_STD_XY": [[4.0, 5.0]],
+                    "ORI_STD": [0.1],
+                },
+            },
+        )
+
+        class _StubHeadBank(torch.nn.Module):
+            def forward(self, h, class_ids):
+                return {
+                    "q_pos_xyz": h.new_ones((h.shape[0], 1)),
+                    "q_pos_vxyz": h.new_ones((h.shape[0], 1)),
+                    "r_pos_xyz": h.new_ones((h.shape[0], 1)),
+                    "r_pos_vxy": h.new_ones((h.shape[0], 1)),
+                    "r_siz_lw": h.new_ones((h.shape[0], 1)),
+                    "r_siz_h": h.new_ones((h.shape[0], 1)),
+                    "r_ori": h.new_full((h.shape[0], 1), 0.01),
+                }
+
+        model.head_bank = _StubHeadBank()
+
+        out = model(
+            torch.zeros(1, 3, 12),
+            class_ids=torch.tensor([0], dtype=torch.long),
+            mode="mamba_multihead_closure",
+        )
+
+        self.assertIn("kappa_ori", out)
+        self.assertIn("kappa_ori_unc", out)
+        self.assertEqual(out["kappa_ori"].shape, (1, 1))
+        self.assertEqual(out["kappa_ori_unc"].shape, (1, 1))
+        self.assertLessEqual(float(out["kappa_ori"].max()), 5.0)
+        self.assertGreater(float(out["kappa_ori_unc"].item()), 5.0)
+        self.assertTrue(torch.allclose(out["kappa_ori"], torch.tensor([[5.0]])))
+        self.assertTrue(torch.allclose(out["R_ori"], torch.tensor([[[0.2]]])))

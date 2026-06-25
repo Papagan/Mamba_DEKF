@@ -1088,16 +1088,15 @@ class TemporalMamba(nn.Module):
             if self.base_noise_cfg is None:
                 raise ValueError("mamba_multihead_closure requires base_noise_cfg priors")
 
+            # Closure mode may receive residual-token histories whose feature slots do
+            # not match the legacy state-history semantics expected by conditional
+            # prior scaling. Build neutral class priors here until the branch gets a
+            # dedicated conditioning path.
             prior_cov = build_base_covariances(
                 base_noise_cfg=self.base_noise_cfg,
                 class_ids=class_ids,
                 dtype=h_last.dtype,
                 device=dev,
-                track_history=track_history,
-                current_range=current_range,
-                detection_driven_mask=detection_driven_mask,
-                history_mask=history_mask,
-                history_match_mask=history_match_mask,
             )
             ratios = self.head_bank(h_last, class_ids)
             Q_pos = apply_factorized_ratio_to_q_pos(prior_cov["Q_pos_base"], ratios)
@@ -1105,9 +1104,10 @@ class TemporalMamba(nn.Module):
             Q_siz = prior_cov["Q_siz_base"]
             R_siz = apply_factorized_ratio_to_r_siz(prior_cov["R_siz_base"], ratios)
             Q_ori = prior_cov["Q_ori_base"]
-            R_ori = apply_factorized_ratio_to_r_ori(prior_cov["R_ori_base"], ratios)
-            kappa_ori = torch.reciprocal(torch.clamp(R_ori.squeeze(-1), min=1e-8))
-            kappa_ori_unc = kappa_ori
+            raw_R_ori = apply_factorized_ratio_to_r_ori(prior_cov["R_ori_base"], ratios)
+            kappa_ori_unc = torch.reciprocal(torch.clamp(raw_R_ori.squeeze(-1), min=1e-8))
+            kappa_ori = torch.clamp(kappa_ori_unc, max=5.0)
+            R_ori = (1.0 / kappa_ori).unsqueeze(-1)
             return {
                 "Q_pos": Q_pos, "Q_siz": Q_siz, "Q_ori": Q_ori,
                 "R_pos": R_pos, "R_siz": R_siz, "R_ori": R_ori,
