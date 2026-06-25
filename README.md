@@ -191,7 +191,8 @@ Notes:
 
 - `TRAIN_SOURCE=det` and `VAL_SOURCE=det` mean training uses detection-driven caches instead of GT-only tracklets.
 - `HISTORY_SOURCE=fusion` and `INIT_STATE_SOURCE=fusion` keep training aligned with the current single-stage runtime.
-- `TRAINING.INFERENCE_CONFIG` already points at the frozen baseline config.
+- `FILTER_MODE` is now `mamba_multihead_closure` in the training config, so checkpoint runtime contracts persist the closure branch explicitly.
+- `TRAINING.INFERENCE_CONFIG` now points at the isolated closure eval config, not the frozen baseline.
 
 ### 5. Train Mamba
 
@@ -247,13 +248,40 @@ python main.py \
 
 If you want to evaluate a newly trained Mamba checkpoint:
 
-1. update `MAMBA.CHECKPOINT_PATH` in [config/nuscenes_single_stage_mctrack_exact_noise_hybrid_dirty_suppressor_tuned.yaml](/home/alvin/demo/Mamba-DEKF/config/nuscenes_single_stage_mctrack_exact_noise_hybrid_dirty_suppressor_tuned.yaml)
+1. update `MAMBA.CHECKPOINT_PATH` in [config/nuscenes_single_stage_mctrack_exact_noise_hybrid_mamba_multihead_closure.yaml](/home/alvin/demo/Mamba-DEKF/config/nuscenes_single_stage_mctrack_exact_noise_hybrid_mamba_multihead_closure.yaml)
 2. run the same evaluation command again
 
 Results are written to:
 
 - `SAVE_PATH/<dataset>/<timestamp>/results.json`
 - official nuScenes metric files under the same result directory when `--eval` is enabled
+
+### 7. Experimental closure branch workflow
+
+Use the frozen baseline config for regression checks, and the isolated closure configs for Mamba experiments.
+
+Noise-audit eval:
+
+```bash
+python main.py --dataset nuscenes --eval \
+  --config config/nuscenes_single_stage_mctrack_exact_noise_hybrid_mamba_multihead_audit.yaml \
+  -p 12
+```
+
+Closure-branch eval:
+
+```bash
+python main.py --dataset nuscenes --eval \
+  --config config/nuscenes_single_stage_mctrack_exact_noise_hybrid_mamba_multihead_closure.yaml \
+  -p 12
+```
+
+Recommended order:
+
+1. reproduce the frozen `0.739` baseline with `config/nuscenes_single_stage_mctrack_exact_noise_hybrid_dirty_suppressor_tuned.yaml`
+2. train with `config/train_nuscenes.yaml`
+3. run the audit config to inspect closure-branch noise behavior
+4. run the closure eval config and only promote the branch if `AMOTA > 0.740`
 
 ## Suggested working commands
 

@@ -304,7 +304,7 @@ def _compute_closure_ratio_regularization(
         return zero, zero, detail
 
     anchor_weight = float(closure_cfg.get("RATIO_ANCHOR_WEIGHT", 0.0))
-    bound_weight = float(closure_cfg.get("RATIO_BOUND_WEIGHT", anchor_weight))
+    bound_weight = float(closure_cfg.get("RATIO_BOUND_WEIGHT", 0.0))
     lower_weight = float(closure_cfg.get("RATIO_BOUND_LOWER_WEIGHT", 0.25))
     upper_weight = float(closure_cfg.get("RATIO_BOUND_UPPER_WEIGHT", 1.0))
     if anchor_weight <= 0.0 and bound_weight <= 0.0:
@@ -374,11 +374,11 @@ def _compute_closure_ratio_regularization(
                 )
 
         if anchor_terms:
-            family_anchor = torch.stack(anchor_terms).mean() * anchor_weight
+            family_anchor = torch.stack(anchor_terms).sum() * anchor_weight
             detail[f"loss_ratio_anchor_{family_name}"] = family_anchor
             total_anchor = total_anchor + family_anchor
         if bound_terms:
-            family_bound = torch.stack(bound_terms).mean() * bound_weight
+            family_bound = torch.stack(bound_terms).sum() * bound_weight
             detail[f"loss_ratio_bound_{family_name}"] = family_bound
             total_bound = total_bound + family_bound
 
@@ -386,7 +386,7 @@ def _compute_closure_ratio_regularization(
 
 
 def resolve_runtime_contract_filter_mode(cfg, train_tracker_compat_mode):
-    valid_modes = {"mamba", "pure_dekf", "fusion"}
+    valid_modes = {"mamba", "pure_dekf", "fusion", "mamba_multihead_closure"}
 
     configured_mode = str((cfg or {}).get("FILTER_MODE", "")).strip().lower()
     if configured_mode in valid_modes:
@@ -546,6 +546,12 @@ def training_step(
     )
     state_buckets = [audit_state] * B
 
+    runtime_prior_cov = mamba_out.get("prior_covariances") or {}
+    audit_prior_q_pos = runtime_prior_cov.get("Q_pos", noise_bundle["Q_pos_base"])
+    audit_prior_r_pos = runtime_prior_cov.get("R_pos", noise_bundle["R_pos_base"])
+    audit_prior_r_siz = runtime_prior_cov.get("R_siz", noise_bundle["R_siz_base"])
+    audit_prior_r_ori = runtime_prior_cov.get("R_ori", noise_bundle["R_ori_base"])
+
     if train_noise_audit is not None:
         # Training does not have literal tracker matched/unmatched lifecycle
         # states here. Project the teacher-forcing mode onto that shared axis
@@ -561,10 +567,10 @@ def training_step(
             r_pos=mamba_out["R_pos"].diagonal(dim1=-2, dim2=-1).sum(-1),
             r_siz=mamba_out["R_siz"].diagonal(dim1=-2, dim2=-1).sum(-1),
             r_ori=mamba_out["R_ori"].diagonal(dim1=-2, dim2=-1).sum(-1),
-            prior_q_pos=noise_bundle["Q_pos_base"].diagonal(dim1=-2, dim2=-1).sum(-1),
-            prior_r_pos=noise_bundle["R_pos_base"].diagonal(dim1=-2, dim2=-1).sum(-1),
-            prior_r_siz=noise_bundle["R_siz_base"].diagonal(dim1=-2, dim2=-1).sum(-1),
-            prior_r_ori=noise_bundle["R_ori_base"].diagonal(dim1=-2, dim2=-1).sum(-1),
+            prior_q_pos=audit_prior_q_pos.diagonal(dim1=-2, dim2=-1).sum(-1),
+            prior_r_pos=audit_prior_r_pos.diagonal(dim1=-2, dim2=-1).sum(-1),
+            prior_r_siz=audit_prior_r_siz.diagonal(dim1=-2, dim2=-1).sum(-1),
+            prior_r_ori=audit_prior_r_ori.diagonal(dim1=-2, dim2=-1).sum(-1),
         )
 
     # delta_pos gives Mamba a direct gradient path through loss_pos,
@@ -629,8 +635,18 @@ def training_step(
     R_ori = mamba_out["R_ori"]
     kappa_ori = mamba_out["kappa_ori"]
     if use_closure_loss_path:
+        regularization_ratios = dict(mamba_out.get("ratios") or {})
+        closure_prior_r_ori = runtime_prior_cov.get("R_ori", noise_bundle["R_ori_base"])
+        prior_r_ori = torch.clamp(
+            closure_prior_r_ori.diagonal(dim1=-2, dim2=-1).sum(-1, keepdim=True),
+            min=1e-8,
+        )
+        effective_r_ori = (
+            mamba_out["R_ori"].diagonal(dim1=-2, dim2=-1).sum(-1, keepdim=True) / prior_r_ori
+        )
+        regularization_ratios["r_ori"] = effective_r_ori
         ratio_anchor_loss, ratio_bound_loss, ratio_detail = _compute_closure_ratio_regularization(
-            ratios=mamba_out.get("ratios") or {},
+            ratios=regularization_ratios,
             class_ids=class_ids,
             state_buckets=state_buckets,
             closure_cfg=closure_cfg,
@@ -906,6 +922,7 @@ def validate(
     device: torch.device,
     noise_cfg: dict = None,
     base_noise_cfg: dict = None,
+    filter_mode: str = "mamba",
 ) -> dict:
     """Run validation and return average losses."""
     mamba.eval()
@@ -914,7 +931,8 @@ def validate(
 
     for batch in val_loader:
         _, detail = training_step(mamba, batch, loss_fn, device, noise_cfg, base_noise_cfg,
-                                  epoch=999, warmup_epochs=0, transition_epochs=0)  # fully unfrozen
+                                  epoch=999, warmup_epochs=0, transition_epochs=0,
+                                  filter_mode=filter_mode)  # fully unfrozen
         for k, v in detail.items():
             totals[k] = totals.get(k, 0.0) + v
         n_batches += 1
@@ -1291,7 +1309,15 @@ def main():
         avg_train = {k: v / max(n_batches, 1) for k, v in epoch_detail.items()}
 
         # ---- Validation ----
-        avg_val = validate(mamba, val_loader, loss_fn, device, noise_cfg, base_noise_cfg)
+        avg_val = validate(
+            mamba,
+            val_loader,
+            loss_fn,
+            device,
+            noise_cfg,
+            base_noise_cfg,
+            filter_mode=train_filter_mode,
+        )
 
         logger.info(
             f"Epoch {epoch+1}/{epochs} ({dt_epoch:.1f}s) | "

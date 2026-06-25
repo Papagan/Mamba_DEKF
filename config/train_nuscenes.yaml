@@ -2,7 +2,7 @@
 # Mamba-Decoupled-EKF Track — Training Configuration (nuScenes)
 # ============================================================
 
-FILTER_MODE: mamba   # explicit runtime-contract target for bounded-residual closure training
+FILTER_MODE: mamba_multihead_closure   # explicit runtime-contract target for prior-conditioned closure training
 
 # ---- Data ----
 DATA:
@@ -27,6 +27,11 @@ DATA:
   MIN_HISTORY_LEN: 4
   MIN_ROLLOUT_STEPS: 1
   CLASS_WINDOW:
+    car:
+      MIN_HISTORY_LEN: 4
+      MAX_HISTORY_LEN: 8
+      MIN_ROLLOUT_STEPS: 1
+      MAX_ROLLOUT_STEPS: 3
     bicycle:
       MIN_HISTORY_LEN: 3
       MAX_HISTORY_LEN: 6
@@ -42,14 +47,19 @@ DATA:
       MAX_HISTORY_LEN: 7
       MIN_ROLLOUT_STEPS: 1
       MAX_ROLLOUT_STEPS: 3
-    trailer:
+    bus:
       MIN_HISTORY_LEN: 4
-      MAX_HISTORY_LEN: 7
+      MAX_HISTORY_LEN: 8
+      MIN_ROLLOUT_STEPS: 1
+      MAX_ROLLOUT_STEPS: 3
+    trailer:
+      MIN_HISTORY_LEN: 5
+      MAX_HISTORY_LEN: 8
       MIN_ROLLOUT_STEPS: 1
       MAX_ROLLOUT_STEPS: 3
     truck:
       MIN_HISTORY_LEN: 4
-      MAX_HISTORY_LEN: 7
+      MAX_HISTORY_LEN: 8
       MIN_ROLLOUT_STEPS: 1
       MAX_ROLLOUT_STEPS: 3
   CATEGORY_FILTER: null   # null = all categories; or ["car", "pedestrian"]
@@ -86,7 +96,7 @@ MODEL:
   # N_MAMBA_LAYERS: 6
   # EMBED_DIM: 64
   HISTORY_LEN: 8            # max history length; adaptive training may sample shorter valid suffixes
-  NUM_CLASSES: 10            # number of categories for size noise embeddings
+  NUM_CLASSES: 7             # nuScenes tracking classes with independent closure heads
   MIN_DIAG_Q: 0.1           # floor on Cholesky diagonal for position Q head
   MIN_DIAG_R: 0.1           # floor on Cholesky diagonal for position R head
   MIN_DIAG_SIZ: 0.15        # floor on size noise diagonal (prevents NLL→-∞ collapse)
@@ -108,7 +118,7 @@ TRAINING:
   SAVE_EVERY: 10
   SAVE_DIR: checkpoints/mamba_dekf/
   AUTO_UNSEAL_EPOCH: 0           # disabled for bounded-residual closure training; avoid unrelated cost-mode mutations
-  INFERENCE_CONFIG: config/nuscenes_single_stage_mctrack_exact_noise_hybrid_dirty_suppressor_tuned.yaml
+  INFERENCE_CONFIG: config/nuscenes_single_stage_mctrack_exact_noise_hybrid_mamba_multihead_closure.yaml
   ROLLOUT_STEPS: 4               # max rollout depth; adaptive training may sample shorter valid futures
   NOISE_MAP:                     # Category-specific noise injection (aligned to inference DEKF_BASE_NOISE.R)
     # Order: [Car, Pedestrian, Bicycle, Motorcycle, Bus, Trailer, Truck]
@@ -199,7 +209,12 @@ BASE_NOISE:
     MAX_STD_RATIO: 1.80
   MAMBA_CLOSURE:
     ENABLED: true
+    MODE: prior_conditioned_multihead
+    FORCE_COAST_PRIOR_ONLY: true
     RATIO_ANCHOR_WEIGHT: 0.02
+    RATIO_BOUND_WEIGHT: 0.02
+    RATIO_BOUND_LOWER_WEIGHT: 0.25
+    RATIO_BOUND_UPPER_WEIGHT: 1.0
     PROFILES:
       stable_large:
         matched:

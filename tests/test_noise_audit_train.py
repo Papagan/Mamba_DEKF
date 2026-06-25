@@ -192,6 +192,7 @@ class NoiseAuditTrainTest(unittest.TestCase):
                 "_dump_train_noise_audit_if_needed",
                 "_trace_covariance_batch",
                 "_compute_ratio_anchor_regularization",
+                "_compute_closure_ratio_regularization",
             ],
             extra_namespace={
                 "build_noise_audit_samples": mamba_helpers["build_noise_audit_samples"],
@@ -200,6 +201,16 @@ class NoiseAuditTrainTest(unittest.TestCase):
                 "torch": torch or _TorchStub(),
                 "F": torch.nn.functional if torch is not None else _FunctionalStub(),
                 "get_family_ratio_bounds": get_family_ratio_bounds,
+                "log_ratio_anchor_loss": self._load_loss_helpers()["log_ratio_anchor_loss"],
+                "log_ratio_bound_loss": _load_module_functions(
+                    REPO_ROOT / "training" / "losses.py",
+                    ["log_ratio_bound_loss"],
+                    extra_namespace={
+                        "math": math,
+                        "torch": torch if torch is not None else _NumpyTorchStub(),
+                        "F": torch.nn.functional if torch is not None else _FunctionalStub(),
+                    },
+                )["log_ratio_bound_loss"],
             },
         )
 
@@ -453,6 +464,53 @@ class NoiseAuditTrainTest(unittest.TestCase):
         for value in detail.values():
             self.assertGreaterEqual(value.item(), 0.0)
         self.assertGreater(detail["loss_ratio_r_ori"].item(), detail["loss_ratio_q_pos"].item())
+
+    def test_closure_ratio_regularization_sums_all_seven_ratio_heads(self):
+        if torch is None:
+            self.skipTest("torch unavailable in unit-test interpreter")
+        helpers = self._load_train_helpers()
+        closure_regularization = helpers["_compute_closure_ratio_regularization"]
+
+        ratio_value = 2.0
+        base_term = abs(math.log(ratio_value))
+        closure_cfg = {
+            "ENABLED": True,
+            "RATIO_ANCHOR_WEIGHT": 1.0,
+            "RATIO_BOUND_WEIGHT": 0.0,
+            "PROFILES": {
+                "heavy_long": {
+                    "matched": {
+                        "q_pos": [0.5, 3.0],
+                        "r_pos": [0.5, 3.0],
+                        "r_siz": [0.5, 3.0],
+                        "r_ori": [0.5, 3.0],
+                    }
+                }
+            },
+        }
+        ratios = {
+            "q_pos_xyz": torch.tensor([[ratio_value]], dtype=torch.float32),
+            "q_pos_vxyz": torch.tensor([[ratio_value]], dtype=torch.float32),
+            "r_pos_xyz": torch.tensor([[ratio_value]], dtype=torch.float32),
+            "r_pos_vxy": torch.tensor([[ratio_value]], dtype=torch.float32),
+            "r_siz_lw": torch.tensor([[ratio_value]], dtype=torch.float32),
+            "r_siz_h": torch.tensor([[ratio_value]], dtype=torch.float32),
+            "r_ori": torch.tensor([[ratio_value]], dtype=torch.float32),
+        }
+
+        total_anchor, total_bound, detail = closure_regularization(
+            ratios=ratios,
+            class_ids=torch.tensor([5], dtype=torch.int64),
+            state_buckets=["matched"],
+            closure_cfg=closure_cfg,
+        )
+
+        self.assertAlmostEqual(total_bound.item(), 0.0, places=6)
+        self.assertAlmostEqual(total_anchor.item(), 7.0 * base_term, places=6)
+        self.assertAlmostEqual(detail["loss_ratio_anchor_q_pos"].item(), 2.0 * base_term, places=6)
+        self.assertAlmostEqual(detail["loss_ratio_anchor_r_pos"].item(), 2.0 * base_term, places=6)
+        self.assertAlmostEqual(detail["loss_ratio_anchor_r_siz"].item(), 2.0 * base_term, places=6)
+        self.assertAlmostEqual(detail["loss_ratio_anchor_r_ori"].item(), 1.0 * base_term, places=6)
 
 
 if __name__ == "__main__":
