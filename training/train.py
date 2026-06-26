@@ -398,6 +398,27 @@ def resolve_runtime_contract_filter_mode(cfg, train_tracker_compat_mode):
 
     return "mamba"
 
+
+def resolve_orientation_curriculum_weights(epoch: int, closure_cfg: dict) -> dict:
+    cfg = closure_cfg or {}
+    warmup_epochs = int(cfg.get("ORI_WARMUP_EPOCHS", 0))
+    transition_epochs = int(cfg.get("ORI_TRANSITION_EPOCHS", 0))
+    base_state = float(cfg.get("ORI_STATE_WEIGHT", 1.0))
+    base_wrapped = float(cfg.get("ORI_WRAPPED_NLL_WEIGHT", 1.0))
+
+    if epoch < warmup_epochs:
+        alpha = 0.0
+    elif transition_epochs <= 0:
+        alpha = 1.0
+    else:
+        alpha = max(0.0, min(1.0, (epoch - warmup_epochs + 1) / float(transition_epochs)))
+
+    return {
+        "alpha": alpha,
+        "state_weight": base_state * (1.0 - alpha),
+        "wrapped_weight": base_wrapped * alpha,
+    }
+
 def training_step(
     mamba: TemporalMamba,
     batch: dict,
@@ -539,6 +560,7 @@ def training_step(
     noise_scale_vel_xy = noise_bundle["vel_std_xy"]
     noise_scale_ori = noise_bundle["ori_std"].view(B, 1, 1)
     closure_cfg = (base_noise_cfg or {}).get("MAMBA_CLOSURE", {})
+    ori_curriculum = resolve_orientation_curriculum_weights(epoch=epoch, closure_cfg=closure_cfg)
     audit_state = _resolve_train_noise_audit_state(
         use_det_update,
         obs_future_pos,
@@ -878,6 +900,9 @@ def training_step(
         detail[key] = value.item()
     detail["loss_ratio_anchor"] = ratio_anchor_loss.item()
     detail["loss_ratio_bound"] = ratio_bound_loss.item()
+    detail["ori_curriculum_alpha"] = ori_curriculum["alpha"] if use_closure_loss_path else 0.0
+    detail["ori_state_weight"] = ori_curriculum["state_weight"] if use_closure_loss_path else 0.0
+    detail["ori_wrapped_weight"] = ori_curriculum["wrapped_weight"] if use_closure_loss_path else 0.0
 
     # ---- Step 4: Q/R/kappa variance monitor ----
     with torch.no_grad():
@@ -894,6 +919,9 @@ def training_step(
         detail["cond_ori_scale"] = noise_bundle["scales"]["ori"].mean().item()
         detail["cond_siz_scale"] = noise_bundle["scales"]["siz"].mean().item()
         detail["matched_ratio"] = noise_bundle["scales"]["matched_ratio"].mean().item()
+        detail["effective_r_ori_mean"] = mamba_out["R_ori"].diagonal(dim1=-2, dim2=-1).sum(-1).mean().item()
+        detail["effective_kappa_mean"] = kappa_ori.mean().item()
+        detail["effective_kappa_std"] = kappa_ori.std(dim=0).mean().item()
 
     # ---- Backward loss: base rollout objective plus branch-local regularisers.
     real_loss = (

@@ -113,6 +113,35 @@ class RuntimeContractChecksTest(unittest.TestCase):
             "fusion",
         )
 
+    def test_orientation_curriculum_schedule_transitions_from_state_to_wrapped(self):
+        helpers = _load_functions(
+            REPO_ROOT / "training" / "train.py",
+            ["resolve_orientation_curriculum_weights"],
+        )
+        resolve_orientation_curriculum_weights = helpers["resolve_orientation_curriculum_weights"]
+
+        early = resolve_orientation_curriculum_weights(
+            epoch=1,
+            closure_cfg={
+                "ORI_WARMUP_EPOCHS": 4,
+                "ORI_TRANSITION_EPOCHS": 4,
+                "ORI_STATE_WEIGHT": 1.0,
+                "ORI_WRAPPED_NLL_WEIGHT": 1.0,
+            },
+        )
+        late = resolve_orientation_curriculum_weights(
+            epoch=9,
+            closure_cfg={
+                "ORI_WARMUP_EPOCHS": 4,
+                "ORI_TRANSITION_EPOCHS": 4,
+                "ORI_STATE_WEIGHT": 1.0,
+                "ORI_WRAPPED_NLL_WEIGHT": 1.0,
+            },
+        )
+
+        self.assertGreater(early["state_weight"], early["wrapped_weight"])
+        self.assertGreater(late["wrapped_weight"], late["state_weight"])
+
     def test_validate_forwards_filter_mode_into_training_step(self):
         source = (REPO_ROOT / "training" / "train.py").read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(REPO_ROOT / "training" / "train.py"))
