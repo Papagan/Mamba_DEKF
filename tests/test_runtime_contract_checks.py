@@ -186,6 +186,14 @@ class RuntimeContractChecksTest(unittest.TestCase):
         self.assertEqual(seen["filter_mode"], "mamba_multihead_closure")
         self.assertEqual(result["loss_total"], 1.0)
 
+    def test_closure_training_step_logs_orientation_saturation_and_tensor_blend_inputs(self):
+        source = (REPO_ROOT / "training" / "train.py").read_text(encoding="utf-8")
+
+        self.assertIn("orientation_saturation_penalty(", source)
+        self.assertIn('detail["loss_ori_saturation_reg"]', source)
+        self.assertIn('detail_k["loss_ori_state_tensor"]', source)
+        self.assertIn('detail_k["loss_ori_wrapped_tensor"]', source)
+
 
 if __name__ == "__main__":
     unittest.main()

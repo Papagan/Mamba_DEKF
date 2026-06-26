@@ -193,6 +193,13 @@ Notes:
 - `HISTORY_SOURCE=fusion` and `INIT_STATE_SOURCE=fusion` keep training aligned with the current single-stage runtime.
 - `FILTER_MODE` is now `mamba_multihead_closure` in the training config, so checkpoint runtime contracts persist the closure branch explicitly.
 - `TRAINING.INFERENCE_CONFIG` now points at the isolated closure eval config, not the frozen baseline.
+- the closure branch now also has orientation-specific curriculum knobs under `BASE_NOISE.MAMBA_CLOSURE`:
+  - `ORI_WARMUP_EPOCHS`
+  - `ORI_TRANSITION_EPOCHS`
+  - `ORI_STATE_WEIGHT`
+  - `ORI_WRAPPED_NLL_WEIGHT`
+  - `ORI_SATURATION_REG_WEIGHT`
+  - `ORI_MAX_EFFECTIVE_KAPPA`
 
 ### 5. Train Mamba
 

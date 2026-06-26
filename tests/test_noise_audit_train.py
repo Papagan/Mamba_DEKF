@@ -453,6 +453,73 @@ class NoiseAuditTrainTest(unittest.TestCase):
         )
         self.assertGreater(float(penalty.item()), 0.0)
 
+    def test_orientation_saturation_penalty_grows_with_kappa_excess(self):
+        helpers = self._load_loss_helpers()
+        orientation_saturation_penalty = helpers["orientation_saturation_penalty"]
+        tensor = torch.tensor if torch is not None else _NumpyTorchStub.tensor
+
+        small = orientation_saturation_penalty(
+            tensor([[6.0]], dtype=torch.float32 if torch is not None else np.float32),
+            max_effective_kappa=5.0,
+        )
+        large = orientation_saturation_penalty(
+            tensor([[12.0]], dtype=torch.float32 if torch is not None else np.float32),
+            max_effective_kappa=5.0,
+        )
+
+        self.assertGreater(float(large.item()), float(small.item()))
+
+    def test_state_prediction_loss_exposes_orientation_tensor_components(self):
+        if torch is None:
+            source = (REPO_ROOT / "training" / "losses.py").read_text(encoding="utf-8")
+            self.assertIn('"loss_ori_state_tensor"', source)
+            self.assertIn('"loss_ori_wrapped_tensor"', source)
+            self.assertIn('"loss_ori_tensor"', source)
+            return
+
+        from training.losses import StatePredictionLoss
+
+        loss_fn = StatePredictionLoss(w_pos=0.0, w_siz=0.0, w_ori=1.0, w_vel=0.0, w_nis=0.0)
+        batch = 2
+
+        pos_x_pred = torch.zeros(batch, 6, 1, dtype=torch.float32)
+        pos_P_pred = torch.eye(6, dtype=torch.float32).unsqueeze(0).repeat(batch, 1, 1)
+        siz_x_pred = torch.zeros(batch, 3, 1, dtype=torch.float32)
+        siz_P_pred = torch.eye(3, dtype=torch.float32).unsqueeze(0).repeat(batch, 1, 1)
+        ori_x_pred = torch.zeros(batch, 2, 1, dtype=torch.float32)
+        ori_P_pred = torch.eye(2, dtype=torch.float32).unsqueeze(0).repeat(batch, 1, 1)
+        gt_next_pos = torch.zeros(batch, 3, dtype=torch.float32)
+        gt_next_siz = torch.zeros(batch, 3, dtype=torch.float32)
+        gt_next_ori = torch.full((batch, 1), 0.1, dtype=torch.float32)
+        r_pos = torch.eye(5, dtype=torch.float32).unsqueeze(0).repeat(batch, 1, 1)
+        r_siz = torch.eye(3, dtype=torch.float32).unsqueeze(0).repeat(batch, 1, 1)
+        r_ori = torch.full((batch, 1, 1), 0.5, dtype=torch.float32)
+        kappa_ori = torch.full((batch, 1), 1.5, dtype=torch.float32)
+
+        _, detail = loss_fn(
+            pos_x_pred,
+            pos_P_pred,
+            siz_x_pred,
+            siz_P_pred,
+            ori_x_pred,
+            ori_P_pred,
+            gt_next_pos,
+            gt_next_siz,
+            gt_next_ori,
+            r_pos,
+            r_siz,
+            r_ori,
+            kappa_ori=kappa_ori,
+            use_wrapped_orientation_nll=True,
+        )
+
+        self.assertIn("loss_ori_state_tensor", detail)
+        self.assertIn("loss_ori_wrapped_tensor", detail)
+        self.assertTrue(torch.is_tensor(detail["loss_ori_state_tensor"]))
+        self.assertTrue(torch.is_tensor(detail["loss_ori_wrapped_tensor"]))
+        self.assertEqual(detail["loss_ori_state_tensor"].ndim, 0)
+        self.assertEqual(detail["loss_ori_wrapped_tensor"].ndim, 0)
+
     def test_ratio_anchor_regularization_reports_family_losses(self):
         if torch is None:
             self.skipTest("torch unavailable in unit-test interpreter")

@@ -436,12 +436,11 @@ class StatePredictionLoss(nn.Module):
         # Orientation loss:
         # - legacy path: hard switch by in_warmup
         # - smooth path: ori_nll_alpha in [0,1], blends angle -> Von Mises NLL
-        ori_per_sample = 1.0 - torch.cos(ori_x_pred[:, 0, 0] - gt_next_ori.squeeze(-1))
-        if sample_weights is None:
-            loss_ori_angle = ori_per_sample.mean()
-        else:
-            w = sample_weights / (sample_weights.sum() + 1e-8)
-            loss_ori_angle = (ori_per_sample * w).sum()
+        loss_ori_angle = circular_orientation_state_loss(
+            pred_yaw=ori_x_pred[:, 0:1, 0],
+            gt_yaw=gt_next_ori,
+            sample_weights=sample_weights,
+        )
 
         loss_ori_wrapped = wrapped_orientation_nll(
             pred_yaw=ori_x_pred[:, 0:1, 0],
@@ -526,6 +525,10 @@ class StatePredictionLoss(nn.Module):
             "loss_ori_wrapped": loss_ori_wrapped.item(),
             "loss_vel": loss_vel_val,
             "loss_nis": loss_nis.item(),
+            "loss_ori_state_tensor": loss_ori_angle,
+            "loss_ori_wrapped_tensor": loss_ori_wrapped,
+            "loss_ori_vm_tensor": loss_ori_vm,
+            "loss_ori_tensor": loss_ori,
         }
         return loss, detail
 

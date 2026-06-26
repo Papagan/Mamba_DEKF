@@ -15,6 +15,19 @@ class MambaMultiheadClosureConfigTest(unittest.TestCase):
         for key in ["car", "pedestrian", "bicycle", "motorcycle", "bus", "trailer", "truck"]:
             self.assertIn(key, class_window)
 
+    def test_train_config_contains_closure_orientation_curriculum_knobs(self):
+        cfg = yaml.safe_load((REPO_ROOT / "config" / "train_nuscenes.yaml").read_text(encoding="utf-8"))
+        closure_cfg = cfg["BASE_NOISE"]["MAMBA_CLOSURE"]
+        for key in [
+            "ORI_WARMUP_EPOCHS",
+            "ORI_TRANSITION_EPOCHS",
+            "ORI_STATE_WEIGHT",
+            "ORI_WRAPPED_NLL_WEIGHT",
+            "ORI_SATURATION_REG_WEIGHT",
+            "ORI_MAX_EFFECTIVE_KAPPA",
+        ]:
+            self.assertIn(key, closure_cfg)
+
     def test_branch_config_keeps_frozen_baseline_path_separate(self):
         cfg = yaml.safe_load(
             (REPO_ROOT / "config" / "nuscenes_single_stage_mctrack_exact_noise_hybrid_mamba_multihead_closure.yaml")

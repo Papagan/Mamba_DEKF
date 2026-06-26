@@ -1,3 +1,16 @@
 当前的精度为AMOTA0.739，我们将其冻结为基线算法，接下来我们的主要任务将聚焦于借助mamba提升我们的算法精度，docs/restructure_paln.md为我的一些重构想法，请深入结合项目分析是否可行，然后优化重构3DMOT 深度融合架构，docs/superpowers为前几次项目更改，debug/info_nois_audit.json为三种模式（pure_dekf/Mamba/fusion）下的数值尺度汇总统计config/nuscenes_single_stage_mctrack_exact_noise_hybrid_dirty_suppressor_tuned.yaml为基线配置文件，结合匹配跟踪逻辑，保障训练出来的mamba与使用逻辑闭环，核心主旨是指标超过0.740最好是大幅超过，尤其是在弱项上的跟踪精度
 
 
+  python tools/build_centerpoint_mini_train_dataset.py \
+    --det-json /root/autodl-tmp/data/base_version/nuscenes/centerpoint/val.json \
+    --nusc-dataroot /root/autodl-tmp/data/nuscenes/datasets/ \
+    --nusc-version v1.0-trainval \
+    --output /root/autodl-tmp/data/training_cache/nuscenes/mini/val_det.pkl \
+    --max-scenes 0 \
+    --dist-th 2.0 \
+    --min-frames 2 \
+    --min-matched-frames 2 \
+  python tools/augment_tracklet_cache_with_fusion.py \
+    --input /root/autodl-tmp/data/training_cache/nuscenes/mini/val_det.pkl \
+    --output /root/autodl-tmp/data/training_cache/nuscenes/mini/val_fusion.pkl \
+    --train-config config/train_nuscenes.yaml

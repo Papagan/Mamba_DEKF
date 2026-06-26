@@ -49,6 +49,7 @@ from training.losses import (
     JointLoss,
     log_ratio_anchor_loss,
     log_ratio_bound_loss,
+    orientation_saturation_penalty,
     wrap_to_pi_torch,
 )
 from kalmanfilter.mamba_adaptive_kf import (
@@ -561,6 +562,9 @@ def training_step(
     noise_scale_ori = noise_bundle["ori_std"].view(B, 1, 1)
     closure_cfg = (base_noise_cfg or {}).get("MAMBA_CLOSURE", {})
     ori_curriculum = resolve_orientation_curriculum_weights(epoch=epoch, closure_cfg=closure_cfg)
+    ori_state_weight = float(ori_curriculum["state_weight"])
+    ori_wrapped_weight = float(ori_curriculum["wrapped_weight"])
+    ori_curriculum_weight_sum = max(ori_state_weight + ori_wrapped_weight, 1e-8)
     audit_state = _resolve_train_noise_audit_state(
         use_det_update,
         obs_future_pos,
@@ -757,14 +761,20 @@ def training_step(
             use_wrapped_orientation_nll=use_closure_loss_path,
         )
 
-        total_state_loss += detail_k["loss_state"] * step_weight   # for logging only
-        if k == 0:
-            total_loss_tensor = loss_k * step_weight
-            total_contrast_loss = detail_k["loss_contrastive"]
-        else:
-            total_loss_tensor = total_loss_tensor + loss_k * step_weight
-
         if use_closure_loss_path:
+            blended_ori_tensor = (
+                ori_state_weight * detail_k["loss_ori_state_tensor"]
+                + ori_wrapped_weight * detail_k["loss_ori_wrapped_tensor"]
+            ) / ori_curriculum_weight_sum
+            ori_delta_tensor = (
+                blended_ori_tensor - detail_k["loss_ori_wrapped_tensor"]
+            ) * float(loss_fn.state_loss.w_ori)
+            loss_k = loss_k + loss_fn.physics_scale * ori_delta_tensor
+            detail_k["loss_ori"] = blended_ori_tensor.item()
+            detail_k["loss_state"] = detail_k["loss_state"] + ori_delta_tensor.item()
+            detail_k["loss_total"] = loss_k.item()
+            detail_k["loss_ori_curriculum"] = blended_ori_tensor.item()
+
             aux_pos = F.huber_loss(
                 pos_x_pred[active_k, 0:3, 0],
                 gt_future_pos[:, k, :][active_k],
@@ -790,6 +800,13 @@ def training_step(
             detail_accum["loss_aux_ori"] = detail_accum.get("loss_aux_ori", 0.0) + aux_ori.item() * step_weight
             detail_accum["loss_aux_total"] = detail_accum.get("loss_aux_total", 0.0) + aux_loss_k.item() * step_weight
 
+        total_state_loss += detail_k["loss_state"] * step_weight   # for logging only
+        if k == 0:
+            total_loss_tensor = loss_k * step_weight
+            total_contrast_loss = detail_k["loss_contrastive"]
+        else:
+            total_loss_tensor = total_loss_tensor + loss_k * step_weight
+
         for key, val in detail_k.items():
             if key == "loss_contrastive":
                 detail_contrastive["loss_contrastive"] = max(
@@ -797,6 +814,8 @@ def training_step(
             elif key == "n_valid_anchors":
                 detail_contrastive["n_valid_anchors"] = max(
                     detail_contrastive["n_valid_anchors"], int(val))
+            elif torch.is_tensor(val):
+                continue
             elif key == "loss_total":
                 pass
             else:
@@ -882,14 +901,25 @@ def training_step(
         loss_fn.lambda_contrast * detail["loss_contrastive"]
     )
 
-    # κ overconfidence penalty: fires when pre-clamp κ > 5.0 (R_ori < 0.2).
-    # Must use kappa_ori_unc (pre-clamp) — kappa_ori is already clamped to ≤ 5.0
-    # so ReLU(kappa_ori - 5.0) would always be zero.
     if use_closure_loss_path:
         kappa_reg = torch.zeros((), device=device, dtype=history.dtype)
+        ori_saturation_reg_weight = float(closure_cfg.get("ORI_SATURATION_REG_WEIGHT", 0.0))
+        ori_max_effective_kappa = float(closure_cfg.get("ORI_MAX_EFFECTIVE_KAPPA", 5.0))
+        if ori_saturation_reg_weight > 0.0:
+            ori_saturation_reg = ori_saturation_reg_weight * orientation_saturation_penalty(
+                mamba_out["kappa_ori_unc"],
+                max_effective_kappa=ori_max_effective_kappa,
+            )
+        else:
+            ori_saturation_reg = torch.zeros((), device=device, dtype=history.dtype)
     else:
+        # κ overconfidence penalty: fires when pre-clamp κ > 5.0 (R_ori < 0.2).
+        # Must use kappa_ori_unc (pre-clamp) — kappa_ori is already clamped to ≤ 5.0
+        # so ReLU(kappa_ori - 5.0) would always be zero.
         kappa_reg = 5e-3 * F.relu(mamba_out["kappa_ori_unc"] - 5.0).mean()
+        ori_saturation_reg = torch.zeros((), device=device, dtype=history.dtype)
     detail["loss_kappa_reg"] = kappa_reg.item()
+    detail["loss_ori_saturation_reg"] = ori_saturation_reg.item()
 
     # Δpos L2 penalty: mild regularisation to keep delta_pos bounded.
     delta_pos_reg = 0.01 * mamba_out["delta_pos"].pow(2).mean()
@@ -928,6 +958,7 @@ def training_step(
         total_loss_tensor / norm
         + total_aux_loss_tensor / norm
         + kappa_reg
+        + ori_saturation_reg
         + delta_pos_reg
         + ratio_anchor_loss
         + ratio_bound_loss
