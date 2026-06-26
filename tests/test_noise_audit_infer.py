@@ -451,7 +451,7 @@ class NoiseAuditInferTest(unittest.TestCase):
 
         self.assertEqual(captured["state_buckets"], ["matched", "unmatched"])
 
-    def test_predict_before_associate_uses_residual_history_extractor_for_multihead_closure(self):
+    def test_predict_before_associate_uses_residual_history_for_mamba_and_track_history_for_priors(self):
         predict_before_associate = _load_class_methods(
             REPO_ROOT / "tracker" / "base_tracker.py",
             "Base3DTracker",
@@ -480,6 +480,7 @@ class NoiseAuditInferTest(unittest.TestCase):
 
         def _fake_predict_with_mamba(*args, **kwargs):
             captured["history"] = args[0]
+            captured["prior_track_history"] = kwargs.get("prior_track_history")
             captured["mode"] = kwargs["mode"]
             raise RuntimeError("stop after residual capture")
 
@@ -491,14 +492,20 @@ class NoiseAuditInferTest(unittest.TestCase):
                 _PredictTorch.ones(len(trajs) * 3, dtype=_PredictTorch.bool),
             )
 
+        def _track_history(trajs):
+            captured["prior_history_source"] = "track"
+            return (
+                {"history": "track"},
+                {"mask": "track"},
+                {"match_mask": "track"},
+            )
+
         tracker = types.SimpleNamespace(
             device="cpu",
             filter_mode="mamba_multihead_closure",
             _noise_audit_pending=None,
             all_trajs={1: traj},
-            _extract_track_history=lambda trajs: (_ for _ in ()).throw(
-                AssertionError("legacy extractor must not run for the closure branch")
-            ),
+            _extract_track_history=_track_history,
             _extract_residual_token_history=_residual_history,
             _batch_kf_states=lambda track_ids: (
                 _PredictTorch.zeros((len(track_ids), 6, 1), dtype=_PredictTorch.float32),
@@ -527,6 +534,8 @@ class NoiseAuditInferTest(unittest.TestCase):
             predict_before_associate(tracker, [traj], delta_t=0.5)
 
         self.assertEqual(captured["history_source"], "residual")
+        self.assertEqual(captured["prior_history_source"], "track")
+        self.assertEqual(captured["prior_track_history"], {"history": "track"})
         self.assertEqual(captured["mode"], "mamba_multihead_closure")
 
     def _load_predict_with_mamba(self, *, torch_namespace, apply_bounded_impl):

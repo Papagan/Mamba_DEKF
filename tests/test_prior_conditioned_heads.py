@@ -114,7 +114,7 @@ class TemporalMambaPriorConditionedBranchTest(unittest.TestCase):
         self.assertTrue(torch.allclose(out["R_ori"], torch.tensor([[[36.0]]])))
         self.assertTrue(torch.allclose(out["kappa_ori"], torch.tensor([[1.0 / 36.0]])))
 
-    def test_multihead_closure_builds_neutral_priors_without_track_history_conditioning(self):
+    def test_multihead_closure_forwards_conditioning_inputs_into_prior_build(self):
         model = TemporalMamba(
             d_model=8,
             d_state=4,
@@ -183,14 +183,17 @@ class TemporalMambaPriorConditionedBranchTest(unittest.TestCase):
                 detection_driven_mask=torch.tensor([True]),
                 history_mask=torch.ones(1, 1, dtype=torch.bool),
                 history_match_mask=torch.ones(1, 1, dtype=torch.bool),
+                prior_track_history=torch.ones(1, 1, 12, dtype=torch.float32),
+                prior_history_mask=torch.ones(1, 1, dtype=torch.bool),
+                prior_history_match_mask=torch.zeros(1, 1, dtype=torch.bool),
                 mode="mamba_multihead_closure",
             )
 
-        self.assertNotIn("track_history", captured)
-        self.assertNotIn("current_range", captured)
-        self.assertNotIn("detection_driven_mask", captured)
-        self.assertNotIn("history_mask", captured)
-        self.assertNotIn("history_match_mask", captured)
+        self.assertIn("track_history", captured)
+        self.assertIn("current_range", captured)
+        self.assertIn("detection_driven_mask", captured)
+        self.assertIn("history_mask", captured)
+        self.assertIn("history_match_mask", captured)
         self.assertTrue(torch.allclose(out["prior_covariances"]["Q_pos"], base_cov["Q_pos_base"]))
         self.assertTrue(torch.allclose(out["prior_covariances"]["R_ori"], base_cov["R_ori_base"]))
 

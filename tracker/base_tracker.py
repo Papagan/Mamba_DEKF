@@ -1142,11 +1142,15 @@ class Base3DTracker:
         track_ids = [t.track_id for t in trajs]
         B = len(trajs)
 
-        # ---- 1. Extract history [B, T, 12] ----
+        # ---- 1. Extract histories [B, T, 12] ----
         if self.filter_mode == "mamba_multihead_closure":
             history, history_mask, history_match_mask = self._extract_residual_token_history(trajs)
+            prior_track_history, prior_history_mask, prior_history_match_mask = self._extract_track_history(trajs)
         else:
             history, history_mask, history_match_mask = self._extract_track_history(trajs)
+            prior_track_history = history
+            prior_history_mask = history_mask
+            prior_history_match_mask = history_match_mask
 
         # ---- 2. Load per-track KF states into batch ----
         pos_x, pos_P, siz_x, siz_P, ori_x, ori_P = self._batch_kf_states(track_ids)
@@ -1181,6 +1185,9 @@ class Base3DTracker:
                 detection_driven_mask=detection_driven_mask,
                 history_mask=history_mask,
                 history_match_mask=history_match_mask,
+                prior_track_history=prior_track_history,
+                prior_history_mask=prior_history_mask,
+                prior_history_match_mask=prior_history_match_mask,
                 state_buckets=state_buckets,
             )
 

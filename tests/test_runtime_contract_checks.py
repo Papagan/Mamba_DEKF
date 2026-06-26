@@ -194,6 +194,16 @@ class RuntimeContractChecksTest(unittest.TestCase):
         self.assertIn('detail_k["loss_ori_state_tensor"]', source)
         self.assertIn('detail_k["loss_ori_wrapped_tensor"]', source)
 
+    def test_closure_inference_wires_separate_prior_conditioning_history(self):
+        tracker_source = (REPO_ROOT / "tracker" / "base_tracker.py").read_text(encoding="utf-8")
+        mamba_source = (REPO_ROOT / "kalmanfilter" / "mamba_adaptive_kf.py").read_text(encoding="utf-8")
+
+        self.assertIn("prior_track_history", tracker_source)
+        self.assertIn("prior_history_mask", tracker_source)
+        self.assertIn("prior_history_match_mask", tracker_source)
+        self.assertIn("prior_track_history", mamba_source)
+        self.assertIn("conditioning_history", mamba_source)
+
 
 if __name__ == "__main__":
     unittest.main()

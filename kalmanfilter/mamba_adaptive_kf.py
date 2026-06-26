@@ -1024,6 +1024,9 @@ class TemporalMamba(nn.Module):
         detection_driven_mask: Optional[Tensor] = None,
         history_mask: Optional[Tensor] = None,
         history_match_mask: Optional[Tensor] = None,
+        prior_track_history: Optional[Tensor] = None,
+        prior_history_mask: Optional[Tensor] = None,
+        prior_history_match_mask: Optional[Tensor] = None,
         mode: str = "mamba",
     ) -> Dict[str, Tensor]:
         """
@@ -1088,15 +1091,25 @@ class TemporalMamba(nn.Module):
             if self.base_noise_cfg is None:
                 raise ValueError("mamba_multihead_closure requires base_noise_cfg priors")
 
-            # Closure mode may receive residual-token histories whose feature slots do
-            # not match the legacy state-history semantics expected by conditional
-            # prior scaling. Build neutral class priors here until the branch gets a
-            # dedicated conditioning path.
+            # Closure mode may use residual tokens as the Mamba input while still
+            # conditioning the prior covariances on the runtime state history.
+            conditioning_history = (
+                prior_track_history if prior_track_history is not None else track_history
+            )
             prior_cov = build_base_covariances(
                 base_noise_cfg=self.base_noise_cfg,
                 class_ids=class_ids,
                 dtype=h_last.dtype,
                 device=dev,
+                track_history=conditioning_history,
+                current_range=current_range,
+                detection_driven_mask=detection_driven_mask,
+                history_mask=prior_history_mask if prior_history_mask is not None else history_mask,
+                history_match_mask=(
+                    prior_history_match_mask
+                    if prior_history_match_mask is not None
+                    else history_match_mask
+                ),
             )
             ratios = self.head_bank(h_last, class_ids)
             Q_pos = apply_factorized_ratio_to_q_pos(prior_cov["Q_pos_base"], ratios)
@@ -1358,6 +1371,9 @@ class MambaDecoupledEKF(nn.Module):
         detection_driven_mask: Optional[Tensor] = None,
         history_mask: Optional[Tensor] = None,
         history_match_mask: Optional[Tensor] = None,
+        prior_track_history: Optional[Tensor] = None,
+        prior_history_mask: Optional[Tensor] = None,
+        prior_history_match_mask: Optional[Tensor] = None,
         state_buckets = None,
     ) -> Tuple[Dict[str, Tensor], Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
         """
@@ -1385,6 +1401,9 @@ class MambaDecoupledEKF(nn.Module):
             detection_driven_mask=detection_driven_mask,
             history_mask=history_mask,
             history_match_mask=history_match_mask,
+            prior_track_history=prior_track_history,
+            prior_history_mask=prior_history_mask,
+            prior_history_match_mask=prior_history_match_mask,
             mode=mode,
         )
         bsize = track_history.size(0)
