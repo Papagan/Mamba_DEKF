@@ -57,6 +57,7 @@ from kalmanfilter.mamba_adaptive_kf import (
     DecoupledAdaptiveKF,
     build_noise_audit_samples,
 )
+from kalmanfilter.checkpoint_compat import adapt_num_class_state_dict
 from kalmanfilter.noise_audit import NoiseAuditAccumulator
 from kalmanfilter.noise_priors import (
     build_base_covariances,
@@ -1262,7 +1263,17 @@ def main():
     start_epoch = 0
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device)
-        mamba.load_state_dict(ckpt["model_state_dict"])
+        resume_state = ckpt["model_state_dict"]
+        resume_state, adapted_keys = adapt_num_class_state_dict(
+            resume_state,
+            mamba.state_dict(),
+        )
+        mamba.load_state_dict(resume_state)
+        if adapted_keys:
+            logger.info(
+                "Adapted class-count-dependent checkpoint tensors on resume: %s",
+                ", ".join(adapted_keys),
+            )
         try:
             optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         except (ValueError, KeyError) as e:

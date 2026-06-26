@@ -36,6 +36,7 @@ from tracker.compat_utils import (
 from tracker.dirty_suppressor_audit import DirtySuppressorAuditAccumulator
 from tracker.trajectory import Trajectory
 from tracker.bbox import BBox
+from kalmanfilter.checkpoint_compat import adapt_num_class_state_dict
 from kalmanfilter.mamba_adaptive_kf import MambaDecoupledEKF, build_noise_audit_samples
 from kalmanfilter.bounded_residual import infer_state_bucket
 from kalmanfilter.noise_audit import NoiseAuditAccumulator
@@ -382,9 +383,18 @@ class Base3DTracker:
                 stale_keys = [k for k in state_dict if "_tril_rows" in k or "_tril_cols" in k]
                 for k in stale_keys:
                     del state_dict[k]
+                state_dict, adapted_keys = adapt_num_class_state_dict(
+                    state_dict,
+                    self.mamba_ekf.mamba.state_dict(),
+                )
                 missing, unexpected = self.mamba_ekf.mamba.load_state_dict(
                     state_dict, strict=False,
                 )
+                if adapted_keys:
+                    print(
+                        "[Base3DTracker] Adapted class-count-dependent checkpoint tensors: "
+                        + ", ".join(adapted_keys)
+                    )
                 if missing:
                     print(f"[Base3DTracker] WARNING: missing keys in checkpoint: {missing}")
                 if unexpected:
