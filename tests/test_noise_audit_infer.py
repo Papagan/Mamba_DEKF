@@ -408,6 +408,7 @@ class NoiseAuditInferTest(unittest.TestCase):
 
         def _fake_predict_with_mamba(*args, **kwargs):
             captured["state_buckets"] = kwargs["state_buckets"]
+            captured["detection_driven_mask"] = kwargs["detection_driven_mask"]
             raise RuntimeError("stop after capture")
 
         tracker = types.SimpleNamespace(
@@ -450,6 +451,7 @@ class NoiseAuditInferTest(unittest.TestCase):
             predict_before_associate(tracker, [tracker.all_trajs[1], tracker.all_trajs[2]], delta_t=0.5)
 
         self.assertEqual(captured["state_buckets"], ["matched", "unmatched"])
+        self.assertEqual(captured["detection_driven_mask"], [True, False])
 
     def test_predict_before_associate_uses_residual_history_for_mamba_and_track_history_for_priors(self):
         predict_before_associate = _load_class_methods(

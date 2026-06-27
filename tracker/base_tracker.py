@@ -1193,7 +1193,15 @@ class Base3DTracker:
             dtype=torch.float32,
             device=self.device,
         )
-        detection_driven_mask = torch.ones(B, dtype=torch.bool, device=self.device)
+        detection_driven_mask = torch.tensor(
+            [
+                bool(getattr(traj, "unmatch_length", 0) == 0)
+                and not bool(getattr(traj.bboxes[-1], "is_fake", False))
+                for traj in trajs
+            ],
+            dtype=torch.bool,
+            device=self.device,
+        )
         state_buckets = [
             infer_state_bucket(getattr(traj, "unmatch_length", 0))
             for traj in trajs
