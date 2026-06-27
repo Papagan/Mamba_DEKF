@@ -374,10 +374,23 @@ class Base3DTracker:
         # ---- Load trained weights if checkpoint path is provided ----
         if ckpt_path:
             if os.path.exists(ckpt_path):
+                resolved_ckpt_path = os.path.abspath(ckpt_path)
                 ckpt = torch.load(ckpt_path, map_location=self.device)
                 runtime_contract = ckpt.get("runtime_contract", None)
                 # checkpoints saved by training/train.py contain "model_state_dict"
                 state_dict = ckpt.get("model_state_dict", ckpt)
+                head_bank_key_count = sum(
+                    1 for key in state_dict.keys() if str(key).startswith("head_bank.")
+                )
+                print(
+                    f"[Base3DTracker] CHECKPOINT_PATH resolved to {resolved_ckpt_path} "
+                    f"(head_bank_keys={head_bank_key_count})"
+                )
+                if runtime_contract:
+                    print(
+                        "[Base3DTracker] Checkpoint runtime_contract: "
+                        f"{runtime_contract}"
+                    )
                 # strip stale _tril_rows/_tril_cols keys from old checkpoints
                 # (now lazily created in CholeskyHead.forward())
                 stale_keys = [k for k in state_dict if "_tril_rows" in k or "_tril_cols" in k]

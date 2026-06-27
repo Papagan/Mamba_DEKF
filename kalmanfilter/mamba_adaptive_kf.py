@@ -154,6 +154,41 @@ def build_noise_audit_samples(
     return samples
 
 
+def apply_force_coast_prior_only_to_ratios(
+    ratios: Dict[str, Tensor],
+    *,
+    state_buckets=None,
+    closure_cfg: Optional[dict] = None,
+) -> Dict[str, Tensor]:
+    if not ratios:
+        return ratios
+    if not closure_cfg or not bool(closure_cfg.get("FORCE_COAST_PRIOR_ONLY", False)):
+        return ratios
+    if state_buckets is None:
+        return ratios
+
+    bucket_list = [str(bucket) for bucket in state_buckets]
+    if not bucket_list:
+        return ratios
+
+    exemplar = next(iter(ratios.values()))
+    device = exemplar.device
+    matched_mask = torch.tensor(
+        [bucket == "matched" for bucket in bucket_list],
+        device=device,
+        dtype=torch.bool,
+    )
+    if not bool(matched_mask.any().item()):
+        return ratios
+
+    overridden = {}
+    for name, value in ratios.items():
+        value_clone = value.clone()
+        value_clone[matched_mask] = 1.0
+        overridden[name] = value_clone
+    return overridden
+
+
 # ============================================================
 # Filter 1: Position Filter  (Constant Velocity model)
 # State: [x, y, z, vx, vy, vz]  dim=6
@@ -1027,6 +1062,7 @@ class TemporalMamba(nn.Module):
         prior_track_history: Optional[Tensor] = None,
         prior_history_mask: Optional[Tensor] = None,
         prior_history_match_mask: Optional[Tensor] = None,
+        state_buckets = None,
         mode: str = "mamba",
     ) -> Dict[str, Tensor]:
         """
@@ -1112,6 +1148,11 @@ class TemporalMamba(nn.Module):
                 ),
             )
             ratios = self.head_bank(h_last, class_ids)
+            ratios = apply_force_coast_prior_only_to_ratios(
+                ratios,
+                state_buckets=state_buckets,
+                closure_cfg=self.base_noise_cfg.get("MAMBA_CLOSURE", {}),
+            )
             Q_pos = apply_factorized_ratio_to_q_pos(prior_cov["Q_pos_base"], ratios)
             R_pos = apply_factorized_ratio_to_r_pos(prior_cov["R_pos_base"], ratios)
             Q_siz = prior_cov["Q_siz_base"]
@@ -1404,6 +1445,7 @@ class MambaDecoupledEKF(nn.Module):
             prior_track_history=prior_track_history,
             prior_history_mask=prior_history_mask,
             prior_history_match_mask=prior_history_match_mask,
+            state_buckets=state_buckets,
             mode=mode,
         )
         bsize = track_history.size(0)

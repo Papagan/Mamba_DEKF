@@ -35,6 +35,46 @@ class _FakeTorch:
 
 
 class RuntimeContractChecksTest(unittest.TestCase):
+    def test_closure_force_coast_prior_only_ast_wiring(self):
+        module_path = REPO_ROOT / "kalmanfilter" / "mamba_adaptive_kf.py"
+        source = module_path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(module_path))
+
+        temporal_forward = None
+        predict_with_mamba = None
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and node.name == "TemporalMamba":
+                for child in node.body:
+                    if isinstance(child, ast.FunctionDef) and child.name == "forward":
+                        temporal_forward = child
+            if isinstance(node, ast.ClassDef) and node.name == "MambaDecoupledEKF":
+                for child in node.body:
+                    if isinstance(child, ast.FunctionDef) and child.name == "predict_with_mamba":
+                        predict_with_mamba = child
+
+        self.assertIsNotNone(temporal_forward)
+        self.assertIsNotNone(predict_with_mamba)
+        self.assertIn("state_buckets", [arg.arg for arg in temporal_forward.args.args])
+        self.assertIn("state_buckets", [arg.arg for arg in predict_with_mamba.args.args])
+
+        forward_calls = [node for node in ast.walk(temporal_forward) if isinstance(node, ast.Call)]
+        self.assertTrue(
+            any(
+                isinstance(call.func, ast.Name) and call.func.id == "apply_force_coast_prior_only_to_ratios"
+                for call in forward_calls
+            )
+        )
+
+        predict_calls = [node for node in ast.walk(predict_with_mamba) if isinstance(node, ast.Call)]
+        self.assertTrue(
+            any(
+                isinstance(call.func, ast.Attribute)
+                and call.func.attr == "mamba"
+                and any(keyword.arg == "state_buckets" for keyword in call.keywords)
+                for call in predict_calls
+            )
+        )
+
     def test_runtime_contract_warns_only_on_explicit_runtime_history_init_signals(self):
         helpers = _load_functions(
             REPO_ROOT / "tracker" / "base_tracker.py",
@@ -203,6 +243,28 @@ class RuntimeContractChecksTest(unittest.TestCase):
         self.assertIn("prior_history_match_mask", tracker_source)
         self.assertIn("prior_track_history", mamba_source)
         self.assertIn("conditioning_history", mamba_source)
+
+    def test_closure_force_coast_prior_only_is_wired_through_train_and_infer(self):
+        train_path = REPO_ROOT / "training" / "train.py"
+        train_source = train_path.read_text(encoding="utf-8")
+        train_tree = ast.parse(train_source, filename=str(train_path))
+
+        training_step = None
+        for node in train_tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name == "training_step":
+                training_step = node
+                break
+        self.assertIsNotNone(training_step)
+
+        calls = [node for node in ast.walk(training_step) if isinstance(node, ast.Call)]
+        self.assertTrue(
+            any(
+                isinstance(call.func, ast.Name)
+                and call.func.id == "mamba"
+                and any(keyword.arg == "state_buckets" for keyword in call.keywords)
+                for call in calls
+            )
+        )
 
 
 if __name__ == "__main__":

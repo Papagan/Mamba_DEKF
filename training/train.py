@@ -497,6 +497,12 @@ def training_step(
     # ---- Step 1: TemporalMamba forward (ONCE) → Q/R/embedding ----
     branch_name = str(filter_mode).strip().lower()
     use_closure_loss_path = branch_name == "mamba_multihead_closure"
+    audit_state = _resolve_train_noise_audit_state(
+        use_det_update,
+        obs_future_pos,
+        obs_future_match,
+    )
+    state_buckets = [audit_state] * B
 
     mamba_out = mamba(
         history,
@@ -505,6 +511,7 @@ def training_step(
         detection_driven_mask=detection_driven_mask,
         history_mask=history_mask,
         history_match_mask=history_match_mask,
+        state_buckets=state_buckets,
         mode=branch_name,
     )
 
@@ -566,12 +573,6 @@ def training_step(
     ori_state_weight = float(ori_curriculum["state_weight"])
     ori_wrapped_weight = float(ori_curriculum["wrapped_weight"])
     ori_curriculum_weight_sum = max(ori_state_weight + ori_wrapped_weight, 1e-8)
-    audit_state = _resolve_train_noise_audit_state(
-        use_det_update,
-        obs_future_pos,
-        obs_future_match,
-    )
-    state_buckets = [audit_state] * B
 
     runtime_prior_cov = mamba_out.get("prior_covariances") or {}
     audit_prior_q_pos = runtime_prior_cov.get("Q_pos", noise_bundle["Q_pos_base"])

@@ -42,6 +42,73 @@ class PriorConditionedHeadBankTest(unittest.TestCase):
 
 
 class TemporalMambaPriorConditionedBranchTest(unittest.TestCase):
+    def test_multihead_closure_force_coast_prior_only_keeps_matched_tracks_on_prior(self):
+        model = TemporalMamba(
+            d_model=8,
+            d_state=4,
+            d_conv=2,
+            expand=2,
+            n_mamba_layers=1,
+            embed_dim=4,
+            num_classes=7,
+            force_gru=True,
+            base_noise_cfg={
+                "Q": {
+                    "POS": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+                    "SIZ": [0.05, 0.06, 0.07],
+                    "ORI": [0.1],
+                },
+                "R": {
+                    "MEAS_MULTIPLIER": 1.0,
+                    "POS_STD_XY": [[2.0, 3.0]],
+                    "SIZ_STD_LW": [[6.0, 8.0]],
+                    "VEL_STD_XY": [[4.0, 5.0]],
+                    "ORI_STD": [3.0],
+                },
+                "MAMBA_CLOSURE": {
+                    "FORCE_COAST_PRIOR_ONLY": True,
+                },
+            },
+        )
+
+        class _StubHeadBank(torch.nn.Module):
+            def forward(self, h, class_ids):
+                return {
+                    "q_pos_xyz": h.new_full((h.shape[0], 1), 2.0),
+                    "q_pos_vxyz": h.new_full((h.shape[0], 1), 0.5),
+                    "r_pos_xyz": h.new_full((h.shape[0], 1), 1.5),
+                    "r_pos_vxy": h.new_full((h.shape[0], 1), 0.25),
+                    "r_siz_lw": h.new_full((h.shape[0], 1), 1.25),
+                    "r_siz_h": h.new_full((h.shape[0], 1), 0.5),
+                    "r_ori": h.new_full((h.shape[0], 1), 4.0),
+                }
+
+        model.head_bank = _StubHeadBank()
+
+        out = model(
+            torch.zeros(2, 3, 12),
+            class_ids=torch.tensor([0, 0], dtype=torch.long),
+            current_range=torch.tensor([0.0, 0.0]),
+            detection_driven_mask=torch.tensor([True, True]),
+            history_mask=torch.ones(2, 3, dtype=torch.bool),
+            history_match_mask=torch.ones(2, 3, dtype=torch.bool),
+            state_buckets=["matched", "unmatched"],
+            mode="mamba_multihead_closure",
+        )
+
+        self.assertTrue(
+            torch.allclose(
+                torch.diagonal(out["Q_pos"][0:1], dim1=-2, dim2=-1),
+                torch.tensor([[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]]),
+            )
+        )
+        self.assertTrue(
+            torch.allclose(
+                torch.diagonal(out["Q_pos"][1:2], dim1=-2, dim2=-1),
+                torch.tensor([[2.0, 4.0, 6.0, 2.0, 2.5, 3.0]]),
+            )
+        )
+
     def test_multihead_closure_reconstructs_covariances_from_priors(self):
         model = TemporalMamba(
             d_model=8,
