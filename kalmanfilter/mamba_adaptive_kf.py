@@ -173,18 +173,22 @@ def apply_force_coast_prior_only_to_ratios(
 
     exemplar = next(iter(ratios.values()))
     device = exemplar.device
-    matched_mask = torch.tensor(
-        [bucket == "matched" for bucket in bucket_list],
+    force_states = closure_cfg.get("FORCE_PRIOR_STATES", None)
+    if force_states is None:
+        force_states = ["unmatched"]
+    force_state_set = {str(state) for state in force_states}
+    force_mask = torch.tensor(
+        [bucket in force_state_set for bucket in bucket_list],
         device=device,
         dtype=torch.bool,
     )
-    if not bool(matched_mask.any().item()):
+    if not bool(force_mask.any().item()):
         return ratios
 
     overridden = {}
     for name, value in ratios.items():
         value_clone = value.clone()
-        value_clone[matched_mask] = 1.0
+        value_clone[force_mask] = 1.0
         overridden[name] = value_clone
     return overridden
 
