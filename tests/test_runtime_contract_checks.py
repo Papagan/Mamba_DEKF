@@ -266,6 +266,28 @@ class RuntimeContractChecksTest(unittest.TestCase):
             )
         )
 
+    def test_closure_training_bypasses_inference_force_prior_for_learnable_matched_head(self):
+        train_path = REPO_ROOT / "training" / "train.py"
+        train_source = train_path.read_text(encoding="utf-8")
+        train_tree = ast.parse(train_source, filename=str(train_path))
+
+        training_step = None
+        for node in train_tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name == "training_step":
+                training_step = node
+                break
+        self.assertIsNotNone(training_step)
+
+        calls = [node for node in ast.walk(training_step) if isinstance(node, ast.Call)]
+        self.assertTrue(
+            any(
+                isinstance(call.func, ast.Name)
+                and call.func.id == "mamba"
+                and any(keyword.arg == "apply_force_prior" for keyword in call.keywords)
+                for call in calls
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

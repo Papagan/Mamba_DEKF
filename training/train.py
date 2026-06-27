@@ -282,6 +282,28 @@ def _compute_ratio_anchor_regularization(
     return total, detail
 
 
+def _resolve_closure_ratio_bounds(
+    class_id: int,
+    state_bucket: str,
+    family_name: str,
+    closure_cfg: dict,
+):
+    bounds = get_family_ratio_bounds(class_id, state_bucket, family_name, closure_cfg)
+    matched_band = (closure_cfg or {}).get("MATCHED_KF_BAND", {})
+    if str(state_bucket) != "matched" or not bool(matched_band.get("ENABLED", False)):
+        return bounds
+
+    families = matched_band.get("FAMILIES", {}) or {}
+    band_bounds = families.get(family_name)
+    class_overrides = matched_band.get("CLASS_OVERRIDES", {}) or {}
+    class_cfg = class_overrides.get(int(class_id), class_overrides.get(str(int(class_id)), {})) or {}
+    band_bounds = class_cfg.get(family_name, band_bounds)
+
+    if not isinstance(band_bounds, (list, tuple)) or len(band_bounds) != 2:
+        return bounds
+    return float(band_bounds[0]), float(band_bounds[1])
+
+
 def _compute_closure_ratio_regularization(
     *,
     ratios: dict,
@@ -335,7 +357,7 @@ def _compute_closure_ratio_regularization(
         mask = []
         has_bounded_sample = False
         for class_id, state_bucket in zip(class_id_list, state_bucket_list):
-            bounds = get_family_ratio_bounds(class_id, state_bucket, family_name, closure_cfg)
+            bounds = _resolve_closure_ratio_bounds(class_id, state_bucket, family_name, closure_cfg)
             if bounds is None:
                 min_ratios.append(1.0)
                 max_ratios.append(1.0)
@@ -497,6 +519,7 @@ def training_step(
     # ---- Step 1: TemporalMamba forward (ONCE) → Q/R/embedding ----
     branch_name = str(filter_mode).strip().lower()
     use_closure_loss_path = branch_name == "mamba_multihead_closure"
+    closure_cfg = (base_noise_cfg or {}).get("MAMBA_CLOSURE", {})
     audit_state = _resolve_train_noise_audit_state(
         use_det_update,
         obs_future_pos,
@@ -512,6 +535,7 @@ def training_step(
         history_mask=history_mask,
         history_match_mask=history_match_mask,
         state_buckets=state_buckets,
+        apply_force_prior=not bool(closure_cfg.get("TRAIN_MATCHED_HEAD", {}).get("ENABLED", False)),
         mode=branch_name,
     )
 
@@ -568,7 +592,6 @@ def training_step(
     noise_scale_siz_lwh = noise_bundle["siz_std_lwh"]
     noise_scale_vel_xy = noise_bundle["vel_std_xy"]
     noise_scale_ori = noise_bundle["ori_std"].view(B, 1, 1)
-    closure_cfg = (base_noise_cfg or {}).get("MAMBA_CLOSURE", {})
     ori_curriculum = resolve_orientation_curriculum_weights(epoch=epoch, closure_cfg=closure_cfg)
     ori_state_weight = float(ori_curriculum["state_weight"])
     ori_wrapped_weight = float(ori_curriculum["wrapped_weight"])

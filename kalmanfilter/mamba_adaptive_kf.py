@@ -175,7 +175,7 @@ def apply_force_coast_prior_only_to_ratios(
     device = exemplar.device
     force_states = closure_cfg.get("FORCE_PRIOR_STATES", None)
     if force_states is None:
-        force_states = ["unmatched"]
+        force_states = ["matched"]
     force_state_set = {str(state) for state in force_states}
     force_mask = torch.tensor(
         [bucket in force_state_set for bucket in bucket_list],
@@ -1067,6 +1067,7 @@ class TemporalMamba(nn.Module):
         prior_history_mask: Optional[Tensor] = None,
         prior_history_match_mask: Optional[Tensor] = None,
         state_buckets = None,
+        apply_force_prior: bool = True,
         mode: str = "mamba",
     ) -> Dict[str, Tensor]:
         """
@@ -1152,11 +1153,12 @@ class TemporalMamba(nn.Module):
                 ),
             )
             ratios = self.head_bank(h_last, class_ids)
-            ratios = apply_force_coast_prior_only_to_ratios(
-                ratios,
-                state_buckets=state_buckets,
-                closure_cfg=self.base_noise_cfg.get("MAMBA_CLOSURE", {}),
-            )
+            if apply_force_prior:
+                ratios = apply_force_coast_prior_only_to_ratios(
+                    ratios,
+                    state_buckets=state_buckets,
+                    closure_cfg=self.base_noise_cfg.get("MAMBA_CLOSURE", {}),
+                )
             Q_pos = apply_factorized_ratio_to_q_pos(prior_cov["Q_pos_base"], ratios)
             R_pos = apply_factorized_ratio_to_r_pos(prior_cov["R_pos_base"], ratios)
             Q_siz = prior_cov["Q_siz_base"]
@@ -1420,6 +1422,7 @@ class MambaDecoupledEKF(nn.Module):
         prior_history_mask: Optional[Tensor] = None,
         prior_history_match_mask: Optional[Tensor] = None,
         state_buckets = None,
+        apply_force_prior: bool = True,
     ) -> Tuple[Dict[str, Tensor], Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
         """
         Run Mamba to get adaptive Q/R, then run KF predict.
@@ -1450,6 +1453,7 @@ class MambaDecoupledEKF(nn.Module):
             prior_history_mask=prior_history_mask,
             prior_history_match_mask=prior_history_match_mask,
             state_buckets=state_buckets,
+            apply_force_prior=apply_force_prior,
             mode=mode,
         )
         bsize = track_history.size(0)

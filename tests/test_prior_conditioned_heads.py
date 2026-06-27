@@ -42,7 +42,7 @@ class PriorConditionedHeadBankTest(unittest.TestCase):
 
 
 class TemporalMambaPriorConditionedBranchTest(unittest.TestCase):
-    def test_multihead_closure_force_coast_prior_only_keeps_unmatched_tracks_on_prior(self):
+    def test_multihead_closure_force_prior_states_defaults_to_matched_tracks(self):
         model = TemporalMamba(
             d_model=8,
             d_state=4,
@@ -99,13 +99,13 @@ class TemporalMambaPriorConditionedBranchTest(unittest.TestCase):
         self.assertTrue(
             torch.allclose(
                 torch.diagonal(out["Q_pos"][0:1], dim1=-2, dim2=-1),
-                torch.tensor([[2.0, 4.0, 6.0, 2.0, 2.5, 3.0]]),
+                torch.tensor([[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]]),
             )
         )
         self.assertTrue(
             torch.allclose(
                 torch.diagonal(out["Q_pos"][1:2], dim1=-2, dim2=-1),
-                torch.tensor([[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]]),
+                torch.tensor([[2.0, 4.0, 6.0, 2.0, 2.5, 3.0]]),
             )
         )
 

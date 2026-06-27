@@ -211,9 +211,37 @@ BASE_NOISE:
     ENABLED: true
     MODE: prior_conditioned_multihead
     FORCE_COAST_PRIOR_ONLY: true
-    FORCE_PRIOR_STATES: ["unmatched"]
-    RATIO_ANCHOR_WEIGHT: 0.02
-    RATIO_BOUND_WEIGHT: 0.02
+    FORCE_PRIOR_STATES: ["matched"]
+    TRAIN_MATCHED_HEAD:
+      ENABLED: true
+    MATCHED_KF_BAND:
+      ENABLED: true
+      FAMILIES:
+        q_pos: [0.92, 1.08]
+        r_pos: [0.92, 1.08]
+        r_siz: [0.94, 1.06]
+        r_ori: [0.92, 1.10]
+      CLASS_OVERRIDES:
+        2:
+          q_pos: [0.90, 1.10]
+          r_pos: [0.90, 1.10]
+          r_ori: [0.90, 1.12]
+        3:
+          q_pos: [0.90, 1.10]
+          r_pos: [0.90, 1.10]
+          r_ori: [0.90, 1.12]
+        5:
+          q_pos: [0.94, 1.06]
+          r_pos: [0.94, 1.06]
+          r_siz: [0.95, 1.05]
+          r_ori: [0.94, 1.08]
+        6:
+          q_pos: [0.92, 1.08]
+          r_pos: [0.92, 1.08]
+          r_siz: [0.94, 1.06]
+          r_ori: [0.92, 1.10]
+    RATIO_ANCHOR_WEIGHT: 0.04
+    RATIO_BOUND_WEIGHT: 0.08
     RATIO_BOUND_LOWER_WEIGHT: 0.25
     RATIO_BOUND_UPPER_WEIGHT: 1.0
     ORI_WARMUP_EPOCHS: 8

@@ -199,6 +199,7 @@ class NoiseAuditTrainTest(unittest.TestCase):
                 "_dump_train_noise_audit_if_needed",
                 "_trace_covariance_batch",
                 "_compute_ratio_anchor_regularization",
+                "_resolve_closure_ratio_bounds",
                 "_compute_closure_ratio_regularization",
             ],
             extra_namespace={
@@ -618,6 +619,52 @@ class NoiseAuditTrainTest(unittest.TestCase):
         self.assertAlmostEqual(detail["loss_ratio_anchor_r_pos"].item(), 2.0 * base_term, places=6)
         self.assertAlmostEqual(detail["loss_ratio_anchor_r_siz"].item(), 2.0 * base_term, places=6)
         self.assertAlmostEqual(detail["loss_ratio_anchor_r_ori"].item(), 1.0 * base_term, places=6)
+
+    def test_matched_kf_band_overrides_broad_profile_bounds_during_closure_training(self):
+        if torch is None:
+            self.skipTest("torch unavailable in unit-test interpreter")
+        helpers = self._load_train_helpers()
+        resolve_bounds = helpers["_resolve_closure_ratio_bounds"]
+
+        closure_cfg = {
+            "ENABLED": True,
+            "MATCHED_KF_BAND": {
+                "ENABLED": True,
+                "FAMILIES": {
+                    "q_pos": [0.93, 1.07],
+                    "r_pos": [0.94, 1.06],
+                },
+                "CLASS_OVERRIDES": {
+                    5: {
+                        "r_pos": [0.96, 1.04],
+                    }
+                },
+            },
+            "PROFILES": {
+                "heavy_long": {
+                    "matched": {
+                        "q_pos": [0.5, 3.0],
+                        "r_pos": [0.5, 3.0],
+                    },
+                    "unmatched": {
+                        "r_pos": [0.8, 1.3],
+                    },
+                }
+            },
+        }
+
+        self.assertEqual(
+            resolve_bounds(5, "matched", "q_pos", closure_cfg),
+            (0.93, 1.07),
+        )
+        self.assertEqual(
+            resolve_bounds(5, "matched", "r_pos", closure_cfg),
+            (0.96, 1.04),
+        )
+        self.assertEqual(
+            resolve_bounds(5, "unmatched", "r_pos", closure_cfg),
+            (0.8, 1.3),
+        )
 
 
 if __name__ == "__main__":

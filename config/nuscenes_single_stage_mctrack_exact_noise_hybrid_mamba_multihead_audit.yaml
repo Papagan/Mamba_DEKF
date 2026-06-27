@@ -173,7 +173,7 @@ DEKF_BASE_NOISE:
     ENABLED: true
     MODE: prior_conditioned_multihead
     FORCE_COAST_PRIOR_ONLY: true
-    FORCE_PRIOR_STATES: ["unmatched"]
+    FORCE_PRIOR_STATES: ["matched"]
     RATIO_ANCHOR_WEIGHT: 0.02
     RATIO_BOUND_WEIGHT: 0.02
     RATIO_BOUND_LOWER_WEIGHT: 0.25
