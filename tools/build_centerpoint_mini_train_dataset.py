@@ -43,6 +43,16 @@ TRACKING_CLASSES = [
     "truck",
 ]
 
+DEFAULT_CLASS_DIST_TH = {
+    "car": 2.0,
+    "pedestrian": 1.0,
+    "bicycle": 1.2,
+    "motorcycle": 1.5,
+    "bus": 2.5,
+    "trailer": 2.5,
+    "truck": 2.5,
+}
+
 
 def quat_to_yaw(rotation: List[float]) -> float:
     """Convert quaternion [w, x, y, z] to yaw."""
@@ -198,6 +208,51 @@ def load_training_config(train_config_path: Optional[str]) -> Dict:
         return yaml.safe_load(f) or {}
 
 
+def parse_class_dist_thresholds(value: Optional[str]) -> Dict[str, float]:
+    if value is None or str(value).strip() == "":
+        return {}
+    result: Dict[str, float] = {}
+    for item in str(value).split(","):
+        text = item.strip()
+        if not text:
+            continue
+        if "=" not in text:
+            raise ValueError(f"Invalid class threshold item {text!r}; expected class=value")
+        cls, raw_th = [part.strip() for part in text.split("=", 1)]
+        if cls not in TRACKING_CLASSES:
+            raise ValueError(f"Unknown tracking class {cls!r}; expected one of {TRACKING_CLASSES}")
+        threshold = float(raw_th)
+        if not math.isfinite(threshold) or threshold <= 0:
+            raise ValueError(f"Invalid threshold for {cls!r}: {raw_th!r}")
+        result[cls] = threshold
+    return result
+
+
+def resolve_class_dist_thresholds(
+    fallback_dist_th: float,
+    use_default_class_dist_th: bool,
+    class_dist_th: Optional[str],
+) -> Dict[str, float]:
+    if not math.isfinite(float(fallback_dist_th)) or float(fallback_dist_th) <= 0:
+        raise ValueError(f"fallback_dist_th must be positive, got {fallback_dist_th!r}")
+    thresholds = {cls: float(fallback_dist_th) for cls in TRACKING_CLASSES}
+    if use_default_class_dist_th:
+        thresholds.update(DEFAULT_CLASS_DIST_TH)
+    thresholds.update(parse_class_dist_thresholds(class_dist_th))
+    return thresholds
+
+
+def resolve_split_scene_names(scene_split: str, splits: Optional[Dict[str, List[str]]] = None) -> set:
+    if splits is None:
+        from nuscenes.utils.splits import create_splits_scenes
+
+        splits = create_splits_scenes()
+    split = str(scene_split).strip()
+    if split not in splits:
+        raise ValueError(f"Unknown nuScenes scene split: {scene_split!r}; available={sorted(splits.keys())}")
+    return set(splits[split])
+
+
 def estimate_training_samples(tracklets: List[dict], history_len: int, rollout_steps: int) -> int:
     total = 0
     min_len = history_len + rollout_steps
@@ -265,9 +320,11 @@ def build_mini_dataset(
     min_matched_frames: int,
     include_misses: bool,
     train_config_path: Optional[str],
+    scene_split: str,
+    class_dist_th: Optional[str],
+    use_default_class_dist_th: bool,
 ) -> Dict[str, int]:
     from nuscenes.nuscenes import NuScenes
-    from nuscenes.utils.splits import create_splits_scenes
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
@@ -277,7 +334,13 @@ def build_mini_dataset(
 
     print(f"[mini-train] loading nuScenes: version={nusc_version} dataroot={nusc_dataroot}")
     nusc = NuScenes(version=nusc_version, dataroot=nusc_dataroot, verbose=False)
-    val_scene_names = set(create_splits_scenes().get("val", []))
+    selected_split_scene_names = resolve_split_scene_names(scene_split)
+    class_dist_thresholds = resolve_class_dist_thresholds(
+        fallback_dist_th=dist_th,
+        use_default_class_dist_th=use_default_class_dist_th,
+        class_dist_th=class_dist_th,
+    )
+    print(f"[mini-train] class distance thresholds: {json.dumps(class_dist_thresholds, ensure_ascii=False)}")
 
     selected_scene_ids = []
     for scene_id, frames in scenes_data.items():
@@ -287,7 +350,7 @@ def build_mini_dataset(
         sample = nusc.get("sample", sample_token)
         scene = nusc.get("scene", sample["scene_token"])
         scene_name = scene["name"]
-        if scene_name not in val_scene_names:
+        if scene_name not in selected_split_scene_names:
             continue
         selected_scene_ids.append(scene_id)
         if max_scenes > 0 and len(selected_scene_ids) >= max_scenes:
@@ -359,7 +422,11 @@ def build_mini_dataset(
             for category in TRACKING_CLASSES:
                 gt_items = gt_by_cls.get(category, [])
                 det_items = det_by_cls.get(category, [])
-                matches, unmatched_gt, unmatched_det = match_classwise(gt_items, det_items, dist_th)
+                matches, unmatched_gt, unmatched_det = match_classwise(
+                    gt_items,
+                    det_items,
+                    class_dist_thresholds.get(category, dist_th),
+                )
 
                 for gt_idx, det_idx, match_dist in matches:
                     gt = gt_items[gt_idx]
@@ -369,7 +436,7 @@ def build_mini_dataset(
                         tracklets[instance_token] = {
                             "instance_token": instance_token,
                             "category": category,
-                            "source_split": "val",
+                            "source_split": scene_split,
                             "source_detector": "centerpoint",
                             "scene_id": scene_id,
                             "frames": [],
@@ -403,7 +470,7 @@ def build_mini_dataset(
                             tracklets[instance_token] = {
                                 "instance_token": instance_token,
                                 "category": category,
-                                "source_split": "val",
+                                "source_split": scene_split,
                                 "source_detector": "centerpoint",
                                 "scene_id": scene_id,
                                 "frames": [],
@@ -501,6 +568,10 @@ def build_mini_dataset(
             "min_matched_frames": min_matched_frames,
             "include_misses": include_misses,
             "train_config_path": train_config_path,
+            "scene_split": scene_split,
+            "class_dist_th": class_dist_th,
+            "use_default_class_dist_th": use_default_class_dist_th,
+            "resolved_class_dist_thresholds": class_dist_thresholds,
         },
     }
     if stats["frames"] > 0:
@@ -560,7 +631,17 @@ def parse_args() -> argparse.Namespace:
         "--dist-th",
         type=float,
         default=2.0,
-        help="Center-distance threshold for GT/detection alignment in meters.",
+        help="Fallback center-distance threshold for GT/detection alignment in meters.",
+    )
+    parser.add_argument(
+        "--use-default-class-dist-th",
+        action="store_true",
+        help="Use built-in per-class GT/detection matching thresholds.",
+    )
+    parser.add_argument(
+        "--class-dist-th",
+        default=None,
+        help="Comma-separated per-class thresholds, e.g. bicycle=1.2,motorcycle=1.5,trailer=2.5.",
     )
     parser.add_argument(
         "--min-frames",
@@ -578,6 +659,12 @@ def parse_args() -> argparse.Namespace:
         "--no-misses",
         action="store_true",
         help="Do not keep GT miss frames in the saved tracklets.",
+    )
+    parser.add_argument(
+        "--scene-split",
+        default="val",
+        choices=["train", "val", "mini_train", "mini_val"],
+        help="nuScenes scene split to select from the detection JSON. Default keeps legacy val behavior.",
     )
     parser.add_argument(
         "--train-config",
@@ -600,6 +687,9 @@ def main() -> None:
         min_matched_frames=args.min_matched_frames,
         include_misses=not args.no_misses,
         train_config_path=args.train_config,
+        scene_split=args.scene_split,
+        class_dist_th=args.class_dist_th,
+        use_default_class_dist_th=args.use_default_class_dist_th,
     )
 
 
