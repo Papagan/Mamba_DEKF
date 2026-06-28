@@ -4,7 +4,10 @@ from unittest import mock
 import torch
 
 import kalmanfilter.mamba_adaptive_kf as mamba_adaptive_kf_module
-from kalmanfilter.mamba_adaptive_kf import TemporalMamba
+from kalmanfilter.mamba_adaptive_kf import (
+    TemporalMamba,
+    apply_force_coast_prior_only_to_ratios,
+)
 from kalmanfilter.prior_conditioned_heads import PriorConditionedHeadBank
 
 
@@ -42,6 +45,29 @@ class PriorConditionedHeadBankTest(unittest.TestCase):
 
 
 class TemporalMambaPriorConditionedBranchTest(unittest.TestCase):
+    def test_force_prior_supports_class_state_allowlist(self):
+        ratios = {
+            "q_pos_xyz": torch.full((4, 1), 2.0),
+            "r_pos_xyz": torch.full((4, 1), 3.0),
+        }
+
+        out = apply_force_coast_prior_only_to_ratios(
+            ratios,
+            class_ids=torch.tensor([2, 3, 4, 5], dtype=torch.long),
+            state_buckets=["unmatched", "matched", "unmatched", "unmatched"],
+            closure_cfg={
+                "FORCE_COAST_PRIOR_ONLY": True,
+                "FORCE_PRIOR_STATES": ["matched"],
+                "ACTIVE_CLASS_STATES": {
+                    2: ["unmatched"],
+                    3: ["unmatched"],
+                },
+            },
+        )
+
+        self.assertTrue(torch.allclose(out["q_pos_xyz"].squeeze(1), torch.tensor([2.0, 1.0, 1.0, 1.0])))
+        self.assertTrue(torch.allclose(out["r_pos_xyz"].squeeze(1), torch.tensor([3.0, 1.0, 1.0, 1.0])))
+
     def test_multihead_closure_force_prior_states_defaults_to_matched_tracks(self):
         model = TemporalMamba(
             d_model=8,

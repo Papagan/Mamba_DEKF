@@ -157,6 +157,7 @@ def build_noise_audit_samples(
 def apply_force_coast_prior_only_to_ratios(
     ratios: Dict[str, Tensor],
     *,
+    class_ids=None,
     state_buckets=None,
     closure_cfg: Optional[dict] = None,
 ) -> Dict[str, Tensor]:
@@ -173,15 +174,38 @@ def apply_force_coast_prior_only_to_ratios(
 
     exemplar = next(iter(ratios.values()))
     device = exemplar.device
+    force_mask = torch.zeros(len(bucket_list), device=device, dtype=torch.bool)
+
     force_states = closure_cfg.get("FORCE_PRIOR_STATES", None)
     if force_states is None:
         force_states = ["matched"]
     force_state_set = {str(state) for state in force_states}
-    force_mask = torch.tensor(
+    force_mask |= torch.tensor(
         [bucket in force_state_set for bucket in bucket_list],
         device=device,
         dtype=torch.bool,
     )
+
+    active_class_states = closure_cfg.get("ACTIVE_CLASS_STATES", None)
+    if active_class_states is not None:
+        if class_ids is None:
+            force_mask |= torch.ones(len(bucket_list), device=device, dtype=torch.bool)
+        else:
+            class_id_list = [
+                int(value.item()) if hasattr(value, "item") else int(value)
+                for value in class_ids
+            ]
+            if len(class_id_list) != len(bucket_list):
+                raise ValueError("class_ids and state_buckets must have the same batch length")
+            active_mask_values = []
+            for class_id, bucket in zip(class_id_list, bucket_list):
+                states = active_class_states.get(class_id, active_class_states.get(str(class_id), []))
+                if states is None:
+                    states = []
+                active_mask_values.append(str(bucket) in {str(state) for state in states})
+            active_mask = torch.tensor(active_mask_values, device=device, dtype=torch.bool)
+            force_mask |= ~active_mask
+
     if not bool(force_mask.any().item()):
         return ratios
 
@@ -1156,6 +1180,7 @@ class TemporalMamba(nn.Module):
             if apply_force_prior:
                 ratios = apply_force_coast_prior_only_to_ratios(
                     ratios,
+                    class_ids=class_ids,
                     state_buckets=state_buckets,
                     closure_cfg=self.base_noise_cfg.get("MAMBA_CLOSURE", {}),
                 )

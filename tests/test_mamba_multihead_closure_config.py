@@ -46,3 +46,17 @@ class MambaMultiheadClosureConfigTest(unittest.TestCase):
         self.assertEqual(cfg["FILTER_MODE"], "mamba_multihead_closure")
         self.assertTrue(cfg["AUDIT"]["NOISE_AUDIT"]["ENABLED"])
         self.assertEqual(cfg["DEKF_BASE_NOISE"]["MAMBA_CLOSURE"]["MODE"], "prior_conditioned_multihead")
+
+    def test_closure_configs_gate_mamba_to_agile_unmatched_tracks(self):
+        paths = [
+            REPO_ROOT / "config" / "train_nuscenes.yaml",
+            REPO_ROOT / "config" / "nuscenes_single_stage_mctrack_exact_noise_hybrid_mamba_multihead_closure.yaml",
+            REPO_ROOT / "config" / "nuscenes_single_stage_mctrack_exact_noise_hybrid_mamba_multihead_audit.yaml",
+        ]
+        for path in paths:
+            cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+            base_noise = cfg.get("BASE_NOISE", cfg.get("DEKF_BASE_NOISE", {}))
+            active = base_noise["MAMBA_CLOSURE"]["ACTIVE_CLASS_STATES"]
+            self.assertEqual(active[2], ["unmatched"])
+            self.assertEqual(active[3], ["unmatched"])
+            self.assertEqual(set(active.keys()), {2, 3})

@@ -213,6 +213,9 @@ BASE_NOISE:
     MODE: prior_conditioned_multihead
     FORCE_COAST_PRIOR_ONLY: true
     FORCE_PRIOR_STATES: ["matched"]
+    ACTIVE_CLASS_STATES:
+      2: ["unmatched"]   # bicycle
+      3: ["unmatched"]   # motorcycle
     TRAIN_MATCHED_HEAD:
       ENABLED: true
     MATCHED_KF_BAND:

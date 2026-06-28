@@ -178,6 +178,12 @@ DEKF_BASE_NOISE:
     MODE: prior_conditioned_multihead
     FORCE_COAST_PRIOR_ONLY: true
     FORCE_PRIOR_STATES: ["matched"]
+    # Conservative rollout gate:
+    # keep the strong 0.739 pure-DEKF classes on prior noise and only let
+    # Mamba alter unmatched weak two-wheel tracks in the first recovery test.
+    ACTIVE_CLASS_STATES:
+      2: ["unmatched"]   # bicycle
+      3: ["unmatched"]   # motorcycle
     RATIO_ANCHOR_WEIGHT: 0.02
     RATIO_BOUND_WEIGHT: 0.02
     RATIO_BOUND_LOWER_WEIGHT: 0.25
