@@ -47,10 +47,18 @@ class MambaMultiheadClosureConfigTest(unittest.TestCase):
         self.assertTrue(cfg["AUDIT"]["NOISE_AUDIT"]["ENABLED"])
         self.assertEqual(cfg["DEKF_BASE_NOISE"]["MAMBA_CLOSURE"]["MODE"], "prior_conditioned_multihead")
 
-    def test_closure_configs_gate_mamba_to_agile_unmatched_tracks(self):
+    def test_eval_closure_config_first_forces_all_states_to_prior(self):
+        cfg = yaml.safe_load(
+            (REPO_ROOT / "config" / "nuscenes_single_stage_mctrack_exact_noise_hybrid_mamba_multihead_closure.yaml")
+            .read_text(encoding="utf-8")
+        )
+        closure_cfg = cfg["DEKF_BASE_NOISE"]["MAMBA_CLOSURE"]
+        self.assertEqual(closure_cfg["FORCE_PRIOR_STATES"], ["matched", "unmatched"])
+        self.assertEqual(closure_cfg["ACTIVE_CLASS_STATES"], {})
+
+    def test_train_and_audit_keep_agile_unmatched_gate_for_future_retraining(self):
         paths = [
             REPO_ROOT / "config" / "train_nuscenes.yaml",
-            REPO_ROOT / "config" / "nuscenes_single_stage_mctrack_exact_noise_hybrid_mamba_multihead_closure.yaml",
             REPO_ROOT / "config" / "nuscenes_single_stage_mctrack_exact_noise_hybrid_mamba_multihead_audit.yaml",
         ]
         for path in paths:
