@@ -165,22 +165,47 @@ def apply_force_coast_prior_only_to_ratios(
         return ratios
     if not closure_cfg or not bool(closure_cfg.get("FORCE_COAST_PRIOR_ONLY", False)):
         return ratios
-    if state_buckets is None:
+    exemplar = next(iter(ratios.values()))
+    force_mask = build_force_prior_mask(
+        class_ids=class_ids,
+        state_buckets=state_buckets,
+        closure_cfg=closure_cfg,
+        device=exemplar.device,
+    )
+    if force_mask is None:
         return ratios
+    if not bool(force_mask.any().item()):
+        return ratios
+
+    overridden = {}
+    for name, value in ratios.items():
+        value_clone = value.clone()
+        value_clone[force_mask] = 1.0
+        overridden[name] = value_clone
+    return overridden
+
+
+def build_force_prior_mask(
+    *,
+    class_ids=None,
+    state_buckets=None,
+    closure_cfg: Optional[dict] = None,
+    device=None,
+) -> Optional[Tensor]:
+    if not closure_cfg or not bool(closure_cfg.get("FORCE_COAST_PRIOR_ONLY", False)):
+        return None
+    if state_buckets is None:
+        return None
 
     bucket_list = [str(bucket) for bucket in state_buckets]
     if not bucket_list:
-        return ratios
-
-    exemplar = next(iter(ratios.values()))
-    device = exemplar.device
-    force_mask = torch.zeros(len(bucket_list), device=device, dtype=torch.bool)
+        return None
 
     force_states = closure_cfg.get("FORCE_PRIOR_STATES", None)
     if force_states is None:
         force_states = ["matched"]
     force_state_set = {str(state) for state in force_states}
-    force_mask |= torch.tensor(
+    force_mask = torch.tensor(
         [bucket in force_state_set for bucket in bucket_list],
         device=device,
         dtype=torch.bool,
@@ -206,15 +231,7 @@ def apply_force_coast_prior_only_to_ratios(
             active_mask = torch.tensor(active_mask_values, device=device, dtype=torch.bool)
             force_mask |= ~active_mask
 
-    if not bool(force_mask.any().item()):
-        return ratios
-
-    overridden = {}
-    for name, value in ratios.items():
-        value_clone = value.clone()
-        value_clone[force_mask] = 1.0
-        overridden[name] = value_clone
-    return overridden
+    return force_mask
 
 
 # ============================================================
@@ -1193,6 +1210,18 @@ class TemporalMamba(nn.Module):
             kappa_ori_unc = torch.reciprocal(torch.clamp(raw_R_ori.squeeze(-1), min=1e-8))
             kappa_ori = torch.clamp(kappa_ori_unc, max=5.0)
             R_ori = (1.0 / kappa_ori).unsqueeze(-1)
+            if apply_force_prior:
+                force_prior_mask = build_force_prior_mask(
+                    class_ids=class_ids,
+                    state_buckets=state_buckets,
+                    closure_cfg=self.base_noise_cfg.get("MAMBA_CLOSURE", {}),
+                    device=dev,
+                )
+                if force_prior_mask is not None and bool(force_prior_mask.any().item()):
+                    R_ori = R_ori.clone()
+                    kappa_ori = kappa_ori.clone()
+                    R_ori[force_prior_mask] = raw_R_ori[force_prior_mask]
+                    kappa_ori[force_prior_mask] = kappa_ori_unc[force_prior_mask]
             return {
                 "Q_pos": Q_pos, "Q_siz": Q_siz, "Q_ori": Q_ori,
                 "R_pos": R_pos, "R_siz": R_siz, "R_ori": R_ori,

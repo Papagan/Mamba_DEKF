@@ -128,6 +128,7 @@ class TemporalMambaPriorConditionedBranchTest(unittest.TestCase):
                 torch.tensor([[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]]),
             )
         )
+        self.assertTrue(torch.allclose(out["R_ori"][0:1], torch.tensor([[[9.0]]])))
         self.assertTrue(
             torch.allclose(
                 torch.diagonal(out["Q_pos"][1:2], dim1=-2, dim2=-1),
