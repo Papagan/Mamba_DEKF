@@ -46,6 +46,11 @@ class BuildCenterPointMiniTrainDatasetTest(unittest.TestCase):
         self.assertEqual(resolved["bicycle"], 1.1)
         self.assertEqual(resolved["truck"], 2.7)
 
+    def test_default_class_dist_thresholds_keep_large_vehicle_thresholds_wide(self):
+        self.assertEqual(DEFAULT_CLASS_DIST_TH["bus"], 3.0)
+        self.assertEqual(DEFAULT_CLASS_DIST_TH["trailer"], 3.0)
+        self.assertEqual(DEFAULT_CLASS_DIST_TH["truck"], 3.0)
+
     def test_parse_class_dist_thresholds_rejects_unknown_class(self):
         with self.assertRaises(ValueError):
             parse_class_dist_thresholds("animal=1.0")

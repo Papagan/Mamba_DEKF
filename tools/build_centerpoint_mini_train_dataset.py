@@ -48,9 +48,9 @@ DEFAULT_CLASS_DIST_TH = {
     "pedestrian": 1.0,
     "bicycle": 1.2,
     "motorcycle": 1.5,
-    "bus": 2.5,
-    "trailer": 2.5,
-    "truck": 2.5,
+    "bus": 3.0,
+    "trailer": 3.0,
+    "truck": 3.0,
 }
 
 
