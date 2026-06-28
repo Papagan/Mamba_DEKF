@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Iterable, Mapping, MutableMapping
 
+_BACKBONE_PREFIXES = ("fallback_gru.", "mamba_layers.")
+
 
 def _clone_like(value):
     if hasattr(value, "clone"):
@@ -56,3 +58,39 @@ def adapt_num_class_state_dict(
         adapted_keys.append(name)
 
     return adapted, adapted_keys
+
+
+def filter_heads_only_state_dict(
+    state_dict: Mapping,
+    model_state_dict: Mapping,
+    *,
+    backbone_prefixes: Iterable[str] = _BACKBONE_PREFIXES,
+):
+    """
+    Select checkpoint tensors that are safe to migrate across backbone changes.
+
+    This is intended for GRU-fallback -> real Mamba training transitions:
+    recurrent backbone tensors are skipped, while compatible projection,
+    normalization, size/orientation, embedding, and closure-head tensors are
+    reused when their shapes exactly match the current model.
+    """
+    filtered = {}
+    skipped = {
+        "backbone": [],
+        "missing": [],
+        "shape_mismatch": [],
+    }
+
+    for name, value in state_dict.items():
+        if any(str(name).startswith(prefix) for prefix in backbone_prefixes):
+            skipped["backbone"].append(name)
+            continue
+        if name not in model_state_dict:
+            skipped["missing"].append(name)
+            continue
+        if tuple(getattr(value, "shape", ())) != tuple(getattr(model_state_dict[name], "shape", ())):
+            skipped["shape_mismatch"].append(name)
+            continue
+        filtered[name] = value
+
+    return filtered, skipped

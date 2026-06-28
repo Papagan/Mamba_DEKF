@@ -117,6 +117,7 @@ TRAINING:
   LOG_EVERY: 50
   SAVE_EVERY: 10
   SAVE_DIR: checkpoints/mamba_dekf/
+  REQUIRE_MAMBA_SSM: true        # fail fast if training would fall back to GRU
   AUTO_UNSEAL_EPOCH: 0           # disabled for bounded-residual closure training; avoid unrelated cost-mode mutations
   INFERENCE_CONFIG: config/nuscenes_single_stage_mctrack_exact_noise_hybrid_mamba_multihead_closure.yaml
   ROLLOUT_STEPS: 4               # max rollout depth; adaptive training may sample shorter valid futures

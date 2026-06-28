@@ -57,7 +57,10 @@ from kalmanfilter.mamba_adaptive_kf import (
     DecoupledAdaptiveKF,
     build_noise_audit_samples,
 )
-from kalmanfilter.checkpoint_compat import adapt_num_class_state_dict
+from kalmanfilter.checkpoint_compat import (
+    adapt_num_class_state_dict,
+    filter_heads_only_state_dict,
+)
 from kalmanfilter.noise_audit import NoiseAuditAccumulator
 from kalmanfilter.noise_priors import (
     build_base_covariances,
@@ -1036,8 +1039,16 @@ def main():
     parser.add_argument("--config", type=str, required=True, help="Path to training config YAML")
     parser.add_argument("--extract-only", action="store_true", help="Only extract GT tracklets, then exit")
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
+    parser.add_argument(
+        "--resume-heads-only",
+        type=str,
+        default=None,
+        help="Load compatible non-backbone weights from a checkpoint and train from epoch 0",
+    )
     parser.add_argument("--device", type=str, default=None, help="Override device (cuda/cpu)")
     args = parser.parse_args()
+    if args.resume and args.resume_heads_only:
+        parser.error("--resume and --resume-heads-only are mutually exclusive")
 
     # ---- Load config ----
     with open(args.config, "r") as f:
@@ -1209,9 +1220,17 @@ def main():
         min_kappa=model_cfg.get("MIN_KAPPA", 0.1),
         base_noise_cfg=cfg.get("BASE_NOISE", None),
     ).to(device)
+    backbone_type = "mamba_ssm" if getattr(mamba, "mamba_layers", None) is not None else "fallback_gru"
+    require_mamba_ssm = bool(train_cfg.get("REQUIRE_MAMBA_SSM", False))
+    if require_mamba_ssm and backbone_type != "mamba_ssm":
+        raise RuntimeError(
+            "TRAINING.REQUIRE_MAMBA_SSM=true but TemporalMamba was built with "
+            "fallback_gru. Verify `from mamba_ssm.modules.mamba_simple import Mamba` "
+            "works in the same Python environment used for training."
+        )
 
     n_params = sum(p.numel() for p in mamba.parameters() if p.requires_grad)
-    logger.info(f"TemporalMamba: {n_params:,} trainable parameters")
+    logger.info(f"TemporalMamba: {n_params:,} trainable parameters (backbone={backbone_type})")
 
     # ---- Loss ----
     loss_cfg = cfg.get("LOSS", {})
@@ -1285,7 +1304,41 @@ def main():
 
     # ---- Resume ----
     start_epoch = 0
-    if args.resume:
+    if args.resume_heads_only:
+        ckpt = torch.load(args.resume_heads_only, map_location=device)
+        resume_state = ckpt.get("model_state_dict", ckpt)
+        resume_state, adapted_keys = adapt_num_class_state_dict(
+            resume_state,
+            mamba.state_dict(),
+        )
+        filtered_state, skipped = filter_heads_only_state_dict(
+            resume_state,
+            mamba.state_dict(),
+        )
+        missing, unexpected = mamba.load_state_dict(filtered_state, strict=False)
+        logger.info(
+            "Loaded heads-only checkpoint from %s: loaded=%d, "
+            "skipped_backbone=%d, skipped_missing=%d, skipped_shape=%d",
+            args.resume_heads_only,
+            len(filtered_state),
+            len(skipped["backbone"]),
+            len(skipped["missing"]),
+            len(skipped["shape_mismatch"]),
+        )
+        if adapted_keys:
+            logger.info(
+                "Adapted class-count-dependent checkpoint tensors on heads-only load: %s",
+                ", ".join(adapted_keys),
+            )
+        if missing:
+            logger.info("Heads-only load leaves %d model keys initialized from scratch", len(missing))
+        if unexpected:
+            logger.warning("Unexpected keys during heads-only load: %s", unexpected)
+        runtime_contract = ckpt.get("runtime_contract", None)
+        if runtime_contract:
+            logger.info(f"Heads-only checkpoint runtime_contract: {runtime_contract}")
+        logger.info("Heads-only load starts training from epoch 0 with a fresh optimizer")
+    elif args.resume:
         ckpt = torch.load(args.resume, map_location=device)
         resume_state = ckpt["model_state_dict"]
         resume_state, adapted_keys = adapt_num_class_state_dict(
@@ -1318,6 +1371,7 @@ def main():
         "history_source": history_source,
         "init_state_source": init_state_source,
         "filter_mode": resolve_runtime_contract_filter_mode(cfg, train_tracker_compat_mode),
+        "backbone_type": backbone_type,
         "future_update_source": "det" if bool((cfg.get("BASE_NOISE", {}) or {}).get("DETECTION_UPDATE", {}).get("ENABLED", True)) else "gt_noisy",
         "train_source": train_source,
         "val_source": val_source,

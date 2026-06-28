@@ -2,7 +2,10 @@ import unittest
 
 import numpy as np
 
-from kalmanfilter.checkpoint_compat import adapt_num_class_state_dict
+from kalmanfilter.checkpoint_compat import (
+    adapt_num_class_state_dict,
+    filter_heads_only_state_dict,
+)
 
 
 class CheckpointCompatTest(unittest.TestCase):
@@ -49,6 +52,36 @@ class CheckpointCompatTest(unittest.TestCase):
             adapted["raw_q_siz.weight"][5:],
             model_state_dict["raw_q_siz.weight"][5:],
         )
+
+    def test_filter_heads_only_state_dict_skips_backbones_and_shape_mismatches(self):
+        state_dict = {
+            "fallback_gru.weight_ih_l0": np.ones((3, 3), dtype=np.float32),
+            "mamba_layers.0.in_proj.weight": np.ones((3, 3), dtype=np.float32),
+            "head_bank.family_heads.r_pos_xyz.0.proj.weight": np.ones((1, 4), dtype=np.float32),
+            "input_proj.weight": np.ones((4, 12), dtype=np.float32),
+            "raw_q_siz.weight": np.ones((7, 3), dtype=np.float32),
+            "bad_shape.weight": np.ones((9, 9), dtype=np.float32),
+        }
+        model_state_dict = {
+            "head_bank.family_heads.r_pos_xyz.0.proj.weight": np.zeros((1, 4), dtype=np.float32),
+            "input_proj.weight": np.zeros((4, 12), dtype=np.float32),
+            "raw_q_siz.weight": np.zeros((7, 3), dtype=np.float32),
+            "bad_shape.weight": np.zeros((8, 8), dtype=np.float32),
+        }
+
+        filtered, skipped = filter_heads_only_state_dict(state_dict, model_state_dict)
+
+        self.assertEqual(
+            set(filtered),
+            {
+                "head_bank.family_heads.r_pos_xyz.0.proj.weight",
+                "input_proj.weight",
+                "raw_q_siz.weight",
+            },
+        )
+        self.assertIn("fallback_gru.weight_ih_l0", skipped["backbone"])
+        self.assertIn("mamba_layers.0.in_proj.weight", skipped["backbone"])
+        self.assertIn("bad_shape.weight", skipped["shape_mismatch"])
 
 
 if __name__ == "__main__":

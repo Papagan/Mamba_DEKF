@@ -391,6 +391,13 @@ class Base3DTracker:
                         "[Base3DTracker] Checkpoint runtime_contract: "
                         f"{runtime_contract}"
                     )
+                    expected_backbone_type = str(runtime_contract.get("backbone_type", "")).strip().lower()
+                    if expected_backbone_type and expected_backbone_type != ("fallback_gru" if force_gru else "mamba_ssm"):
+                        print(
+                            "[Base3DTracker] WARNING: checkpoint runtime_contract backbone_type="
+                            f"{expected_backbone_type} but runtime backbone="
+                            f"{'fallback_gru' if force_gru else 'mamba_ssm'}"
+                        )
                 # strip stale _tril_rows/_tril_cols keys from old checkpoints
                 # (now lazily created in CholeskyHead.forward())
                 stale_keys = [k for k in state_dict if "_tril_rows" in k or "_tril_cols" in k]
