@@ -1599,6 +1599,9 @@ def main():
         writer.add_scalar("val/loss_contrastive", avg_val.get("loss_contrastive", 0), step)
         writer.add_scalar("val/loss_kappa_reg", avg_val.get("loss_kappa_reg", 0), step)
         writer.add_scalar("val/loss_delta_pos_reg", avg_val.get("loss_delta_pos_reg", 0), step)
+        for key, value in avg_val.items():
+            if str(key).startswith("class_state/") and isinstance(value, (int, float)):
+                writer.add_scalar(f"val/{key}", float(value), step)
         writer.add_scalar("train/epoch_time", dt_epoch, step)
         writer.add_scalar("train/nan_count", nan_count, step)
         # Q/R diagonal std — should stay > 0; zero = constant output (degenerate)
@@ -1617,6 +1620,8 @@ def main():
             avg_val,
             min_samples=per_class_min_samples,
         )
+        for class_id, class_loss in sorted(class_val_losses.items()):
+            writer.add_scalar(f"val/class_{class_id}/selected_loss", float(class_loss), step)
         for class_id, class_loss in sorted(class_val_losses.items()):
             prev = best_class_val_loss.get(class_id, float("inf"))
             if class_loss < prev:
