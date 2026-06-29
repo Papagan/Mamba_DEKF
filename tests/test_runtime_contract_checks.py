@@ -191,14 +191,20 @@ class RuntimeContractChecksTest(unittest.TestCase):
             "TemporalMamba": object,
             "JointLoss": object,
             "init_class_state_metric_accumulator": lambda: {},
-            "finalize_class_state_metric_accumulator": lambda acc: {},
-            "update_class_state_metric_accumulator": lambda *args, **kwargs: None,
+            "finalize_class_state_metric_accumulator": lambda acc: acc,
+            "update_class_state_metric_accumulator": lambda acc, **kwargs: acc.update({"metrics": kwargs["metrics"]}),
         }
         seen = {}
 
         def training_step(*args, **kwargs):
             seen["filter_mode"] = kwargs.get("filter_mode")
-            return None, {"loss_total": 1.0}
+            seen["emit_sample_metrics"] = kwargs.get("emit_sample_metrics")
+            return None, {
+                "loss_total": 1.0,
+                "_class_ids": [2],
+                "_state_buckets": ["matched"],
+                "_sample_loss_real": [3.0],
+            }
 
         namespace["training_step"] = training_step
         validate = None
@@ -227,7 +233,9 @@ class RuntimeContractChecksTest(unittest.TestCase):
         )
 
         self.assertEqual(seen["filter_mode"], "mamba_multihead_closure")
+        self.assertIs(seen["emit_sample_metrics"], True)
         self.assertEqual(result["loss_total"], 1.0)
+        self.assertEqual(result["class_state/metrics"], {"loss_real": [3.0]})
 
     def test_closure_training_step_logs_orientation_saturation_and_tensor_blend_inputs(self):
         source = (REPO_ROOT / "training" / "train.py").read_text(encoding="utf-8")

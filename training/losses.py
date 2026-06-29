@@ -23,6 +23,16 @@ import torch.nn.functional as F
 from typing import Dict, Tuple
 
 
+def _reduce_per_sample(
+    per_sample: torch.Tensor,
+    sample_weights: torch.Tensor = None,
+) -> torch.Tensor:
+    if sample_weights is None:
+        return per_sample.mean()
+    w = sample_weights / (sample_weights.sum() + 1e-8)
+    return (per_sample * w).sum()
+
+
 # ======================================================================
 # Von Mises Negative Log-Likelihood (Orientation)
 # ======================================================================
@@ -30,6 +40,25 @@ from typing import Dict, Tuple
 # distribution is the natural exponential-family distribution on the
 # circle, eliminating the -pi/pi topological tear that causes gradient
 # collapse under Gaussian NLL.
+
+def von_mises_loss_per_sample(
+    pred_yaw: torch.Tensor,   # [B] or [B, 1]
+    gt_yaw: torch.Tensor,     # [B] or [B, 1]
+    kappa: torch.Tensor,      # [B, 1] — concentration parameter
+) -> torch.Tensor:
+    pred = pred_yaw.squeeze(-1)       # [B]
+    gt = gt_yaw.squeeze(-1)           # [B]
+    k = kappa.squeeze(-1)             # [B]
+    k = torch.clamp(k, min=0.3, max=5.0)    # align with TemporalMamba forward clamp ceiling
+
+    diff = pred - gt
+    cos_term = -k * torch.cos(diff)                        # [B]
+    log_i0e = torch.log(torch.special.i0e(k) + 1e-7)      # [B]
+    k_term = k                                              # [B]
+
+    nll_per_sample = cos_term + log_i0e + k_term            # [B]
+    return nll_per_sample
+
 
 def von_mises_loss(
     pred_yaw: torch.Tensor,   # [B] or [B, 1]
@@ -58,58 +87,24 @@ def von_mises_loss(
     Returns:
         Scalar loss (mean over batch).
     """
-    pred = pred_yaw.squeeze(-1)       # [B]
-    gt = gt_yaw.squeeze(-1)           # [B]
-    k = kappa.squeeze(-1)             # [B]
-    k = torch.clamp(k, min=0.3, max=5.0)    # align with TemporalMamba forward clamp ceiling
-
-    diff = pred - gt
-    cos_term = -k * torch.cos(diff)                        # [B]
-    log_i0e = torch.log(torch.special.i0e(k) + 1e-7)      # [B]
-    k_term = k                                              # [B]
-
-    nll_per_sample = cos_term + log_i0e + k_term            # [B]
-    if sample_weights is None:
-        return nll_per_sample.mean()
-    w = sample_weights / (sample_weights.sum() + 1e-8)
-    return (nll_per_sample * w).sum()
+    return _reduce_per_sample(
+        von_mises_loss_per_sample(pred_yaw, gt_yaw, kappa),
+        sample_weights=sample_weights,
+    )
 
 
 # ======================================================================
 # Kalman Negative Log-Likelihood (NLL)
 # ======================================================================
 
-def kalman_nll_loss(
+def kalman_nll_per_sample(
     z_gt: torch.Tensor,        # [B, m]      — ground-truth observation
     x_pred: torch.Tensor,      # [B, n, 1]   — predicted state mean
     P_pred: torch.Tensor,      # [B, n, n]   — predicted state covariance
     H: torch.Tensor,           # [m, n]       — observation matrix (constant)
     R_pred: torch.Tensor,      # [B, m, m]   — measurement noise covariance (PSD)
     eps: float = 1e-5,
-    sample_weights: torch.Tensor = None,  # [B]
 ) -> torch.Tensor:
-    """
-    Gaussian negative log-likelihood for a Kalman filter prediction.
-
-    # y = z_gt - H @ x_pred                          (innovation / residual)
-    # S = H @ P_pred @ H^T + R_pred                   (innovation covariance)
-    # NLL = 0.5 * ( logdet(S + eps*I) + y^T @ inv(S + eps*I) @ y )
-
-    Gradients flow through x_pred (state mean) and P_pred (via S into
-    Mamba-predicted Q/R), enabling end-to-end optimisation of the full
-    Kalman pipeline.
-
-    Args:
-        z_gt:    Ground-truth observation vector, shape [B, m].
-        x_pred:  Predicted state mean, shape [B, n, 1].
-        P_pred:  Predicted state covariance, shape [B, n, n] (must be PSD).
-        H:       Observation matrix, shape [m, n] (constant, shared across batch).
-        R_pred:  Measurement noise covariance from Mamba, shape [B, m, m] (PSD).
-        eps:     Small diagonal regularisation for numerical stability.
-
-    Returns:
-        Scalar loss (mean over batch).
-    """
     B = z_gt.shape[0]
     m = H.shape[0]
     dev = z_gt.device
@@ -152,10 +147,44 @@ def kalman_nll_loss(
 
     # ---- per-sample NLL + guard, then mean over batch ----
     nll_per_sample = 0.5 * (logdet + quad_form) + logdet_guard
-    if sample_weights is None:
-        return nll_per_sample.mean()
-    w = sample_weights / (sample_weights.sum() + 1e-8)
-    return (nll_per_sample * w).sum()
+    return nll_per_sample
+
+
+def kalman_nll_loss(
+    z_gt: torch.Tensor,        # [B, m]      — ground-truth observation
+    x_pred: torch.Tensor,      # [B, n, 1]   — predicted state mean
+    P_pred: torch.Tensor,      # [B, n, n]   — predicted state covariance
+    H: torch.Tensor,           # [m, n]       — observation matrix (constant)
+    R_pred: torch.Tensor,      # [B, m, m]   — measurement noise covariance (PSD)
+    eps: float = 1e-5,
+    sample_weights: torch.Tensor = None,  # [B]
+) -> torch.Tensor:
+    """
+    Gaussian negative log-likelihood for a Kalman filter prediction.
+
+    # y = z_gt - H @ x_pred                          (innovation / residual)
+    # S = H @ P_pred @ H^T + R_pred                   (innovation covariance)
+    # NLL = 0.5 * ( logdet(S + eps*I) + y^T @ inv(S + eps*I) @ y )
+
+    Gradients flow through x_pred (state mean) and P_pred (via S into
+    Mamba-predicted Q/R), enabling end-to-end optimisation of the full
+    Kalman pipeline.
+
+    Args:
+        z_gt:    Ground-truth observation vector, shape [B, m].
+        x_pred:  Predicted state mean, shape [B, n, 1].
+        P_pred:  Predicted state covariance, shape [B, n, n] (must be PSD).
+        H:       Observation matrix, shape [m, n] (constant, shared across batch).
+        R_pred:  Measurement noise covariance from Mamba, shape [B, m, m] (PSD).
+        eps:     Small diagonal regularisation for numerical stability.
+
+    Returns:
+        Scalar loss (mean over batch).
+    """
+    return _reduce_per_sample(
+        kalman_nll_per_sample(z_gt, x_pred, P_pred, H, R_pred, eps=eps),
+        sample_weights=sample_weights,
+    )
 
 
 def kalman_nis_per_sample(
@@ -198,6 +227,20 @@ def wrap_to_pi_torch(x: torch.Tensor) -> torch.Tensor:
     return x - 2.0 * math.pi * torch.round(x / (2.0 * math.pi))
 
 
+def wrapped_orientation_nll_per_sample(
+    pred_yaw: torch.Tensor,
+    gt_yaw: torch.Tensor,
+    r_ori: torch.Tensor,
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    pred = pred_yaw.squeeze(-1)
+    gt = gt_yaw.squeeze(-1)
+    diff = wrap_to_pi_torch(pred - gt)
+    var = torch.clamp(r_ori.squeeze(-1).squeeze(-1), min=eps)
+    per_sample = 0.5 * (torch.log(var) + diff.pow(2) / var)
+    return per_sample
+
+
 def wrapped_orientation_nll(
     pred_yaw: torch.Tensor,
     gt_yaw: torch.Tensor,
@@ -208,15 +251,20 @@ def wrapped_orientation_nll(
     """
     Wrapped Gaussian NLL on the circle using the runtime R_ori variance.
     """
+    return _reduce_per_sample(
+        wrapped_orientation_nll_per_sample(pred_yaw, gt_yaw, r_ori, eps=eps),
+        sample_weights=sample_weights,
+    )
+
+
+def circular_orientation_state_loss_per_sample(
+    pred_yaw: torch.Tensor,
+    gt_yaw: torch.Tensor,
+) -> torch.Tensor:
     pred = pred_yaw.squeeze(-1)
     gt = gt_yaw.squeeze(-1)
-    diff = wrap_to_pi_torch(pred - gt)
-    var = torch.clamp(r_ori.squeeze(-1).squeeze(-1), min=eps)
-    per_sample = 0.5 * (torch.log(var) + diff.pow(2) / var)
-    if sample_weights is None:
-        return per_sample.mean()
-    w = sample_weights / (sample_weights.sum() + 1e-8)
-    return (per_sample * w).sum()
+    per_sample = 1.0 - torch.cos(wrap_to_pi_torch(pred - gt))
+    return per_sample
 
 
 def circular_orientation_state_loss(
@@ -224,13 +272,10 @@ def circular_orientation_state_loss(
     gt_yaw: torch.Tensor,
     sample_weights: torch.Tensor = None,
 ) -> torch.Tensor:
-    pred = pred_yaw.squeeze(-1)
-    gt = gt_yaw.squeeze(-1)
-    per_sample = 1.0 - torch.cos(wrap_to_pi_torch(pred - gt))
-    if sample_weights is None:
-        return per_sample.mean()
-    w = sample_weights / (sample_weights.sum() + 1e-8)
-    return (per_sample * w).sum()
+    return _reduce_per_sample(
+        circular_orientation_state_loss_per_sample(pred_yaw, gt_yaw),
+        sample_weights=sample_weights,
+    )
 
 
 def orientation_saturation_penalty(
@@ -384,6 +429,7 @@ class StatePredictionLoss(nn.Module):
         class_ids: torch.Tensor = None,     # [B]
         class_weights: torch.Tensor = None,  # [C]
         use_wrapped_orientation_nll: bool = False,
+        return_per_sample: bool = False,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
         Returns:
@@ -397,75 +443,91 @@ class StatePredictionLoss(nn.Module):
             sample_weights = sample_weights / (sample_weights.mean() + 1e-8)
 
         # Position: Kalman NLL (on xyz sub-block)
-        loss_pos = kalman_nll_loss(
+        loss_pos_per_sample = kalman_nll_per_sample(
             z_gt=gt_next_pos,
             x_pred=pos_x_pred,
             P_pred=pos_P_pred,
             H=self.H_pos,
             R_pred=R_pos[:, :3, :3],  # [B,3,3] position sub-block of [B,5,5] R_pos
-            sample_weights=sample_weights,
         )
+        loss_pos = _reduce_per_sample(loss_pos_per_sample, sample_weights=sample_weights)
 
         # Velocity: Kalman NLL (on vx,vy sub-block).
         # GT velocity is approximated from initial GT (constant-vel assumption
         # over short rollouts). NaN guard prevents one bad batch from crashing training.
         loss_vel_val = 0.0
+        loss_vel_per_sample = torch.zeros_like(loss_pos_per_sample)
         if gt_next_vel is not None and self.w_vel > 0:
-            loss_vel = kalman_nll_loss(
+            loss_vel_candidate_per_sample = kalman_nll_per_sample(
                 z_gt=gt_next_vel,
                 x_pred=pos_x_pred,
                 P_pred=pos_P_pred,
                 H=self.H_vel,
                 R_pred=R_pos[:, 3:5, 3:5],  # [B,2,2] velocity sub-block
-                sample_weights=sample_weights,
             )
+            loss_vel = _reduce_per_sample(loss_vel_candidate_per_sample, sample_weights=sample_weights)
             if not torch.isnan(loss_vel) and not torch.isinf(loss_vel):
+                loss_vel_per_sample = loss_vel_candidate_per_sample
                 loss_pos = loss_pos + self.w_vel * loss_vel
                 loss_vel_val = loss_vel.item()
 
         # Size: Kalman NLL
-        loss_siz = kalman_nll_loss(
+        loss_siz_per_sample = kalman_nll_per_sample(
             z_gt=gt_next_siz,
             x_pred=siz_x_pred,
             P_pred=siz_P_pred,
             H=self.H_siz,
             R_pred=R_siz,
-            sample_weights=sample_weights,
         )
+        loss_siz = _reduce_per_sample(loss_siz_per_sample, sample_weights=sample_weights)
 
         # Orientation loss:
         # - legacy path: hard switch by in_warmup
         # - smooth path: ori_nll_alpha in [0,1], blends angle -> Von Mises NLL
-        loss_ori_angle = circular_orientation_state_loss(
+        loss_ori_angle_per_sample = circular_orientation_state_loss_per_sample(
             pred_yaw=ori_x_pred[:, 0:1, 0],
             gt_yaw=gt_next_ori,
+        )
+        loss_ori_angle = _reduce_per_sample(
+            loss_ori_angle_per_sample,
             sample_weights=sample_weights,
         )
 
-        loss_ori_wrapped = wrapped_orientation_nll(
+        loss_ori_wrapped_per_sample = wrapped_orientation_nll_per_sample(
             pred_yaw=ori_x_pred[:, 0:1, 0],
             gt_yaw=gt_next_ori,
             r_ori=R_ori,
+        )
+        loss_ori_wrapped = _reduce_per_sample(
+            loss_ori_wrapped_per_sample,
             sample_weights=sample_weights,
         )
 
         if use_wrapped_orientation_nll:
             loss_ori_vm = torch.tensor(0.0, device=pos_x_pred.device)
+            loss_ori_vm_per_sample = torch.zeros_like(loss_ori_wrapped_per_sample)
             loss_ori = loss_ori_wrapped
+            loss_ori_per_sample = loss_ori_wrapped_per_sample
         else:
-            loss_ori_vm = von_mises_loss(
+            loss_ori_vm_per_sample = von_mises_loss_per_sample(
                 pred_yaw=ori_x_pred[:, 0, 0],
                 gt_yaw=gt_next_ori,
                 kappa=kappa_ori,
-                sample_weights=sample_weights,
             )
+            loss_ori_vm = _reduce_per_sample(loss_ori_vm_per_sample, sample_weights=sample_weights)
             if ori_nll_alpha is None:
                 loss_ori = loss_ori_angle if in_warmup else loss_ori_vm
+                loss_ori_per_sample = loss_ori_angle_per_sample if in_warmup else loss_ori_vm_per_sample
             else:
                 alpha = float(max(0.0, min(1.0, ori_nll_alpha)))
                 loss_ori = (1.0 - alpha) * loss_ori_angle + alpha * loss_ori_vm
+                loss_ori_per_sample = (
+                    (1.0 - alpha) * loss_ori_angle_per_sample
+                    + alpha * loss_ori_vm_per_sample
+                )
 
         loss_nis = torch.tensor(0.0, device=pos_x_pred.device)
+        loss_nis_per_sample = torch.zeros_like(loss_pos_per_sample)
         if self.w_nis > 0:
             nis_pos = kalman_nis_per_sample(
                 z_gt=gt_next_pos, x_pred=pos_x_pred, P_pred=pos_P_pred,
@@ -503,12 +565,19 @@ class StatePredictionLoss(nn.Module):
             )
 
             nis_stack = torch.stack(nis_terms, dim=0).mean(dim=0)  # [B]
+            loss_nis_per_sample = nis_stack
             if sample_weights is None:
                 loss_nis = nis_stack.mean()
             else:
                 w = sample_weights / (sample_weights.sum() + 1e-8)
                 loss_nis = (nis_stack * w).sum()
 
+        loss_state_per_sample = (
+            self.w_pos * (loss_pos_per_sample + self.w_vel * loss_vel_per_sample)
+            + self.w_siz * loss_siz_per_sample
+            + self.w_ori * loss_ori_per_sample
+            + self.w_nis * loss_nis_per_sample
+        )
         loss = (
             self.w_pos * loss_pos
             + self.w_siz * loss_siz
@@ -530,6 +599,18 @@ class StatePredictionLoss(nn.Module):
             "loss_ori_vm_tensor": loss_ori_vm,
             "loss_ori_tensor": loss_ori,
         }
+        if return_per_sample:
+            detail.update({
+                "loss_state_per_sample": loss_state_per_sample,
+                "_loss_pos_per_sample": loss_pos_per_sample,
+                "_loss_vel_per_sample": loss_vel_per_sample,
+                "_loss_siz_per_sample": loss_siz_per_sample,
+                "_loss_ori_state_per_sample": loss_ori_angle_per_sample,
+                "_loss_ori_wrapped_per_sample": loss_ori_wrapped_per_sample,
+                "_loss_ori_vm_per_sample": loss_ori_vm_per_sample,
+                "_loss_ori_per_sample": loss_ori_per_sample,
+                "_loss_nis_per_sample": loss_nis_per_sample,
+            })
         return loss, detail
 
 
@@ -672,6 +753,7 @@ class JointLoss(nn.Module):
         ori_nll_alpha: float = None,
         class_ids: torch.Tensor = None,  # [B]
         use_wrapped_orientation_nll: bool = False,
+        return_per_sample: bool = False,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
         Returns:
@@ -697,6 +779,7 @@ class JointLoss(nn.Module):
             class_ids=class_ids,
             class_weights=class_weights_tensor,
             use_wrapped_orientation_nll=use_wrapped_orientation_nll,
+            return_per_sample=return_per_sample,
         )
 
         # Contrastive loss only on step 0 (embeddings not None).
@@ -718,4 +801,8 @@ class JointLoss(nn.Module):
             "loss_state": loss_state.item(),
             "loss_total": loss_total.item(),
         }
+        if return_per_sample:
+            detail["loss_total_per_sample"] = (
+                self.physics_scale * detail_state["loss_state_per_sample"]
+            )
         return loss_total, detail

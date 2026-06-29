@@ -50,6 +50,18 @@ class ClassStateMetricTest(unittest.TestCase):
         self.assertAlmostEqual(out["class_2/matched/loss_real"], 10.0)
         self.assertAlmostEqual(out["class_2/matched/q_pos_ratio_mean"], 4.0)
 
+    def test_metric_accumulator_skips_missing_values(self):
+        acc = init_class_state_metric_accumulator()
+        update_class_state_metric_accumulator(
+            acc,
+            class_ids=[2, 2, 2],
+            state_buckets=["matched", "matched", "matched"],
+            metrics={"loss_real": [3.0, None, float("nan")]},
+        )
+        out = finalize_class_state_metric_accumulator(acc)
+        self.assertEqual(out["class_2/matched/count"], 3)
+        self.assertAlmostEqual(out["class_2/matched/loss_real"], 3.0)
+
 
 if __name__ == "__main__":
     unittest.main()

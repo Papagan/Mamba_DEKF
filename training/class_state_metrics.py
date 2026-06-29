@@ -1,5 +1,7 @@
 """Lightweight class/state metric aggregation utilities."""
 
+import math
+
 
 def class_state_bucket_key(class_id, state_bucket) -> str:
     return f"class_{int(class_id)}/{str(state_bucket)}"
@@ -26,7 +28,12 @@ def update_class_state_metric_accumulator(acc: dict, *, class_ids, state_buckets
             value = values[idx]
             if hasattr(value, "item"):
                 value = value.item()
-            bucket["sums"][metric_name] = bucket["sums"].get(metric_name, 0.0) + float(value)
+            if value is None:
+                continue
+            value = float(value)
+            if math.isnan(value):
+                continue
+            bucket["sums"][metric_name] = bucket["sums"].get(metric_name, 0.0) + value
             bucket["metric_counts"][metric_name] = bucket["metric_counts"].get(metric_name, 0) + 1
 
 

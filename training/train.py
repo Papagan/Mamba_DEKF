@@ -465,6 +465,7 @@ def training_step(
     vel_warmup_epochs: int = 3,
     train_noise_audit: NoiseAuditAccumulator = None,
     filter_mode: str = "mamba",
+    emit_sample_metrics: bool = False,
 ) -> tuple:
     """
     Multi-step KF rollout training with noisy teacher forcing.
@@ -760,6 +761,8 @@ def training_step(
     detail_contrastive = {"loss_contrastive": 0.0, "n_valid_anchors": 0}
     total_weight = 0.0
     total_aux_loss_tensor = torch.zeros((), device=device, dtype=history.dtype)
+    sample_loss_sum = torch.zeros(B, device=device, dtype=history.dtype)
+    sample_loss_count = torch.zeros(B, device=device, dtype=history.dtype)
 
     # Accumulate loss tensors across rollout steps for proper gradient flow.
     for k in range(K):
@@ -793,6 +796,7 @@ def training_step(
             ori_nll_alpha=unfreeze_alpha,
             class_ids=class_ids[active_k],
             use_wrapped_orientation_nll=use_closure_loss_path,
+            return_per_sample=emit_sample_metrics,
         )
 
         if use_closure_loss_path:
@@ -808,6 +812,21 @@ def training_step(
             detail_k["loss_state"] = detail_k["loss_state"] + ori_delta_tensor.item()
             detail_k["loss_total"] = loss_k.item()
             detail_k["loss_ori_curriculum"] = blended_ori_tensor.item()
+            if emit_sample_metrics and "loss_total_per_sample" in detail_k:
+                blended_ori_per_sample = (
+                    ori_state_weight * detail_k["_loss_ori_state_per_sample"]
+                    + ori_wrapped_weight * detail_k["_loss_ori_wrapped_per_sample"]
+                ) / ori_curriculum_weight_sum
+                ori_delta_per_sample = (
+                    blended_ori_per_sample - detail_k["_loss_ori_wrapped_per_sample"]
+                ) * float(loss_fn.state_loss.w_ori)
+                detail_k["loss_state_per_sample"] = (
+                    detail_k["loss_state_per_sample"] + ori_delta_per_sample
+                )
+                detail_k["loss_total_per_sample"] = (
+                    detail_k["loss_total_per_sample"]
+                    + loss_fn.physics_scale * ori_delta_per_sample
+                )
 
             aux_pos = F.huber_loss(
                 pos_x_pred[active_k, 0:3, 0],
@@ -833,6 +852,14 @@ def training_step(
             detail_accum["loss_aux_siz"] = detail_accum.get("loss_aux_siz", 0.0) + aux_siz.item() * step_weight
             detail_accum["loss_aux_ori"] = detail_accum.get("loss_aux_ori", 0.0) + aux_ori.item() * step_weight
             detail_accum["loss_aux_total"] = detail_accum.get("loss_aux_total", 0.0) + aux_loss_k.item() * step_weight
+
+        if emit_sample_metrics:
+            sample_loss_k = detail_k.get("loss_total_per_sample", detail_k.get("loss_state_per_sample"))
+            if sample_loss_k is not None:
+                # Class selection uses sample-local physics state loss only.
+                # Contrastive and scalar/global regularizers are batch-dependent and excluded.
+                sample_loss_sum[active_k] = sample_loss_sum[active_k] + sample_loss_k.detach()
+                sample_loss_count[active_k] = sample_loss_count[active_k] + 1.0
 
         total_state_loss += detail_k["loss_state"] * step_weight   # for logging only
         if k == 0:
@@ -1002,6 +1029,14 @@ def training_step(
     detail["effective_rollout_weight"] = float(total_weight)
     detail["_class_ids"] = [int(v.item()) for v in class_ids.detach().cpu()]
     detail["_state_buckets"] = list(state_buckets)
+    if emit_sample_metrics:
+        sample_loss_avg = torch.where(
+            sample_loss_count > 0,
+            sample_loss_sum / torch.clamp(sample_loss_count, min=1.0),
+            torch.zeros_like(sample_loss_sum),
+        )
+        detail["_sample_loss_real"] = sample_loss_avg.detach().cpu().tolist()
+        detail["_sample_loss_real_valid"] = (sample_loss_count > 0).detach().cpu().tolist()
     if use_closure_loss_path and "ratios" in mamba_out:
         ratios = mamba_out.get("ratios") or {}
         for ratio_name in ["q_pos_xyz", "q_pos_vxyz", "r_pos_xyz", "r_pos_vxy", "r_siz_lw", "r_siz_h", "r_ori"]:
@@ -1033,11 +1068,19 @@ def validate(
     for batch in val_loader:
         _, detail = training_step(mamba, batch, loss_fn, device, noise_cfg, base_noise_cfg,
                                   epoch=999, warmup_epochs=0, transition_epochs=0,
-                                  filter_mode=filter_mode)  # fully unfrozen
+                                  filter_mode=filter_mode,
+                                  emit_sample_metrics=True)  # fully unfrozen
         class_ids_detail = detail.get("_class_ids")
         state_buckets_detail = detail.get("_state_buckets")
         if class_ids_detail is not None and state_buckets_detail is not None:
             per_sample_metrics = {}
+            if "_sample_loss_real" in detail:
+                loss_values = detail["_sample_loss_real"]
+                loss_valid = detail.get("_sample_loss_real_valid", [True] * len(loss_values))
+                per_sample_metrics["loss_real"] = [
+                    value if valid else None
+                    for value, valid in zip(loss_values, loss_valid)
+                ]
             for name in ["q_pos_xyz", "q_pos_vxyz", "r_pos_xyz", "r_pos_vxy", "r_siz_lw", "r_siz_h", "r_ori"]:
                 sample_key = f"_sample_{name}"
                 if sample_key in detail:
