@@ -1000,6 +1000,13 @@ def training_step(
     detail["loss_real"] = real_loss.item()
     detail["unfreeze_alpha"] = unfreeze_alpha
     detail["effective_rollout_weight"] = float(total_weight)
+    detail["_class_ids"] = [int(v.item()) for v in class_ids.detach().cpu()]
+    detail["_state_buckets"] = list(state_buckets)
+    if use_closure_loss_path and "ratios" in mamba_out:
+        ratios = mamba_out.get("ratios") or {}
+        for ratio_name in ["q_pos_xyz", "q_pos_vxyz", "r_pos_xyz", "r_pos_vxy", "r_siz_lw", "r_siz_h", "r_ori"]:
+            if ratio_name in ratios:
+                detail[f"_sample_{ratio_name}"] = ratios[ratio_name].detach().view(-1).cpu().tolist()
     return real_loss, detail
 
 
@@ -1020,20 +1027,43 @@ def validate(
     """Run validation and return average losses."""
     mamba.eval()
     totals = {}
+    class_state_acc = init_class_state_metric_accumulator()
     n_batches = 0
 
     for batch in val_loader:
         _, detail = training_step(mamba, batch, loss_fn, device, noise_cfg, base_noise_cfg,
                                   epoch=999, warmup_epochs=0, transition_epochs=0,
                                   filter_mode=filter_mode)  # fully unfrozen
+        class_ids_detail = detail.get("_class_ids")
+        state_buckets_detail = detail.get("_state_buckets")
+        if class_ids_detail is not None and state_buckets_detail is not None:
+            per_sample_metrics = {}
+            for name in ["q_pos_xyz", "q_pos_vxyz", "r_pos_xyz", "r_pos_vxy", "r_siz_lw", "r_siz_h", "r_ori"]:
+                sample_key = f"_sample_{name}"
+                if sample_key in detail:
+                    per_sample_metrics[f"{name}_mean"] = detail[sample_key]
+            if per_sample_metrics:
+                update_class_state_metric_accumulator(
+                    class_state_acc,
+                    class_ids=class_ids_detail,
+                    state_buckets=state_buckets_detail,
+                    metrics=per_sample_metrics,
+                )
         for k, v in detail.items():
+            if str(k).startswith("_"):
+                continue
             totals[k] = totals.get(k, 0.0) + v
         n_batches += 1
 
     mamba.train()
     if n_batches == 0:
         return {}
-    return {k: v / n_batches for k, v in totals.items()}
+    averaged = {k: v / n_batches for k, v in totals.items() if not str(k).startswith("_")}
+    averaged.update({
+        f"class_state/{k}": v
+        for k, v in finalize_class_state_metric_accumulator(class_state_acc).items()
+    })
+    return averaged
 
 
 # ======================================================================
@@ -1443,6 +1473,8 @@ def main():
 
             epoch_loss += detail["loss_total"]
             for k, v in detail.items():
+                if str(k).startswith("_"):
+                    continue
                 epoch_detail[k] = epoch_detail.get(k, 0.0) + v
             n_batches += 1
 
