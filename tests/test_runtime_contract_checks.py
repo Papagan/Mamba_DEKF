@@ -117,6 +117,39 @@ class RuntimeContractChecksTest(unittest.TestCase):
         self.assertTrue(any("history_source=fusion" in warning for warning in explicit_warnings))
         self.assertTrue(any("init_state_source=fusion" in warning for warning in explicit_warnings))
 
+    def test_warns_on_closure_conditional_prior_mismatch(self):
+        helpers = _load_functions(
+            REPO_ROOT / "tracker" / "base_tracker.py",
+            [
+                "build_runtime_contract_warnings",
+            ],
+        )
+        build_runtime_contract_warnings = helpers["build_runtime_contract_warnings"]
+
+        warnings = build_runtime_contract_warnings(
+            runtime_contract={
+                "tracker_compat_mode": "mctrack",
+                "filter_mode": "mamba_multihead_closure",
+                "expected_bev_cost_mode": "geometric",
+                "closure_use_conditional_prior": True,
+                "closure_force_prior_states": ["matched"],
+                "closure_active_class_states": {2: ["unmatched"]},
+            },
+            tracker_compat_mode="mctrack",
+            filter_mode="mamba_multihead_closure",
+            current_cost_mode="geometric",
+            current_history_source="fusion",
+            current_init_state_source="fusion",
+            current_closure_cfg={
+                "USE_CONDITIONAL_PRIOR": False,
+                "FORCE_PRIOR_STATES": ["matched", "unmatched"],
+                "ACTIVE_CLASS_STATES": {},
+            },
+        )
+        self.assertTrue(any("closure_use_conditional_prior" in item for item in warnings))
+        self.assertTrue(any("closure_force_prior_states" in item for item in warnings))
+        self.assertTrue(any("closure_active_class_states" in item for item in warnings))
+
     def test_training_runtime_contract_filter_mode_never_persists_invalid_mode(self):
         helpers = _load_functions(
             REPO_ROOT / "training" / "train.py",

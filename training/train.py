@@ -1446,6 +1446,7 @@ def main():
 
     # ---- Training loop ----
     best_val_loss = float("inf")
+    closure_runtime_cfg = (cfg.get("BASE_NOISE", {}) or {}).get("MAMBA_CLOSURE", {}) or {}
     runtime_contract = {
         "tracker_compat_mode": train_tracker_compat_mode,
         "history_source": history_source,
@@ -1456,6 +1457,10 @@ def main():
         "train_source": train_source,
         "val_source": val_source,
         "expected_bev_cost_mode": str(data_cfg.get("EXPECTED_BEV_COST_MODE", "geometric")).strip().lower(),
+        "closure_use_conditional_prior": bool(closure_runtime_cfg.get("USE_CONDITIONAL_PRIOR", True)),
+        "closure_force_prior_states": list(closure_runtime_cfg.get("FORCE_PRIOR_STATES", ["matched"])),
+        "closure_active_class_states": dict(closure_runtime_cfg.get("ACTIVE_CLASS_STATES", {}) or {}),
+        "closure_train_all_class_states": bool(closure_runtime_cfg.get("TRAIN_ALL_CLASS_STATES", False)),
     }
     train_filter_mode = runtime_contract["filter_mode"]
     train_noise_audit_cfg = _build_noise_audit_cfg(cfg)

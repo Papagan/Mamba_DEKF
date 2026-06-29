@@ -128,7 +128,18 @@ def build_runtime_contract_warnings(
     current_cost_mode,
     current_history_source=None,
     current_init_state_source=None,
+    current_closure_cfg=None,
 ):
+    def _normalize_state_list(values):
+        return [str(value).strip().lower() for value in (values or [])]
+
+    def _normalize_class_state_map(values):
+        out = {}
+        for key, states in (values or {}).items():
+            class_key = str(int(key)) if str(key).strip().lstrip("-").isdigit() else str(key).strip()
+            out[class_key] = _normalize_state_list(states)
+        return out
+
     tracker_compat_mode = (
         "default" if tracker_compat_mode is None else str(tracker_compat_mode).strip().lower()
     )
@@ -158,6 +169,7 @@ def build_runtime_contract_warnings(
     expected_filter_mode = str(
         runtime_contract.get("filter_mode", filter_mode)
     ).strip().lower()
+    current_closure_cfg = current_closure_cfg or {}
 
     warnings = []
     if expected_compat != tracker_compat_mode:
@@ -202,6 +214,30 @@ def build_runtime_contract_warnings(
             f"{filter_mode}. Results may degrade due to mismatched "
             "Mamba/KF inference behavior."
         )
+    if "closure_use_conditional_prior" in runtime_contract:
+        expected = bool(runtime_contract.get("closure_use_conditional_prior"))
+        current = bool(current_closure_cfg.get("USE_CONDITIONAL_PRIOR", True))
+        if expected != current:
+            warnings.append(
+                "[Base3DTracker] WARNING: checkpoint runtime_contract "
+                f"closure_use_conditional_prior={expected}, but current config uses {current}."
+            )
+    if "closure_force_prior_states" in runtime_contract:
+        expected = _normalize_state_list(runtime_contract.get("closure_force_prior_states"))
+        current = _normalize_state_list(current_closure_cfg.get("FORCE_PRIOR_STATES", ["matched"]))
+        if expected != current:
+            warnings.append(
+                "[Base3DTracker] WARNING: checkpoint runtime_contract "
+                f"closure_force_prior_states={expected}, but current config uses {current}."
+            )
+    if "closure_active_class_states" in runtime_contract:
+        expected = _normalize_class_state_map(runtime_contract.get("closure_active_class_states"))
+        current = _normalize_class_state_map(current_closure_cfg.get("ACTIVE_CLASS_STATES", {}) or {})
+        if expected != current:
+            warnings.append(
+                "[Base3DTracker] WARNING: checkpoint runtime_contract "
+                f"closure_active_class_states={expected}, but current config uses {current}."
+            )
     return warnings
 
 
@@ -431,6 +467,7 @@ class Base3DTracker:
                         current_cost_mode=current_cost_mode,
                         current_history_source=self.cfg.get("HISTORY_SOURCE", None),
                         current_init_state_source=self.cfg.get("INIT_STATE_SOURCE", None),
+                        current_closure_cfg=(self.cfg.get("DEKF_BASE_NOISE", {}) or {}).get("MAMBA_CLOSURE", {}),
                     ):
                         print(warning)
             else:
