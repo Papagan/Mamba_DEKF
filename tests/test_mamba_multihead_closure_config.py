@@ -55,16 +55,6 @@ class MambaMultiheadClosureConfigTest(unittest.TestCase):
         self.assertTrue(cfg["AUDIT"]["NOISE_AUDIT"]["ENABLED"])
         self.assertEqual(cfg["DEKF_BASE_NOISE"]["MAMBA_CLOSURE"]["MODE"], "prior_conditioned_multihead")
 
-    def test_eval_closure_config_first_forces_all_states_to_prior(self):
-        cfg = yaml.safe_load(
-            (REPO_ROOT / "config" / "nuscenes_single_stage_mctrack_exact_noise_hybrid_mamba_multihead_closure.yaml")
-            .read_text(encoding="utf-8")
-        )
-        closure_cfg = cfg["DEKF_BASE_NOISE"]["MAMBA_CLOSURE"]
-        self.assertFalse(closure_cfg["USE_CONDITIONAL_PRIOR"])
-        self.assertEqual(closure_cfg["FORCE_PRIOR_STATES"], ["matched", "unmatched"])
-        self.assertEqual(closure_cfg["ACTIVE_CLASS_STATES"], {})
-
     def test_eval_closure_config_is_all_prior_equivalence_guard(self):
         cfg = yaml.safe_load(
             (REPO_ROOT / "config" / "nuscenes_single_stage_mctrack_exact_noise_hybrid_mamba_multihead_closure.yaml")
