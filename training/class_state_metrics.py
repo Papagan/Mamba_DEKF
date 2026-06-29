@@ -47,3 +47,30 @@ def finalize_class_state_metric_accumulator(acc: dict) -> dict:
             denom = max(int(metric_counts.get(metric_name, count)), 1)
             out[f"{key}/{metric_name}"] = float(total) / float(denom)
     return out
+
+
+def extract_class_validation_losses(avg_val: dict, *, min_samples: int = 1) -> dict:
+    class_totals = {}
+    class_counts = {}
+    prefix = "class_state/class_"
+    for key, value in avg_val.items():
+        if not str(key).startswith(prefix) or not str(key).endswith("/loss_real"):
+            continue
+        parts = str(key).split("/")
+        if len(parts) != 4:
+            continue
+        class_id = int(parts[1].replace("class_", ""))
+        state = parts[2]
+        count_key = f"class_state/class_{class_id}/{state}/count"
+        count = int(avg_val.get(count_key, 0))
+        if count <= 0:
+            continue
+        class_totals[class_id] = class_totals.get(class_id, 0.0) + float(value) * count
+        class_counts[class_id] = class_counts.get(class_id, 0) + count
+
+    out = {}
+    for class_id, total in class_totals.items():
+        count = class_counts.get(class_id, 0)
+        if count >= int(min_samples):
+            out[class_id] = total / float(count)
+    return out

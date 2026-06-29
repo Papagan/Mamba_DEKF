@@ -73,6 +73,7 @@ from training.class_state_metrics import (
     init_class_state_metric_accumulator,
     update_class_state_metric_accumulator,
     finalize_class_state_metric_accumulator,
+    extract_class_validation_losses,
 )
 
 logger = logging.getLogger("train")
@@ -1458,6 +1459,8 @@ def main():
     }
     train_filter_mode = runtime_contract["filter_mode"]
     train_noise_audit_cfg = _build_noise_audit_cfg(cfg)
+    best_class_val_loss = {}
+    per_class_min_samples = int(train_cfg.get("PER_CLASS_BEST_MIN_SAMPLES", 16))
 
     for epoch in range(start_epoch, epochs):
         mamba.train()
@@ -1605,6 +1608,27 @@ def main():
 
         # ---- Checkpoint ----
         val_total = avg_val.get("loss_real", avg_val.get("loss_total", float("inf")))
+        class_val_losses = extract_class_validation_losses(
+            avg_val,
+            min_samples=per_class_min_samples,
+        )
+        for class_id, class_loss in sorted(class_val_losses.items()):
+            prev = best_class_val_loss.get(class_id, float("inf"))
+            if class_loss < prev:
+                best_class_val_loss[class_id] = class_loss
+                class_path = os.path.join(save_dir, f"best_class_{class_id}.pt")
+                torch.save({
+                    "epoch": epoch,
+                    "class_id": class_id,
+                    "model_state_dict": mamba.state_dict(),
+                    "val_loss": avg_val,
+                    "class_val_loss": class_loss,
+                    "runtime_contract": runtime_contract,
+                }, class_path)
+                logger.info(
+                    f"  New best class {class_id} model -> {class_path} "
+                    f"(class_val_loss={class_loss:.4f})"
+                )
 
         if (epoch + 1) % save_every == 0 or val_total < best_val_loss:
             ckpt_path = os.path.join(save_dir, f"checkpoint_epoch{epoch+1}.pt")

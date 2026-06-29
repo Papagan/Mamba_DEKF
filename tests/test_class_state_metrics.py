@@ -5,6 +5,7 @@ from training.class_state_metrics import (
     init_class_state_metric_accumulator,
     update_class_state_metric_accumulator,
     finalize_class_state_metric_accumulator,
+    extract_class_validation_losses,
 )
 
 
@@ -61,6 +62,21 @@ class ClassStateMetricTest(unittest.TestCase):
         out = finalize_class_state_metric_accumulator(acc)
         self.assertEqual(out["class_2/matched/count"], 3)
         self.assertAlmostEqual(out["class_2/matched/loss_real"], 3.0)
+
+
+class ClassCheckpointSelectionTest(unittest.TestCase):
+    def test_extract_class_validation_losses_uses_weighted_state_average(self):
+        avg_val = {
+            "class_state/class_2/matched/loss_real": 4.0,
+            "class_state/class_2/matched/count": 1,
+            "class_state/class_2/unmatched/loss_real": 2.0,
+            "class_state/class_2/unmatched/count": 3,
+            "class_state/class_5/unmatched/loss_real": 10.0,
+            "class_state/class_5/unmatched/count": 2,
+        }
+        losses = extract_class_validation_losses(avg_val, min_samples=2)
+        self.assertAlmostEqual(losses[2], 2.5)
+        self.assertAlmostEqual(losses[5], 10.0)
 
 
 if __name__ == "__main__":
