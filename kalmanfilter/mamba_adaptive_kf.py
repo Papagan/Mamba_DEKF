@@ -1173,6 +1173,8 @@ class TemporalMamba(nn.Module):
             if self.base_noise_cfg is None:
                 raise ValueError("mamba_multihead_closure requires base_noise_cfg priors")
 
+            closure_cfg = self.base_noise_cfg.get("MAMBA_CLOSURE", {})
+            use_conditional_prior = bool(closure_cfg.get("USE_CONDITIONAL_PRIOR", True))
             # Closure mode may use residual tokens as the Mamba input while still
             # conditioning the prior covariances on the runtime state history.
             conditioning_history = (
@@ -1183,15 +1185,17 @@ class TemporalMamba(nn.Module):
                 class_ids=class_ids,
                 dtype=h_last.dtype,
                 device=dev,
-                track_history=conditioning_history,
-                current_range=current_range,
-                detection_driven_mask=detection_driven_mask,
-                history_mask=prior_history_mask if prior_history_mask is not None else history_mask,
+                track_history=conditioning_history if use_conditional_prior else None,
+                current_range=current_range if use_conditional_prior else None,
+                detection_driven_mask=detection_driven_mask if use_conditional_prior else None,
+                history_mask=(
+                    prior_history_mask if prior_history_mask is not None else history_mask
+                ) if use_conditional_prior else None,
                 history_match_mask=(
                     prior_history_match_mask
                     if prior_history_match_mask is not None
                     else history_match_mask
-                ),
+                ) if use_conditional_prior else None,
             )
             ratios = self.head_bank(h_last, class_ids)
             if apply_force_prior:
@@ -1199,7 +1203,7 @@ class TemporalMamba(nn.Module):
                     ratios,
                     class_ids=class_ids,
                     state_buckets=state_buckets,
-                    closure_cfg=self.base_noise_cfg.get("MAMBA_CLOSURE", {}),
+                    closure_cfg=closure_cfg,
                 )
             Q_pos = apply_factorized_ratio_to_q_pos(prior_cov["Q_pos_base"], ratios)
             R_pos = apply_factorized_ratio_to_r_pos(prior_cov["R_pos_base"], ratios)
@@ -1214,7 +1218,7 @@ class TemporalMamba(nn.Module):
                 force_prior_mask = build_force_prior_mask(
                     class_ids=class_ids,
                     state_buckets=state_buckets,
-                    closure_cfg=self.base_noise_cfg.get("MAMBA_CLOSURE", {}),
+                    closure_cfg=closure_cfg,
                     device=dev,
                 )
                 if force_prior_mask is not None and bool(force_prior_mask.any().item()):

@@ -53,6 +53,7 @@ class MambaMultiheadClosureConfigTest(unittest.TestCase):
             .read_text(encoding="utf-8")
         )
         closure_cfg = cfg["DEKF_BASE_NOISE"]["MAMBA_CLOSURE"]
+        self.assertFalse(closure_cfg["USE_CONDITIONAL_PRIOR"])
         self.assertEqual(closure_cfg["FORCE_PRIOR_STATES"], ["matched", "unmatched"])
         self.assertEqual(closure_cfg["ACTIVE_CLASS_STATES"], {})
 

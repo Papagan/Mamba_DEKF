@@ -176,6 +176,7 @@ DEKF_BASE_NOISE:
   MAMBA_CLOSURE:
     ENABLED: true
     MODE: prior_conditioned_multihead
+    USE_CONDITIONAL_PRIOR: false
     FORCE_COAST_PRIOR_ONLY: true
     FORCE_PRIOR_STATES: ["matched", "unmatched"]
     # Conservative rollout gate:
