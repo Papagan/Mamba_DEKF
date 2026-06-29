@@ -211,11 +211,11 @@ BASE_NOISE:
   MAMBA_CLOSURE:
     ENABLED: true
     MODE: prior_conditioned_multihead
+    USE_CONDITIONAL_PRIOR: false
     FORCE_COAST_PRIOR_ONLY: true
     FORCE_PRIOR_STATES: ["matched"]
-    ACTIVE_CLASS_STATES:
-      2: ["unmatched"]   # bicycle
-      3: ["unmatched"]   # motorcycle
+    TRAIN_ALL_CLASS_STATES: true
+    ACTIVE_CLASS_STATES: {}
     TRAIN_MATCHED_HEAD:
       ENABLED: true
     MATCHED_KF_BAND:
