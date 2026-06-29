@@ -1,6 +1,6 @@
 import unittest
 
-from training.train import (
+from training.class_state_metrics import (
     class_state_bucket_key,
     init_class_state_metric_accumulator,
     update_class_state_metric_accumulator,
@@ -30,6 +30,25 @@ class ClassStateMetricTest(unittest.TestCase):
         self.assertAlmostEqual(out["class_2/unmatched/q_pos_ratio_mean"], 1.2)
         self.assertEqual(out["class_5/matched/count"], 1)
         self.assertAlmostEqual(out["class_5/matched/loss_real"], 9.0)
+
+    def test_metric_accumulator_uses_per_metric_counts(self):
+        acc = init_class_state_metric_accumulator()
+        update_class_state_metric_accumulator(
+            acc,
+            class_ids=[2],
+            state_buckets=["matched"],
+            metrics={"loss_real": [10.0]},
+        )
+        update_class_state_metric_accumulator(
+            acc,
+            class_ids=[2],
+            state_buckets=["matched"],
+            metrics={"q_pos_ratio_mean": [4.0]},
+        )
+        out = finalize_class_state_metric_accumulator(acc)
+        self.assertEqual(out["class_2/matched/count"], 2)
+        self.assertAlmostEqual(out["class_2/matched/loss_real"], 10.0)
+        self.assertAlmostEqual(out["class_2/matched/q_pos_ratio_mean"], 4.0)
 
 
 if __name__ == "__main__":
