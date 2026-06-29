@@ -176,6 +176,11 @@ DEKF_BASE_NOISE:
   MAMBA_CLOSURE:
     ENABLED: true
     MODE: prior_conditioned_multihead
+    # Regression guard:
+    # pure-DEKF baseline uses static _get_base_noise(); closure conditional
+    # priors use history-dependent scaling and caused AMOTA 0.739 -> 0.729
+    # even when all ratios were forced to 1. Keep false for baseline
+    # equivalence tests; enable only in explicit Mamba ablations.
     USE_CONDITIONAL_PRIOR: false
     FORCE_COAST_PRIOR_ONLY: true
     FORCE_PRIOR_STATES: ["matched", "unmatched"]
@@ -183,6 +188,7 @@ DEKF_BASE_NOISE:
     # first recover the 0.739 pure-DEKF baseline by forcing all closure ratios
     # to prior. Re-open class/state pairs only after this equivalence passes.
     ACTIVE_CLASS_STATES: {}
+
     RATIO_ANCHOR_WEIGHT: 0.02
     RATIO_BOUND_WEIGHT: 0.02
     RATIO_BOUND_LOWER_WEIGHT: 0.25
