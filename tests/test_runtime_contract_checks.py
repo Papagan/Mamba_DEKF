@@ -190,6 +190,9 @@ class RuntimeContractChecksTest(unittest.TestCase):
             "DataLoader": object,
             "TemporalMamba": object,
             "JointLoss": object,
+            "init_class_state_metric_accumulator": lambda: {},
+            "finalize_class_state_metric_accumulator": lambda acc: {},
+            "update_class_state_metric_accumulator": lambda *args, **kwargs: None,
         }
         seen = {}
 
