@@ -200,6 +200,7 @@ Notes:
   - `ORI_WRAPPED_NLL_WEIGHT`
   - `ORI_SATURATION_REG_WEIGHT`
   - `ORI_MAX_EFFECTIVE_KAPPA`
+- closure regression guardrails are documented in [docs/mamba_closure_regression_notes.md](/home/alvin/demo/Mamba-DEKF/docs/mamba_closure_regression_notes.md). In particular, baseline-equivalence eval must keep `USE_CONDITIONAL_PRIOR=false`, force both `matched` and `unmatched` to prior, and keep `ACTIVE_CLASS_STATES={}` before reopening Mamba gates.
 
 ### 5. Train Mamba
 
@@ -233,7 +234,22 @@ Training outputs:
 
 - periodic checkpoints in `checkpoints/mamba_dekf/`
 - best checkpoint in `checkpoints/mamba_dekf/best.pt`
+- per-class best checkpoints in `checkpoints/mamba_dekf/best_class_{id}.pt`
 - TensorBoard logs under the configured save directory
+
+### Class/State Closure Training
+
+The closure branch trains all seven class heads while inference remains all-prior by default. The training contract is:
+
+```yaml
+MAMBA_CLOSURE:
+  USE_CONDITIONAL_PRIOR: false
+  FORCE_PRIOR_STATES: ["matched"]
+  TRAIN_ALL_CLASS_STATES: true
+  ACTIVE_CLASS_STATES: {}
+```
+
+Per-class checkpoints are selected from class/state validation loss and saved as `best_class_{id}.pt`. Do not activate a class/state gate in eval until the all-prior closure config reproduces AMOTA `0.739`.
 
 ### 6. Evaluate on nuScenes
 
@@ -288,7 +304,9 @@ Recommended order:
 1. reproduce the frozen `0.739` baseline with `config/nuscenes_single_stage_mctrack_exact_noise_hybrid_dirty_suppressor_tuned.yaml`
 2. train with `config/train_nuscenes.yaml`
 3. run the audit config to inspect closure-branch noise behavior
-4. run the closure eval config and only promote the branch if `AMOTA > 0.740`
+4. run the all-prior closure eval config and confirm it still reproduces AMOTA `0.739`
+5. activate class/state gates one at a time, preferably from the corresponding `best_class_{id}.pt`
+6. only promote the branch if `AMOTA > 0.740`
 
 ## Suggested working commands
 
