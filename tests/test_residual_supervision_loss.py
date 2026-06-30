@@ -28,6 +28,15 @@ def _load_train_function(name):
 
 
 class ResidualSupervisionLossTest(unittest.TestCase):
+    def test_initial_pos_state_does_not_treat_yaw_residual_as_vz(self):
+        fn = _load_train_function("_build_initial_pos_state_with_residual")
+        obs_pos = torch.zeros(1, 6)
+        delta = torch.tensor([[[1.0], [2.0], [3.0], [4.0], [5.0], [9.0]]])
+
+        out = fn(obs_pos, delta)
+
+        self.assertEqual(out[0, :, 0].tolist(), [1.0, 2.0, 3.0, 4.0, 5.0, 0.0])
+
     def test_disabled_residual_supervision_returns_zero(self):
         fn = _load_train_function("_compute_residual_supervision_loss")
         delta = torch.ones(2, 6)

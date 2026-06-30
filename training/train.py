@@ -262,6 +262,16 @@ def _compute_residual_supervision_loss(
     return loss, detail
 
 
+def _build_initial_pos_state_with_residual(obs_pos, delta_pos):
+    # delta_pos layout for closure residual is [dx, dy, dz, dvx, dvy, dyaw].
+    # The sixth value supervises yaw residual and must not be injected as vz.
+    pos_delta = torch.cat(
+        [delta_pos[:, 0:5, :], torch.zeros_like(delta_pos[:, 5:6, :])],
+        dim=1,
+    )
+    return obs_pos.unsqueeze(-1) + pos_delta
+
+
 def _trace_covariance_batch(cov: torch.Tensor) -> torch.Tensor:
     return cov.diagonal(dim1=-2, dim2=-1).sum(-1)
 
@@ -707,7 +717,7 @@ def training_step(
     if epoch < warmup_epochs:
         delta_pos = delta_pos.detach()
 
-    pos_x0 = obs_pos.unsqueeze(-1) + delta_pos                       # [B, 6, 1]
+    pos_x0 = _build_initial_pos_state_with_residual(obs_pos, delta_pos)
     siz_x0 = obs_siz.unsqueeze(-1)                                   # [B, 3, 1]
     ori_x0 = obs_ori.unsqueeze(-1)                                   # [B, 2, 1]
 
