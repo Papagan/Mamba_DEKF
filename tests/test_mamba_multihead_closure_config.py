@@ -36,6 +36,17 @@ class MambaMultiheadClosureConfigTest(unittest.TestCase):
         self.assertEqual(closure_cfg["FORCE_PRIOR_STATES"], ["matched"])
         self.assertEqual(closure_cfg["ACTIVE_CLASS_STATES"], {})
 
+    def test_train_config_enables_residual_supervision_without_enabling_inference_residual(self):
+        cfg = yaml.safe_load((REPO_ROOT / "config" / "train_nuscenes.yaml").read_text(encoding="utf-8"))
+        residual_loss = cfg["LOSS"]["RESIDUAL_SUPERVISION"]
+        residual_runtime = cfg["BASE_NOISE"]["MAMBA_STATE_RESIDUAL"]
+        self.assertTrue(residual_loss["ENABLED"])
+        self.assertGreater(residual_loss["WEIGHT"], 0.0)
+        self.assertIn("W_POS_XY", residual_loss)
+        self.assertIn("W_YAW", residual_loss)
+        self.assertFalse(residual_runtime["ENABLED"])
+        self.assertEqual(residual_runtime["ACTIVE_CLASS_STATES"], {})
+
     def test_branch_config_keeps_frozen_baseline_path_separate(self):
         cfg = yaml.safe_load(
             (REPO_ROOT / "config" / "nuscenes_single_stage_mctrack_exact_noise_hybrid_mamba_multihead_closure.yaml")

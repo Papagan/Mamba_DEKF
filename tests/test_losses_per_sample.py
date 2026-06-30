@@ -6,6 +6,11 @@ from training.losses import JointLoss
 
 
 class LossesPerSampleTest(unittest.TestCase):
+    def test_joint_loss_stores_residual_supervision_config(self):
+        loss_fn = JointLoss(residual_supervision={"ENABLED": True, "WEIGHT": 0.2})
+        self.assertEqual(loss_fn.residual_supervision["ENABLED"], True)
+        self.assertAlmostEqual(loss_fn.residual_supervision["WEIGHT"], 0.2)
+
     def test_joint_loss_per_sample_mean_matches_scalar_without_weights_or_contrastive(self):
         torch.manual_seed(0)
         dtype = torch.float32

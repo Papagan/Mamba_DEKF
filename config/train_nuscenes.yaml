@@ -337,6 +337,13 @@ LOSS:
   LAMBDA_CONTRAST: 0.3
   INFONCE_TEMPERATURE: 0.07
   HARD_NEGATIVE_TOPK: 32
+  RESIDUAL_SUPERVISION:
+    ENABLED: true
+    WEIGHT: 0.20
+    W_POS_XY: 1.0
+    W_POS_Z: 0.3
+    W_VEL_XY: 0.5
+    W_YAW: 0.5
   # Class reweighting for hard/noisy categories:
   # [car, pedestrian, bicycle, motorcycle, bus, trailer, truck]
   CLASS_WEIGHTS: [1.0, 1.1, 2.5, 2.8, 1.2, 1.6, 1.2]

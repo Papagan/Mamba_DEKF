@@ -197,6 +197,71 @@ def _dump_train_noise_audit_if_needed(noise_audit, audit_cfg, logger_obj=None):
             print(message)
 
 
+def _compute_residual_supervision_loss(
+    delta_pos,
+    pos_x_pred,
+    ori_x_pred,
+    gt_next_pos,
+    gt_next_vel,
+    gt_next_ori,
+    active_mask,
+    cfg,
+):
+    cfg = cfg or {}
+    batch = delta_pos.shape[0]
+    zero = delta_pos.new_zeros(())
+    zero_per_sample = delta_pos.new_zeros(batch)
+    if not bool(cfg.get("ENABLED", False)):
+        return zero, {
+            "loss_residual": 0.0,
+            "loss_residual_pos": 0.0,
+            "loss_residual_vel": 0.0,
+            "loss_residual_yaw": 0.0,
+            "_loss_residual_per_sample": zero_per_sample,
+        }
+
+    active_mask = active_mask.to(device=delta_pos.device, dtype=torch.bool)
+    if not bool(active_mask.any().item()):
+        return zero, {
+            "loss_residual": 0.0,
+            "loss_residual_pos": 0.0,
+            "loss_residual_vel": 0.0,
+            "loss_residual_yaw": 0.0,
+            "_loss_residual_per_sample": zero_per_sample,
+        }
+
+    target = delta_pos.detach().new_zeros(delta_pos.shape)
+    target[:, 0:3] = (gt_next_pos - pos_x_pred[:, 0:3, 0]).detach()
+    target[:, 3:5] = (gt_next_vel - pos_x_pred[:, 3:5, 0]).detach()
+    target[:, 5] = wrap_to_pi_torch(
+        gt_next_ori[:, 0] - ori_x_pred[:, 0, 0]
+    ).detach()
+
+    def _component_loss(pred, tgt, weight):
+        if float(weight) <= 0.0:
+            return delta_pos.new_zeros(batch)
+        return float(weight) * F.smooth_l1_loss(pred, tgt, reduction="none").mean(dim=-1)
+
+    pos_xy_loss = _component_loss(delta_pos[:, 0:2], target[:, 0:2], cfg.get("W_POS_XY", 1.0))
+    pos_z_loss = _component_loss(delta_pos[:, 2:3], target[:, 2:3], cfg.get("W_POS_Z", 0.3))
+    vel_loss = _component_loss(delta_pos[:, 3:5], target[:, 3:5], cfg.get("W_VEL_XY", 0.5))
+    yaw_loss = _component_loss(delta_pos[:, 5:6], target[:, 5:6], cfg.get("W_YAW", 0.5))
+    per_sample = pos_xy_loss + pos_z_loss + vel_loss + yaw_loss
+    active_per_sample = per_sample[active_mask]
+    loss = float(cfg.get("WEIGHT", 0.0)) * active_per_sample.mean()
+    weighted_per_sample = float(cfg.get("WEIGHT", 0.0)) * per_sample
+
+    detail = {
+        "loss_residual": float(loss.detach().item()),
+        "loss_residual_pos": float((pos_xy_loss[active_mask] + pos_z_loss[active_mask]).mean().detach().item()),
+        "loss_residual_vel": float(vel_loss[active_mask].mean().detach().item()),
+        "loss_residual_yaw": float(yaw_loss[active_mask].mean().detach().item()),
+        "_loss_residual_per_sample": per_sample.detach(),
+        "_loss_residual_weighted_per_sample": weighted_per_sample.detach(),
+    }
+    return loss, detail
+
+
 def _trace_covariance_batch(cov: torch.Tensor) -> torch.Tensor:
     return cov.diagonal(dim1=-2, dim2=-1).sum(-1)
 
@@ -762,8 +827,22 @@ def training_step(
     detail_contrastive = {"loss_contrastive": 0.0, "n_valid_anchors": 0}
     total_weight = 0.0
     total_aux_loss_tensor = torch.zeros((), device=device, dtype=history.dtype)
+    total_residual_loss_tensor = torch.zeros((), device=device, dtype=history.dtype)
     sample_loss_sum = torch.zeros(B, device=device, dtype=history.dtype)
     sample_loss_count = torch.zeros(B, device=device, dtype=history.dtype)
+    sample_residual_weighted = torch.zeros(B, device=device, dtype=history.dtype)
+    sample_component_sums = {
+        "loss_pos": torch.zeros(B, device=device, dtype=history.dtype),
+        "loss_vel": torch.zeros(B, device=device, dtype=history.dtype),
+        "loss_siz": torch.zeros(B, device=device, dtype=history.dtype),
+        "loss_ori": torch.zeros(B, device=device, dtype=history.dtype),
+        "loss_nis": torch.zeros(B, device=device, dtype=history.dtype),
+        "loss_residual": torch.zeros(B, device=device, dtype=history.dtype),
+    }
+    sample_component_counts = {
+        name: torch.zeros(B, device=device, dtype=history.dtype)
+        for name in sample_component_sums.keys()
+    }
 
     # Accumulate loss tensors across rollout steps for proper gradient flow.
     for k in range(K):
@@ -828,6 +907,7 @@ def training_step(
                     detail_k["loss_total_per_sample"]
                     + loss_fn.physics_scale * ori_delta_per_sample
                 )
+                detail_k["_loss_ori_per_sample"] = blended_ori_per_sample
 
             aux_pos = F.huber_loss(
                 pos_x_pred[active_k, 0:3, 0],
@@ -861,6 +941,57 @@ def training_step(
                 # Contrastive and scalar/global regularizers are batch-dependent and excluded.
                 sample_loss_sum[active_k] = sample_loss_sum[active_k] + sample_loss_k.detach()
                 sample_loss_count[active_k] = sample_loss_count[active_k] + 1.0
+            component_keys = {
+                "loss_pos": "_loss_pos_per_sample",
+                "loss_vel": "_loss_vel_per_sample",
+                "loss_siz": "_loss_siz_per_sample",
+                "loss_ori": "_loss_ori_per_sample",
+                "loss_nis": "_loss_nis_per_sample",
+            }
+            for public_name, detail_name in component_keys.items():
+                component_values = detail_k.get(detail_name)
+                if component_values is None:
+                    continue
+                sample_component_sums[public_name][active_k] = (
+                    sample_component_sums[public_name][active_k]
+                    + component_values.detach()
+                )
+                sample_component_counts[public_name][active_k] = (
+                    sample_component_counts[public_name][active_k] + 1.0
+                )
+
+        if k == 0:
+            residual_loss_k, residual_detail_k = _compute_residual_supervision_loss(
+                mamba_out["delta_pos"],
+                pos_x_pred,
+                ori_x_pred,
+                gt_future_pos[:, k, :],
+                vel_gt,
+                gt_future_ori[:, k, :],
+                active_k,
+                getattr(loss_fn, "residual_supervision", {}),
+            )
+            total_residual_loss_tensor = total_residual_loss_tensor + residual_loss_k
+            for key, value in residual_detail_k.items():
+                if key.startswith("_"):
+                    continue
+                detail_accum[key] = detail_accum.get(key, 0.0) + value * step_weight
+            if emit_sample_metrics:
+                residual_sample = residual_detail_k.get("_loss_residual_per_sample")
+                if residual_sample is not None:
+                    sample_component_sums["loss_residual"][active_k] = (
+                        sample_component_sums["loss_residual"][active_k]
+                        + residual_sample[active_k].detach()
+                    )
+                    sample_component_counts["loss_residual"][active_k] = (
+                        sample_component_counts["loss_residual"][active_k] + 1.0
+                    )
+                residual_weighted_sample = residual_detail_k.get("_loss_residual_weighted_per_sample")
+                if residual_weighted_sample is not None:
+                    sample_residual_weighted[active_k] = (
+                        sample_residual_weighted[active_k]
+                        + residual_weighted_sample[active_k].detach()
+                    )
 
         total_state_loss += detail_k["loss_state"] * step_weight   # for logging only
         if k == 0:
@@ -1019,6 +1150,7 @@ def training_step(
     real_loss = (
         total_loss_tensor / norm
         + total_aux_loss_tensor / norm
+        + total_residual_loss_tensor
         + kappa_reg
         + ori_saturation_reg
         + delta_pos_reg
@@ -1036,8 +1168,17 @@ def training_step(
             sample_loss_sum / torch.clamp(sample_loss_count, min=1.0),
             torch.zeros_like(sample_loss_sum),
         )
+        sample_loss_avg = sample_loss_avg + sample_residual_weighted
         detail["_sample_loss_real"] = sample_loss_avg.detach().cpu().tolist()
         detail["_sample_loss_real_valid"] = (sample_loss_count > 0).detach().cpu().tolist()
+        for metric_name, metric_sum in sample_component_sums.items():
+            metric_count = sample_component_counts[metric_name]
+            metric_avg = torch.where(
+                metric_count > 0,
+                metric_sum / torch.clamp(metric_count, min=1.0),
+                torch.zeros_like(metric_sum),
+            )
+            detail[f"_sample_{metric_name}"] = metric_avg.detach().cpu().tolist()
     if use_closure_loss_path and "ratios" in mamba_out:
         ratios = mamba_out.get("ratios") or {}
         for ratio_name in ["q_pos_xyz", "q_pos_vxyz", "r_pos_xyz", "r_pos_vxy", "r_siz_lw", "r_siz_h", "r_ori"]:
@@ -1082,6 +1223,10 @@ def validate(
                     value if valid else None
                     for value, valid in zip(loss_values, loss_valid)
                 ]
+            for name in ["loss_pos", "loss_vel", "loss_siz", "loss_ori", "loss_nis", "loss_residual"]:
+                sample_key = f"_sample_{name}"
+                if sample_key in detail:
+                    per_sample_metrics[name] = detail[sample_key]
             for name in ["q_pos_xyz", "q_pos_vxyz", "r_pos_xyz", "r_pos_vxy", "r_siz_lw", "r_siz_h", "r_ori"]:
                 sample_key = f"_sample_{name}"
                 if sample_key in detail:
@@ -1325,6 +1470,7 @@ def main():
         physics_scale=loss_cfg.get("PHYSICS_SCALE", 5.0),
         hard_negative_topk=loss_cfg.get("HARD_NEGATIVE_TOPK", 0),
         class_weights=loss_cfg.get("CLASS_WEIGHTS", None),
+        residual_supervision=loss_cfg.get("RESIDUAL_SUPERVISION", None),
     ).to(device)
     vel_warmup_epochs = loss_cfg.get("VEL_WARMUP_EPOCHS", 3)
 
@@ -1565,6 +1711,7 @@ def main():
             f"ori={avg_train.get('loss_ori', 0):.4f} "
             f"vel={avg_train.get('loss_vel', 0):.4f} "
             f"nis={avg_train.get('loss_nis', 0):.4f} "
+            f"res={avg_train.get('loss_residual', 0):.4f} "
             f"ua={avg_train.get('unfreeze_alpha', 1.0):.2f} "
             f"contrast={avg_train.get('loss_contrastive', 0):.4f} | "
             f"val={avg_val.get('loss_real', avg_val.get('loss_total', 0)):.4f} "
@@ -1585,6 +1732,10 @@ def main():
         writer.add_scalar("train/loss_ori", avg_train.get("loss_ori", 0), step)
         writer.add_scalar("train/loss_vel", avg_train.get("loss_vel", 0), step)
         writer.add_scalar("train/loss_nis", avg_train.get("loss_nis", 0), step)
+        writer.add_scalar("train/loss_residual", avg_train.get("loss_residual", 0), step)
+        writer.add_scalar("train/loss_residual_pos", avg_train.get("loss_residual_pos", 0), step)
+        writer.add_scalar("train/loss_residual_vel", avg_train.get("loss_residual_vel", 0), step)
+        writer.add_scalar("train/loss_residual_yaw", avg_train.get("loss_residual_yaw", 0), step)
         writer.add_scalar("train/loss_contrastive", avg_train.get("loss_contrastive", 0), step)
         writer.add_scalar("train/loss_kappa_reg", avg_train.get("loss_kappa_reg", 0), step)
         writer.add_scalar("train/loss_delta_pos_reg", avg_train.get("loss_delta_pos_reg", 0), step)
@@ -1596,6 +1747,10 @@ def main():
         writer.add_scalar("val/loss_ori", avg_val.get("loss_ori", 0), step)
         writer.add_scalar("val/loss_vel", avg_val.get("loss_vel", 0), step)
         writer.add_scalar("val/loss_nis", avg_val.get("loss_nis", 0), step)
+        writer.add_scalar("val/loss_residual", avg_val.get("loss_residual", 0), step)
+        writer.add_scalar("val/loss_residual_pos", avg_val.get("loss_residual_pos", 0), step)
+        writer.add_scalar("val/loss_residual_vel", avg_val.get("loss_residual_vel", 0), step)
+        writer.add_scalar("val/loss_residual_yaw", avg_val.get("loss_residual_yaw", 0), step)
         writer.add_scalar("val/loss_contrastive", avg_val.get("loss_contrastive", 0), step)
         writer.add_scalar("val/loss_kappa_reg", avg_val.get("loss_kappa_reg", 0), step)
         writer.add_scalar("val/loss_delta_pos_reg", avg_val.get("loss_delta_pos_reg", 0), step)

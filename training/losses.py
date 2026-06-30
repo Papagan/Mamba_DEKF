@@ -723,6 +723,7 @@ class JointLoss(nn.Module):
         physics_scale: float = 50.0,
         hard_negative_topk: int = 0,
         class_weights: list = None,
+        residual_supervision: dict = None,
     ) -> None:
         super().__init__()
         self.state_loss = StatePredictionLoss(w_pos, w_siz, w_ori, w_vel, w_nis)
@@ -730,6 +731,7 @@ class JointLoss(nn.Module):
         self.lambda_contrast = lambda_contrast
         self.physics_scale = physics_scale
         self.class_weights = class_weights
+        self.residual_supervision = dict(residual_supervision or {})
 
     def forward(
         self,

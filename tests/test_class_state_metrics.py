@@ -63,6 +63,29 @@ class ClassStateMetricTest(unittest.TestCase):
         self.assertEqual(out["class_2/matched/count"], 3)
         self.assertAlmostEqual(out["class_2/matched/loss_real"], 3.0)
 
+    def test_metric_accumulator_handles_component_loss_metrics(self):
+        acc = init_class_state_metric_accumulator()
+        update_class_state_metric_accumulator(
+            acc,
+            class_ids=[3, 3],
+            state_buckets=["unmatched", "unmatched"],
+            metrics={
+                "loss_pos": [1.0, 3.0],
+                "loss_vel": [0.2, 0.4],
+                "loss_siz": [5.0, 7.0],
+                "loss_ori": [0.1, 0.3],
+                "loss_nis": [0.8, 1.0],
+                "loss_residual": [0.05, 0.15],
+            },
+        )
+        out = finalize_class_state_metric_accumulator(acc)
+        self.assertAlmostEqual(out["class_3/unmatched/loss_pos"], 2.0)
+        self.assertAlmostEqual(out["class_3/unmatched/loss_vel"], 0.3)
+        self.assertAlmostEqual(out["class_3/unmatched/loss_siz"], 6.0)
+        self.assertAlmostEqual(out["class_3/unmatched/loss_ori"], 0.2)
+        self.assertAlmostEqual(out["class_3/unmatched/loss_nis"], 0.9)
+        self.assertAlmostEqual(out["class_3/unmatched/loss_residual"], 0.1)
+
 
 class ClassCheckpointSelectionTest(unittest.TestCase):
     def test_extract_class_validation_losses_uses_weighted_state_average(self):
