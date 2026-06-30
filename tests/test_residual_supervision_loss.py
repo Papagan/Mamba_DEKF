@@ -33,9 +33,31 @@ class ResidualSupervisionLossTest(unittest.TestCase):
         obs_pos = torch.zeros(1, 6)
         delta = torch.tensor([[[1.0], [2.0], [3.0], [4.0], [5.0], [9.0]]])
 
-        out = fn(obs_pos, delta)
+        out = fn(obs_pos, delta, apply_residual=True)
 
         self.assertEqual(out[0, :, 0].tolist(), [1.0, 2.0, 3.0, 4.0, 5.0, 0.0])
+
+    def test_initial_pos_state_skips_delta_when_direct_residual_supervision_is_active(self):
+        fn = _load_train_function("_build_initial_pos_state_with_residual")
+        obs_pos = torch.zeros(1, 6)
+        delta = torch.tensor([[[1.0], [2.0], [3.0], [4.0], [5.0], [9.0]]])
+
+        out = fn(obs_pos, delta, apply_residual=False)
+
+        self.assertEqual(out[0, :, 0].tolist(), [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+
+    def test_cv_prior_state_uses_deterministic_no_residual_prediction(self):
+        fn = _load_train_function("_build_cv_prior_states_for_residual_target")
+        obs_pos = torch.tensor([[1.0, 2.0, 0.5, 0.4, -0.2, 0.1]])
+        obs_ori = torch.tensor([[0.2, 0.05]])
+        dt = torch.tensor([0.5])
+
+        pos_prior, ori_prior = fn(obs_pos, obs_ori, dt)
+
+        expected_pos = torch.tensor([1.2, 1.9, 0.55, 0.4, -0.2, 0.1])
+        self.assertTrue(torch.allclose(pos_prior[0, :, 0], expected_pos))
+        self.assertAlmostEqual(float(ori_prior[0, 0, 0]), 0.225)
+        self.assertAlmostEqual(float(ori_prior[0, 1, 0]), 0.05)
 
     def test_disabled_residual_supervision_returns_zero(self):
         fn = _load_train_function("_compute_residual_supervision_loss")

@@ -262,7 +262,10 @@ def _compute_residual_supervision_loss(
     return loss, detail
 
 
-def _build_initial_pos_state_with_residual(obs_pos, delta_pos):
+def _build_initial_pos_state_with_residual(obs_pos, delta_pos, apply_residual=True):
+    if not apply_residual:
+        return obs_pos.unsqueeze(-1)
+
     # delta_pos layout for closure residual is [dx, dy, dz, dvx, dvy, dyaw].
     # The sixth value supervises yaw residual and must not be injected as vz.
     pos_delta = torch.cat(
@@ -270,6 +273,21 @@ def _build_initial_pos_state_with_residual(obs_pos, delta_pos):
         dim=1,
     )
     return obs_pos.unsqueeze(-1) + pos_delta
+
+
+def _build_cv_prior_states_for_residual_target(obs_pos, obs_ori, delta_t):
+    """Deterministic one-step CV prior used as the residual supervision anchor."""
+    dt = delta_t.reshape(-1).to(device=obs_pos.device, dtype=obs_pos.dtype)
+    pos_prior = obs_pos.unsqueeze(-1).clone()
+    pos_prior[:, 0, 0] = obs_pos[:, 0] + obs_pos[:, 3] * dt
+    pos_prior[:, 1, 0] = obs_pos[:, 1] + obs_pos[:, 4] * dt
+    pos_prior[:, 2, 0] = obs_pos[:, 2] + obs_pos[:, 5] * dt
+    pos_prior[:, 3:6, 0] = obs_pos[:, 3:6]
+
+    ori_prior = obs_ori.unsqueeze(-1).clone()
+    ori_prior[:, 0, 0] = wrap_to_pi_torch(obs_ori[:, 0] + obs_ori[:, 1] * dt)
+    ori_prior[:, 1, 0] = obs_ori[:, 1]
+    return pos_prior, ori_prior
 
 
 def _trace_covariance_batch(cov: torch.Tensor) -> torch.Tensor:
@@ -710,14 +728,19 @@ def training_step(
             prior_r_ori=audit_prior_r_ori.diagonal(dim1=-2, dim2=-1).sum(-1),
         )
 
-    # delta_pos gives Mamba a direct gradient path through loss_pos,
-    # not only through R_pos via the KF update.
-    # Detached during warmup so Mamba backbone learns features first.
+    # When residual supervision is enabled, delta_pos is trained as a direct
+    # bounded correction target and must not also perturb the KF initial state.
+    residual_supervision_cfg = getattr(loss_fn, "residual_supervision", {}) or {}
+    direct_residual_supervision = bool(residual_supervision_cfg.get("ENABLED", False))
     delta_pos = mamba_out["delta_pos"].unsqueeze(-1)                  # [B, 6, 1]
     if epoch < warmup_epochs:
         delta_pos = delta_pos.detach()
 
-    pos_x0 = _build_initial_pos_state_with_residual(obs_pos, delta_pos)
+    pos_x0 = _build_initial_pos_state_with_residual(
+        obs_pos,
+        delta_pos,
+        apply_residual=not direct_residual_supervision,
+    )
     siz_x0 = obs_siz.unsqueeze(-1)                                   # [B, 3, 1]
     ori_x0 = obs_ori.unsqueeze(-1)                                   # [B, 2, 1]
 
@@ -971,15 +994,20 @@ def training_step(
                 )
 
         if k == 0:
+            residual_pos_prior, residual_ori_prior = _build_cv_prior_states_for_residual_target(
+                obs_pos,
+                obs_ori,
+                dt_k,
+            )
             residual_loss_k, residual_detail_k = _compute_residual_supervision_loss(
                 mamba_out["delta_pos"],
-                pos_x_pred,
-                ori_x_pred,
+                residual_pos_prior,
+                residual_ori_prior,
                 gt_future_pos[:, k, :],
                 vel_gt,
                 gt_future_ori[:, k, :],
                 active_k,
-                getattr(loss_fn, "residual_supervision", {}),
+                residual_supervision_cfg,
             )
             total_residual_loss_tensor = total_residual_loss_tensor + residual_loss_k
             for key, value in residual_detail_k.items():

@@ -3,6 +3,7 @@ import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import mean, median
+from typing import Optional
 
 
 FAMILIES = ("q_pos", "r_pos", "r_siz", "r_ori")
@@ -56,7 +57,7 @@ class _Bucket:
     class_id: int
     class_name: str
     state: str
-    history_len: int | None
+    history_len: Optional[int]
     sample_count: int = 0
     families: dict = field(default_factory=lambda: {name: [] for name in FAMILIES})
     ratios: dict = field(default_factory=lambda: {name: [] for name in FAMILIES})
