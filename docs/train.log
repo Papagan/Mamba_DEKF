@@ -1,566 +1,1712 @@
-19:27:31 [INFO] Logging to checkpoints/mamba_dekf/train.log
-19:27:31 [INFO] Device: cuda
-19:28:37 [INFO] Logging to checkpoints/mamba_dekf/train.log
-19:28:37 [INFO] Device: cuda
-19:51:13 [INFO] Logging to checkpoints/mamba_dekf/train.log
-19:51:13 [INFO] Device: cuda
-19:51:22 [INFO] Train: 82534 samples, 644 batches (Tmax=8, Kmax=4, adaptive=True, Tmin=4, Kmin=1, source=det, history_source=fusion, init_state_source=fusion, tracker_compat=mctrack)
-19:51:22 [INFO] Val:   82456 samples, 645 batches (Tmax=8, Kmax=4, adaptive=False, Tmin=4, Kmin=1, source=det, history_source=fusion, init_state_source=fusion, tracker_compat=mctrack)
-19:51:22 [INFO] TemporalMamba: 468,536 trainable parameters
-19:51:22 [INFO] Optimizer: base_lr=0.0005, mamba_lr=3e-05, mamba_params=436,608, other_params=31,928
-19:51:22 [INFO] TensorBoard logs → checkpoints/mamba_dekf/tensorboard  (view: tensorboard --logdir checkpoints/mamba_dekf/tensorboard)
-19:51:33 [INFO]   [1/100] batch 50/644 loss=51.6137 lr=5.00e-06
-19:51:41 [INFO]   [1/100] batch 100/644 loss=51.7085 lr=5.00e-06
-19:51:50 [INFO]   [1/100] batch 150/644 loss=51.9394 lr=5.00e-06
-19:51:59 [INFO]   [1/100] batch 200/644 loss=51.6760 lr=5.00e-06
-19:52:08 [INFO]   [1/100] batch 250/644 loss=52.0831 lr=5.00e-06
-19:52:17 [INFO]   [1/100] batch 300/644 loss=51.9711 lr=5.00e-06
-19:52:25 [INFO]   [1/100] batch 350/644 loss=52.0915 lr=5.00e-06
-19:52:34 [INFO]   [1/100] batch 400/644 loss=52.2099 lr=5.00e-06
-19:52:43 [INFO]   [1/100] batch 450/644 loss=52.2400 lr=5.00e-06
-19:52:52 [INFO]   [1/100] batch 500/644 loss=52.1182 lr=5.00e-06
-19:53:01 [INFO]   [1/100] batch 550/644 loss=52.1057 lr=5.00e-06
-19:53:10 [INFO]   [1/100] batch 600/644 loss=52.1567 lr=5.00e-06
-19:54:04 [INFO] Epoch 1/100 (115.0s) | loss=52.0389 (raw=52.2523) pos=1.9667 siz=-1.1439 ori=1.0143 vel=0.0000 nis=0.7101 ua=0.00 contrast=2.8022 | val=48.8292 val_pos=1.8541 | k_m=322.60 k_s=470.15 k_reg=0.0000 dp_reg=0.0000 | NaN=0
-19:54:04 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch1.pt
-19:54:04 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=48.8292)
-19:54:13 [INFO]   [2/100] batch 50/644 loss=51.8363 lr=1.70e-04
-19:54:22 [INFO]   [2/100] batch 100/644 loss=51.7645 lr=1.70e-04
-19:54:31 [INFO]   [2/100] batch 150/644 loss=52.0097 lr=1.70e-04
-19:54:40 [INFO]   [2/100] batch 200/644 loss=51.9972 lr=1.70e-04
-19:54:48 [INFO]   [2/100] batch 250/644 loss=52.0037 lr=1.70e-04
-19:54:57 [INFO]   [2/100] batch 300/644 loss=52.1847 lr=1.70e-04
-19:55:06 [INFO]   [2/100] batch 350/644 loss=52.1477 lr=1.70e-04
-19:55:14 [INFO]   [2/100] batch 400/644 loss=52.2404 lr=1.70e-04
-19:55:23 [INFO]   [2/100] batch 450/644 loss=52.1786 lr=1.70e-04
-19:55:32 [INFO]   [2/100] batch 500/644 loss=52.1533 lr=1.70e-04
-19:55:41 [INFO]   [2/100] batch 550/644 loss=52.2447 lr=1.70e-04
-19:55:50 [INFO]   [2/100] batch 600/644 loss=52.2456 lr=1.70e-04
-19:56:44 [INFO] Epoch 2/100 (114.1s) | loss=51.9462 (raw=52.1503) pos=1.9613 siz=-1.1512 ori=1.0263 vel=0.0000 nis=0.7106 ua=0.00 contrast=2.7392 | val=48.7824 val_pos=1.8544 | k_m=322.58 k_s=470.28 k_reg=0.0000 dp_reg=0.0000 | NaN=0
-19:56:44 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch2.pt
-19:56:44 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=48.7824)
-19:56:54 [INFO]   [3/100] batch 50/644 loss=52.4958 lr=3.35e-04
-19:57:02 [INFO]   [3/100] batch 100/644 loss=52.0099 lr=3.35e-04
-19:57:11 [INFO]   [3/100] batch 150/644 loss=51.8552 lr=3.35e-04
-19:57:20 [INFO]   [3/100] batch 200/644 loss=51.9430 lr=3.35e-04
-19:57:29 [INFO]   [3/100] batch 250/644 loss=51.7427 lr=3.35e-04
-19:57:37 [INFO]   [3/100] batch 300/644 loss=51.8647 lr=3.35e-04
-19:57:46 [INFO]   [3/100] batch 350/644 loss=51.8762 lr=3.35e-04
-19:57:55 [INFO]   [3/100] batch 400/644 loss=51.9814 lr=3.35e-04
-19:58:04 [INFO]   [3/100] batch 450/644 loss=52.0159 lr=3.35e-04
-19:58:13 [INFO]   [3/100] batch 500/644 loss=51.9996 lr=3.35e-04
-19:58:22 [INFO]   [3/100] batch 550/644 loss=52.0156 lr=3.35e-04
-19:58:31 [INFO]   [3/100] batch 600/644 loss=52.1242 lr=3.35e-04
-19:59:25 [INFO] Epoch 3/100 (114.6s) | loss=51.9880 (raw=52.1438) pos=1.9635 siz=-1.1404 ori=1.0243 vel=0.0000 nis=0.7109 ua=0.00 contrast=2.4053 | val=48.7563 val_pos=1.8523 | k_m=322.47 k_s=470.12 k_reg=0.0000 dp_reg=0.0000 | NaN=0
-19:59:25 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch3.pt
-19:59:25 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=48.7563)
-19:59:35 [INFO]   [4/100] batch 50/644 loss=53.1646 lr=5.00e-04
-19:59:43 [INFO]   [4/100] batch 100/644 loss=52.7363 lr=5.00e-04
-19:59:52 [INFO]   [4/100] batch 150/644 loss=52.6410 lr=5.00e-04
-20:00:01 [INFO]   [4/100] batch 200/644 loss=52.4980 lr=5.00e-04
-20:00:10 [INFO]   [4/100] batch 250/644 loss=52.5030 lr=5.00e-04
-20:00:19 [INFO]   [4/100] batch 300/644 loss=52.5950 lr=5.00e-04
-20:00:28 [INFO]   [4/100] batch 350/644 loss=52.2629 lr=5.00e-04
-20:00:37 [INFO]   [4/100] batch 400/644 loss=52.2461 lr=5.00e-04
-20:00:46 [INFO]   [4/100] batch 450/644 loss=52.3252 lr=5.00e-04
-20:00:55 [INFO]   [4/100] batch 500/644 loss=52.1359 lr=5.00e-04
-20:01:05 [INFO]   [4/100] batch 550/644 loss=52.0153 lr=5.00e-04
-20:01:13 [INFO]   [4/100] batch 600/644 loss=52.0045 lr=5.00e-04
-20:02:07 [INFO] Epoch 4/100 (116.1s) | loss=51.8396 (raw=51.9751) pos=1.9646 siz=-1.1458 ori=1.0073 vel=0.0000 nis=0.7083 ua=0.00 contrast=2.2685 | val=48.7218 val_pos=1.8522 | k_m=322.50 k_s=470.24 k_reg=0.0000 dp_reg=0.0000 | NaN=0
-20:02:07 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch4.pt
-20:02:07 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=48.7218)
-20:02:17 [INFO]   [5/100] batch 50/644 loss=51.9951 lr=5.00e-04
-20:02:26 [INFO]   [5/100] batch 100/644 loss=52.5752 lr=5.00e-04
-20:02:35 [INFO]   [5/100] batch 150/644 loss=52.2521 lr=5.00e-04
-20:02:44 [INFO]   [5/100] batch 200/644 loss=52.2431 lr=5.00e-04
-20:02:52 [INFO]   [5/100] batch 250/644 loss=52.2114 lr=5.00e-04
-20:03:02 [INFO]   [5/100] batch 300/644 loss=52.1968 lr=5.00e-04
-20:03:10 [INFO]   [5/100] batch 350/644 loss=52.3544 lr=5.00e-04
-20:03:19 [INFO]   [5/100] batch 400/644 loss=52.2736 lr=5.00e-04
-20:03:28 [INFO]   [5/100] batch 450/644 loss=52.1952 lr=5.00e-04
-20:03:37 [INFO]   [5/100] batch 500/644 loss=52.2669 lr=5.00e-04
-20:03:46 [INFO]   [5/100] batch 550/644 loss=52.3078 lr=5.00e-04
-20:03:55 [INFO]   [5/100] batch 600/644 loss=52.1939 lr=5.00e-04
-20:04:47 [INFO] Epoch 5/100 (115.1s) | loss=52.0451 (raw=52.1513) pos=1.9693 siz=-1.1465 ori=1.0235 vel=0.0000 nis=0.7111 ua=0.00 contrast=2.0604 | val=48.7850 val_pos=1.8546 | k_m=322.49 k_s=470.20 k_reg=0.0000 dp_reg=0.0000 | NaN=0
-20:04:56 [INFO]   [6/100] batch 50/644 loss=51.4200 lr=4.99e-04
-20:05:05 [INFO]   [6/100] batch 100/644 loss=51.6379 lr=4.99e-04
-20:05:14 [INFO]   [6/100] batch 150/644 loss=51.9766 lr=4.99e-04
-20:05:23 [INFO]   [6/100] batch 200/644 loss=51.7789 lr=4.99e-04
-20:05:32 [INFO]   [6/100] batch 250/644 loss=51.7870 lr=4.99e-04
-20:05:41 [INFO]   [6/100] batch 300/644 loss=51.8538 lr=4.99e-04
-20:05:49 [INFO]   [6/100] batch 350/644 loss=51.9286 lr=4.99e-04
-20:05:57 [INFO]   [6/100] batch 400/644 loss=51.9579 lr=4.99e-04
-20:06:06 [INFO]   [6/100] batch 450/644 loss=51.9214 lr=4.99e-04
-20:06:15 [INFO]   [6/100] batch 500/644 loss=51.8989 lr=4.99e-04
-20:06:23 [INFO]   [6/100] batch 550/644 loss=51.9017 lr=4.99e-04
-20:06:32 [INFO]   [6/100] batch 600/644 loss=51.9656 lr=4.99e-04
-20:07:26 [INFO] Epoch 6/100 (112.6s) | loss=51.8543 (raw=51.9437) pos=1.9618 siz=-1.1424 ori=1.0227 vel=0.0000 nis=0.7110 ua=0.00 contrast=1.9447 | val=48.6912 val_pos=1.8504 | k_m=322.50 k_s=469.77 k_reg=0.0000 dp_reg=0.0000 | NaN=0
-20:07:26 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch6.pt
-20:07:26 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=48.6912)
-20:07:35 [INFO]   [7/100] batch 50/644 loss=52.3943 lr=4.99e-04
-20:07:44 [INFO]   [7/100] batch 100/644 loss=52.5675 lr=4.99e-04
-20:07:53 [INFO]   [7/100] batch 150/644 loss=52.7073 lr=4.99e-04
-20:08:02 [INFO]   [7/100] batch 200/644 loss=52.6359 lr=4.99e-04
-20:08:10 [INFO]   [7/100] batch 250/644 loss=52.7274 lr=4.99e-04
-20:08:18 [INFO]   [7/100] batch 300/644 loss=52.7128 lr=4.99e-04
-20:08:27 [INFO]   [7/100] batch 350/644 loss=52.6930 lr=4.99e-04
-20:08:36 [INFO]   [7/100] batch 400/644 loss=52.6488 lr=4.99e-04
-20:08:44 [INFO]   [7/100] batch 450/644 loss=52.3372 lr=4.99e-04
-20:08:53 [INFO]   [7/100] batch 500/644 loss=52.2084 lr=4.99e-04
-20:09:01 [INFO]   [7/100] batch 550/644 loss=52.0390 lr=4.99e-04
-20:09:10 [INFO]   [7/100] batch 600/644 loss=51.9953 lr=4.99e-04
-20:10:03 [INFO] Epoch 7/100 (111.9s) | loss=51.8822 (raw=51.9833) pos=1.9599 siz=-1.1389 ori=1.0294 vel=0.0000 nis=0.7108 ua=0.00 contrast=2.0165 | val=48.7177 val_pos=1.8520 | k_m=322.52 k_s=470.17 k_reg=0.0000 dp_reg=0.0000 | NaN=0
-20:10:13 [INFO]   [8/100] batch 50/644 loss=51.7973 lr=4.98e-04
-20:10:21 [INFO]   [8/100] batch 100/644 loss=51.7773 lr=4.98e-04
-20:10:30 [INFO]   [8/100] batch 150/644 loss=51.9957 lr=4.98e-04
-20:10:39 [INFO]   [8/100] batch 200/644 loss=51.7559 lr=4.98e-04
-20:10:47 [INFO]   [8/100] batch 250/644 loss=51.6386 lr=4.98e-04
-20:10:56 [INFO]   [8/100] batch 300/644 loss=51.4509 lr=4.98e-04
-20:11:04 [INFO]   [8/100] batch 350/644 loss=51.5091 lr=4.98e-04
-20:11:13 [INFO]   [8/100] batch 400/644 loss=51.6401 lr=4.98e-04
-20:11:22 [INFO]   [8/100] batch 450/644 loss=51.6641 lr=4.98e-04
-20:11:31 [INFO]   [8/100] batch 500/644 loss=51.7356 lr=4.98e-04
-20:11:39 [INFO]   [8/100] batch 550/644 loss=51.6860 lr=4.98e-04
-20:11:48 [INFO]   [8/100] batch 600/644 loss=51.7542 lr=4.98e-04
-20:12:43 [INFO] Epoch 8/100 (112.1s) | loss=51.6800 (raw=51.7439) pos=1.9626 siz=-1.1529 ori=1.0082 vel=0.0000 nis=0.7090 ua=0.00 contrast=1.7559 | val=48.8112 val_pos=1.8561 | k_m=322.54 k_s=469.82 k_reg=0.0000 dp_reg=0.0000 | NaN=0
-20:12:53 [INFO]   [9/100] batch 50/644 loss=51.0042 lr=4.97e-04
-20:13:02 [INFO]   [9/100] batch 100/644 loss=49.4433 lr=4.97e-04
-20:13:11 [INFO]   [9/100] batch 150/644 loss=48.7250 lr=4.97e-04
-20:13:20 [INFO]   [9/100] batch 200/644 loss=48.2538 lr=4.97e-04
-20:13:28 [INFO]   [9/100] batch 250/644 loss=47.4820 lr=4.97e-04
-20:13:37 [INFO]   [9/100] batch 300/644 loss=46.9236 lr=4.97e-04
-20:13:47 [INFO]   [9/100] batch 350/644 loss=46.5366 lr=4.97e-04
-20:13:55 [INFO]   [9/100] batch 400/644 loss=46.2299 lr=4.97e-04
-20:14:04 [INFO]   [9/100] batch 450/644 loss=45.7660 lr=4.97e-04
-20:14:13 [INFO]   [9/100] batch 500/644 loss=45.3214 lr=4.97e-04
-20:14:22 [INFO]   [9/100] batch 550/644 loss=45.0321 lr=4.97e-04
-20:14:30 [INFO]   [9/100] batch 600/644 loss=44.7811 lr=4.97e-04
-20:15:24 [INFO] Epoch 9/100 (114.6s) | loss=44.4964 (raw=44.5300) pos=1.6734 siz=-1.1646 ori=1.0145 vel=0.0000 nis=0.7098 ua=0.12 contrast=1.8434 | val=28.9701 val_pos=1.0657 | k_m=322.54 k_s=469.87 k_reg=0.0000 dp_reg=0.0000 | NaN=0
-20:15:24 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch9.pt
-20:15:24 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=28.9701)
-20:15:34 [INFO]   [10/100] batch 50/644 loss=53.3904 lr=4.95e-04
-20:15:43 [INFO]   [10/100] batch 100/644 loss=52.0367 lr=4.95e-04
-20:15:53 [INFO]   [10/100] batch 150/644 loss=51.8324 lr=4.95e-04
-20:16:02 [INFO]   [10/100] batch 200/644 loss=51.2171 lr=4.95e-04
-20:16:11 [INFO]   [10/100] batch 250/644 loss=50.4820 lr=4.95e-04
-20:16:20 [INFO]   [10/100] batch 300/644 loss=50.0582 lr=4.95e-04
-20:16:29 [INFO]   [10/100] batch 350/644 loss=49.8274 lr=4.95e-04
-20:16:38 [INFO]   [10/100] batch 400/644 loss=49.4908 lr=4.95e-04
-20:16:47 [INFO]   [10/100] batch 450/644 loss=49.2034 lr=4.95e-04
-20:16:56 [INFO]   [10/100] batch 500/644 loss=48.8348 lr=4.95e-04
-20:17:05 [INFO]   [10/100] batch 550/644 loss=48.5901 lr=4.95e-04
-20:17:15 [INFO]   [10/100] batch 600/644 loss=48.3610 lr=4.95e-04
-20:18:09 [INFO] Epoch 10/100 (118.8s) | loss=48.2387 (raw=48.2003) pos=1.8250 siz=-1.1837 ori=1.0191 vel=1.4047 nis=0.6563 ua=0.25 contrast=1.7413 | val=17.9026 val_pos=0.6219 | k_m=322.46 k_s=469.73 k_reg=0.0000 dp_reg=0.0000 | NaN=0
-20:18:09 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch10.pt
-20:18:09 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=17.9026)
-20:18:19 [INFO]   [11/100] batch 50/644 loss=45.4140 lr=4.94e-04
-20:18:28 [INFO]   [11/100] batch 100/644 loss=44.9608 lr=4.94e-04
-20:18:37 [INFO]   [11/100] batch 150/644 loss=44.3902 lr=4.94e-04
-20:18:46 [INFO]   [11/100] batch 200/644 loss=44.1743 lr=4.94e-04
-20:18:55 [INFO]   [11/100] batch 250/644 loss=44.1522 lr=4.94e-04
-20:19:04 [INFO]   [11/100] batch 300/644 loss=44.1264 lr=4.94e-04
-20:19:14 [INFO]   [11/100] batch 350/644 loss=43.9323 lr=4.94e-04
-20:19:23 [INFO]   [11/100] batch 400/644 loss=43.8592 lr=4.94e-04
-20:19:32 [INFO]   [11/100] batch 450/644 loss=43.6869 lr=4.94e-04
-20:19:42 [INFO]   [11/100] batch 500/644 loss=43.4511 lr=4.94e-04
-20:19:51 [INFO]   [11/100] batch 550/644 loss=43.1761 lr=4.94e-04
-20:20:01 [INFO]   [11/100] batch 600/644 loss=42.9114 lr=4.94e-04
-20:20:55 [INFO] Epoch 11/100 (120.0s) | loss=42.9693 (raw=42.8694) pos=1.6104 siz=-1.1889 ori=1.0305 vel=1.2348 nis=0.6632 ua=0.38 contrast=1.6469 | val=11.5721 val_pos=0.3679 | k_m=322.42 k_s=469.88 k_reg=0.0000 dp_reg=0.0000 | NaN=0
-20:20:55 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch11.pt
-20:20:55 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=11.5721)
-20:21:05 [INFO]   [12/100] batch 50/644 loss=39.1841 lr=4.92e-04
-20:21:14 [INFO]   [12/100] batch 100/644 loss=40.9232 lr=4.92e-04
-20:21:23 [INFO]   [12/100] batch 150/644 loss=40.8770 lr=4.92e-04
-20:21:33 [INFO]   [12/100] batch 200/644 loss=40.1790 lr=4.92e-04
-20:21:42 [INFO]   [12/100] batch 250/644 loss=39.8912 lr=4.92e-04
-20:21:51 [INFO]   [12/100] batch 300/644 loss=39.6985 lr=4.92e-04
-20:21:59 [INFO]   [12/100] batch 350/644 loss=39.8201 lr=4.92e-04
-20:22:08 [INFO]   [12/100] batch 400/644 loss=39.8654 lr=4.92e-04
-20:22:18 [INFO]   [12/100] batch 450/644 loss=39.6202 lr=4.92e-04
-20:22:27 [INFO]   [12/100] batch 500/644 loss=39.7433 lr=4.92e-04
-20:22:37 [INFO]   [12/100] batch 550/644 loss=39.6332 lr=4.92e-04
-20:22:47 [INFO]   [12/100] batch 600/644 loss=39.4410 lr=4.92e-04
-20:23:40 [INFO] Epoch 12/100 (119.8s) | loss=39.4093 (raw=39.2767) pos=1.4778 siz=-1.1898 ori=0.9929 vel=1.1266 nis=0.6584 ua=0.50 contrast=1.6850 | val=6.9002 val_pos=0.1972 | k_m=322.44 k_s=470.06 k_reg=0.0000 dp_reg=0.0000 | NaN=0
-20:23:40 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch12.pt
-20:23:40 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=6.9002)
-20:23:50 [INFO]   [13/100] batch 50/644 loss=37.6959 lr=4.89e-04
-20:23:59 [INFO]   [13/100] batch 100/644 loss=37.3513 lr=4.89e-04
-20:24:09 [INFO]   [13/100] batch 150/644 loss=36.8633 lr=4.89e-04
-20:24:18 [INFO]   [13/100] batch 200/644 loss=37.2135 lr=4.89e-04
-20:24:28 [INFO]   [13/100] batch 250/644 loss=37.1404 lr=4.89e-04
-20:24:37 [INFO]   [13/100] batch 300/644 loss=37.1692 lr=4.89e-04
-20:24:46 [INFO]   [13/100] batch 350/644 loss=37.0584 lr=4.89e-04
-20:24:56 [INFO]   [13/100] batch 400/644 loss=36.9572 lr=4.89e-04
-20:25:05 [INFO]   [13/100] batch 450/644 loss=36.9584 lr=4.89e-04
-20:25:14 [INFO]   [13/100] batch 500/644 loss=36.8602 lr=4.89e-04
-20:25:24 [INFO]   [13/100] batch 550/644 loss=36.7366 lr=4.89e-04
-20:25:33 [INFO]   [13/100] batch 600/644 loss=36.6982 lr=4.89e-04
-20:26:28 [INFO] Epoch 13/100 (120.8s) | loss=36.8251 (raw=36.6662) pos=1.3849 siz=-1.1956 ori=0.9597 vel=1.0453 nis=0.6485 ua=0.62 contrast=1.6612 | val=4.6756 val_pos=0.1112 | k_m=322.33 k_s=469.73 k_reg=0.0000 dp_reg=0.0000 | NaN=0
-20:26:28 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch13.pt
-20:26:28 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=4.6756)
-20:26:38 [INFO]   [14/100] batch 50/644 loss=34.8843 lr=4.87e-04
-20:26:48 [INFO]   [14/100] batch 100/644 loss=35.3996 lr=4.87e-04
-20:26:57 [INFO]   [14/100] batch 150/644 loss=35.7211 lr=4.87e-04
-20:27:06 [INFO]   [14/100] batch 200/644 loss=35.6254 lr=4.87e-04
-20:27:16 [INFO]   [14/100] batch 250/644 loss=35.6619 lr=4.87e-04
-20:27:25 [INFO]   [14/100] batch 300/644 loss=35.5264 lr=4.87e-04
-20:27:35 [INFO]   [14/100] batch 350/644 loss=35.3636 lr=4.87e-04
-20:27:44 [INFO]   [14/100] batch 400/644 loss=35.3381 lr=4.87e-04
-20:27:53 [INFO]   [14/100] batch 450/644 loss=35.2623 lr=4.87e-04
-20:28:03 [INFO]   [14/100] batch 500/644 loss=35.1745 lr=4.87e-04
-20:28:12 [INFO]   [14/100] batch 550/644 loss=35.0778 lr=4.87e-04
-20:28:21 [INFO]   [14/100] batch 600/644 loss=35.0237 lr=4.87e-04
-20:29:14 [INFO] Epoch 14/100 (121.0s) | loss=35.2334 (raw=35.0435) pos=1.3266 siz=-1.1958 ori=0.9420 vel=0.9972 nis=0.6459 ua=0.75 contrast=1.5607 | val=3.6672 val_pos=0.0709 | k_m=322.64 k_s=469.80 k_reg=0.0000 dp_reg=0.0000 | NaN=0
-20:29:14 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch14.pt
-20:29:14 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=3.6672)
-20:29:24 [INFO]   [15/100] batch 50/644 loss=33.2148 lr=4.84e-04
-20:29:33 [INFO]   [15/100] batch 100/644 loss=33.7389 lr=4.84e-04
-20:29:42 [INFO]   [15/100] batch 150/644 loss=33.8662 lr=4.84e-04
-20:29:51 [INFO]   [15/100] batch 200/644 loss=34.0765 lr=4.84e-04
-20:30:00 [INFO]   [15/100] batch 250/644 loss=34.2343 lr=4.84e-04
-20:30:09 [INFO]   [15/100] batch 300/644 loss=34.2228 lr=4.84e-04
-20:30:19 [INFO]   [15/100] batch 350/644 loss=34.2729 lr=4.84e-04
-20:30:28 [INFO]   [15/100] batch 400/644 loss=34.3135 lr=4.84e-04
-20:30:37 [INFO]   [15/100] batch 450/644 loss=34.4535 lr=4.84e-04
-20:30:46 [INFO]   [15/100] batch 500/644 loss=34.4586 lr=4.84e-04
-20:30:56 [INFO]   [15/100] batch 550/644 loss=34.4565 lr=4.84e-04
-20:31:05 [INFO]   [15/100] batch 600/644 loss=34.4103 lr=4.84e-04
-20:31:58 [INFO] Epoch 15/100 (118.4s) | loss=34.6551 (raw=34.4610) pos=1.3064 siz=-1.2045 ori=0.9370 vel=0.9719 nis=0.6432 ua=0.88 contrast=1.5820 | val=2.2668 val_pos=0.0163 | k_m=322.96 k_s=469.42 k_reg=0.0000 dp_reg=0.0000 | NaN=0
-20:31:58 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch15.pt
-20:31:58 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=2.2668)
-20:32:08 [INFO]   [16/100] batch 50/644 loss=32.9629 lr=4.81e-04
-20:32:18 [INFO]   [16/100] batch 100/644 loss=33.8844 lr=4.81e-04
-20:32:27 [INFO]   [16/100] batch 150/644 loss=34.0439 lr=4.81e-04
-20:32:37 [INFO]   [16/100] batch 200/644 loss=33.5299 lr=4.81e-04
-20:32:46 [INFO]   [16/100] batch 250/644 loss=33.7335 lr=4.81e-04
-20:32:56 [INFO]   [16/100] batch 300/644 loss=33.5784 lr=4.81e-04
-20:33:05 [INFO]   [16/100] batch 350/644 loss=34.0556 lr=4.81e-04
-20:33:14 [INFO]   [16/100] batch 400/644 loss=33.8417 lr=4.81e-04
-20:33:23 [INFO]   [16/100] batch 450/644 loss=33.8319 lr=4.81e-04
-20:33:33 [INFO]   [16/100] batch 500/644 loss=33.9829 lr=4.81e-04
-20:33:42 [INFO]   [16/100] batch 550/644 loss=34.1819 lr=4.81e-04
-20:33:51 [INFO]   [16/100] batch 600/644 loss=34.0665 lr=4.81e-04
-20:34:45 [INFO] Epoch 16/100 (120.9s) | loss=34.2104 (raw=34.0040) pos=1.2887 siz=-1.2078 ori=0.9382 vel=0.9601 nis=0.6435 ua=1.00 contrast=1.5571 | val=1.3456 val_pos=-0.0203 | k_m=323.43 k_s=469.34 k_reg=0.0000 dp_reg=0.0000 | NaN=0
-20:34:45 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch16.pt
-20:34:45 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=1.3456)
-20:34:55 [INFO]   [17/100] batch 50/644 loss=33.5577 lr=4.78e-04
-20:35:04 [INFO]   [17/100] batch 100/644 loss=34.3773 lr=4.78e-04
-20:35:14 [INFO]   [17/100] batch 150/644 loss=33.9046 lr=4.78e-04
-20:35:23 [INFO]   [17/100] batch 200/644 loss=33.1786 lr=4.78e-04
-20:35:32 [INFO]   [17/100] batch 250/644 loss=33.2001 lr=4.78e-04
-20:35:42 [INFO]   [17/100] batch 300/644 loss=33.1984 lr=4.78e-04
-20:35:51 [INFO]   [17/100] batch 350/644 loss=33.3798 lr=4.78e-04
-20:36:00 [INFO]   [17/100] batch 400/644 loss=33.3455 lr=4.78e-04
-20:36:09 [INFO]   [17/100] batch 450/644 loss=33.1424 lr=4.78e-04
-20:36:18 [INFO]   [17/100] batch 500/644 loss=33.1546 lr=4.78e-04
-20:36:27 [INFO]   [17/100] batch 550/644 loss=33.2376 lr=4.78e-04
-20:36:37 [INFO]   [17/100] batch 600/644 loss=33.3115 lr=4.78e-04
-20:37:30 [INFO] Epoch 17/100 (119.8s) | loss=33.5643 (raw=33.3539) pos=1.2631 siz=-1.2096 ori=0.9372 vel=0.9344 nis=0.6445 ua=1.00 contrast=1.5781 | val=1.0635 val_pos=-0.0314 | k_m=323.49 k_s=469.08 k_reg=0.0000 dp_reg=0.0000 | NaN=0
-20:37:31 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch17.pt
-20:37:31 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=1.0635)
-20:37:41 [INFO]   [18/100] batch 50/644 loss=33.9156 lr=4.75e-04
-20:37:50 [INFO]   [18/100] batch 100/644 loss=33.5903 lr=4.75e-04
-20:37:59 [INFO]   [18/100] batch 150/644 loss=33.2384 lr=4.75e-04
-20:38:08 [INFO]   [18/100] batch 200/644 loss=33.0415 lr=4.75e-04
-20:38:17 [INFO]   [18/100] batch 250/644 loss=33.3099 lr=4.75e-04
-20:38:27 [INFO]   [18/100] batch 300/644 loss=33.1841 lr=4.75e-04
-20:38:36 [INFO]   [18/100] batch 350/644 loss=33.0910 lr=4.75e-04
-20:38:45 [INFO]   [18/100] batch 400/644 loss=33.1579 lr=4.75e-04
-20:38:55 [INFO]   [18/100] batch 450/644 loss=33.2248 lr=4.75e-04
-20:39:04 [INFO]   [18/100] batch 500/644 loss=33.2564 lr=4.75e-04
-20:39:13 [INFO]   [18/100] batch 550/644 loss=33.2342 lr=4.75e-04
-20:39:22 [INFO]   [18/100] batch 600/644 loss=33.1686 lr=4.75e-04
-20:40:16 [INFO] Epoch 18/100 (119.7s) | loss=33.3334 (raw=33.1143) pos=1.2509 siz=-1.2074 ori=0.9438 vel=0.9229 nis=0.6449 ua=1.00 contrast=1.5887 | val=0.5228 val_pos=-0.0528 | k_m=323.83 k_s=468.87 k_reg=0.0000 dp_reg=0.0000 | NaN=0
-20:40:17 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch18.pt
-20:40:17 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=0.5228)
-20:40:26 [INFO]   [19/100] batch 50/644 loss=34.2276 lr=4.71e-04
-20:40:36 [INFO]   [19/100] batch 100/644 loss=34.0685 lr=4.71e-04
-20:40:45 [INFO]   [19/100] batch 150/644 loss=33.5710 lr=4.71e-04
-20:40:54 [INFO]   [19/100] batch 200/644 loss=33.4920 lr=4.71e-04
-20:41:03 [INFO]   [19/100] batch 250/644 loss=33.4332 lr=4.71e-04
-20:41:13 [INFO]   [19/100] batch 300/644 loss=33.1634 lr=4.71e-04
-20:41:22 [INFO]   [19/100] batch 350/644 loss=33.2948 lr=4.71e-04
-20:41:31 [INFO]   [19/100] batch 400/644 loss=33.2169 lr=4.71e-04
-20:41:40 [INFO]   [19/100] batch 450/644 loss=33.1995 lr=4.71e-04
-20:41:50 [INFO]   [19/100] batch 500/644 loss=33.0972 lr=4.71e-04
-20:41:59 [INFO]   [19/100] batch 550/644 loss=33.0423 lr=4.71e-04
-20:42:09 [INFO]   [19/100] batch 600/644 loss=32.9933 lr=4.71e-04
-20:43:02 [INFO] Epoch 19/100 (120.3s) | loss=33.1089 (raw=32.8858) pos=1.2406 siz=-1.2088 ori=0.9479 vel=0.9074 nis=0.6455 ua=1.00 contrast=1.6062 | val=0.1483 val_pos=-0.0707 | k_m=323.94 k_s=468.70 k_reg=0.0000 dp_reg=0.0000 | NaN=0
-20:43:03 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch19.pt
-20:43:03 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=0.1483)
-20:43:12 [INFO]   [20/100] batch 50/644 loss=32.7964 lr=4.67e-04
-20:43:21 [INFO]   [20/100] batch 100/644 loss=32.9481 lr=4.67e-04
-20:43:30 [INFO]   [20/100] batch 150/644 loss=33.0405 lr=4.67e-04
-20:43:40 [INFO]   [20/100] batch 200/644 loss=32.9240 lr=4.67e-04
-20:43:49 [INFO]   [20/100] batch 250/644 loss=32.7477 lr=4.67e-04
-20:43:58 [INFO]   [20/100] batch 300/644 loss=32.7496 lr=4.67e-04
-20:44:07 [INFO]   [20/100] batch 350/644 loss=32.6508 lr=4.67e-04
-20:44:16 [INFO]   [20/100] batch 400/644 loss=32.5292 lr=4.67e-04
-20:44:26 [INFO]   [20/100] batch 450/644 loss=32.6057 lr=4.67e-04
-20:44:35 [INFO]   [20/100] batch 500/644 loss=32.6803 lr=4.67e-04
-20:44:45 [INFO]   [20/100] batch 550/644 loss=32.6537 lr=4.67e-04
-20:44:54 [INFO]   [20/100] batch 600/644 loss=32.6208 lr=4.67e-04
-20:45:47 [INFO] Epoch 20/100 (119.7s) | loss=32.9181 (raw=32.6750) pos=1.2371 siz=-1.2058 ori=0.9327 vel=0.8976 nis=0.6443 ua=1.00 contrast=1.5306 | val=-0.2243 val_pos=-0.0825 | k_m=323.98 k_s=468.73 k_reg=0.0000 dp_reg=0.0001 | NaN=0
-20:45:47 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch20.pt
-20:45:47 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-0.2243)
-20:45:57 [INFO]   [21/100] batch 50/644 loss=31.0286 lr=4.63e-04
-20:46:06 [INFO]   [21/100] batch 100/644 loss=32.0710 lr=4.63e-04
-20:46:15 [INFO]   [21/100] batch 150/644 loss=32.6231 lr=4.63e-04
-20:46:25 [INFO]   [21/100] batch 200/644 loss=32.5322 lr=4.63e-04
-20:46:34 [INFO]   [21/100] batch 250/644 loss=32.5870 lr=4.63e-04
-20:46:43 [INFO]   [21/100] batch 300/644 loss=32.9347 lr=4.63e-04
-20:46:52 [INFO]   [21/100] batch 350/644 loss=32.8911 lr=4.63e-04
-20:47:02 [INFO]   [21/100] batch 400/644 loss=32.7118 lr=4.63e-04
-20:47:11 [INFO]   [21/100] batch 450/644 loss=32.5265 lr=4.63e-04
-20:47:21 [INFO]   [21/100] batch 500/644 loss=32.5704 lr=4.63e-04
-20:47:30 [INFO]   [21/100] batch 550/644 loss=32.3655 lr=4.63e-04
-20:47:39 [INFO]   [21/100] batch 600/644 loss=32.3923 lr=4.63e-04
-20:48:32 [INFO] Epoch 21/100 (120.3s) | loss=32.6584 (raw=32.4106) pos=1.2232 siz=-1.2047 ori=0.9422 vel=0.8847 nis=0.6460 ua=1.00 contrast=1.5513 | val=-0.3887 val_pos=-0.0899 | k_m=324.07 k_s=468.72 k_reg=0.0000 dp_reg=0.0001 | NaN=0
-20:48:32 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch21.pt
-20:48:32 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-0.3887)
-20:48:42 [INFO]   [22/100] batch 50/644 loss=34.1352 lr=4.59e-04
-20:48:51 [INFO]   [22/100] batch 100/644 loss=32.9074 lr=4.59e-04
-20:49:00 [INFO]   [22/100] batch 150/644 loss=32.9407 lr=4.59e-04
-20:49:09 [INFO]   [22/100] batch 200/644 loss=32.9460 lr=4.59e-04
-20:49:18 [INFO]   [22/100] batch 250/644 loss=33.0944 lr=4.59e-04
-20:49:28 [INFO]   [22/100] batch 300/644 loss=32.9165 lr=4.59e-04
-20:49:37 [INFO]   [22/100] batch 350/644 loss=32.6643 lr=4.59e-04
-20:49:46 [INFO]   [22/100] batch 400/644 loss=32.6113 lr=4.59e-04
-20:49:56 [INFO]   [22/100] batch 450/644 loss=32.6012 lr=4.59e-04
-20:50:05 [INFO]   [22/100] batch 500/644 loss=32.6263 lr=4.59e-04
-20:50:15 [INFO]   [22/100] batch 550/644 loss=32.6290 lr=4.59e-04
-20:50:24 [INFO]   [22/100] batch 600/644 loss=32.6386 lr=4.59e-04
-20:51:16 [INFO] Epoch 22/100 (120.0s) | loss=32.7669 (raw=32.5027) pos=1.2260 siz=-1.1987 ori=0.9435 vel=0.8812 nis=0.6459 ua=1.00 contrast=1.4922 | val=-0.5728 val_pos=-0.0972 | k_m=323.90 k_s=468.77 k_reg=0.0000 dp_reg=0.0001 | NaN=0
-20:51:16 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch22.pt
-20:51:16 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-0.5728)
-20:51:26 [INFO]   [23/100] batch 50/644 loss=32.1317 lr=4.54e-04
-20:51:35 [INFO]   [23/100] batch 100/644 loss=32.4487 lr=4.54e-04
-20:51:44 [INFO]   [23/100] batch 150/644 loss=31.9986 lr=4.54e-04
-20:51:53 [INFO]   [23/100] batch 200/644 loss=32.3713 lr=4.54e-04
-20:52:03 [INFO]   [23/100] batch 250/644 loss=32.4362 lr=4.54e-04
-20:52:12 [INFO]   [23/100] batch 300/644 loss=32.7176 lr=4.54e-04
-20:52:21 [INFO]   [23/100] batch 350/644 loss=32.5237 lr=4.54e-04
-20:52:30 [INFO]   [23/100] batch 400/644 loss=32.6100 lr=4.54e-04
-20:52:40 [INFO]   [23/100] batch 450/644 loss=32.5938 lr=4.54e-04
-20:52:49 [INFO]   [23/100] batch 500/644 loss=32.4757 lr=4.54e-04
-20:52:58 [INFO]   [23/100] batch 550/644 loss=32.5193 lr=4.54e-04
-20:53:07 [INFO]   [23/100] batch 600/644 loss=32.4382 lr=4.54e-04
-20:54:01 [INFO] Epoch 23/100 (119.3s) | loss=32.6739 (raw=32.4145) pos=1.2230 siz=-1.2032 ori=0.9416 vel=0.8717 nis=0.6458 ua=1.00 contrast=1.5666 | val=-0.8498 val_pos=-0.1090 | k_m=324.00 k_s=468.62 k_reg=0.0000 dp_reg=0.0001 | NaN=0
-20:54:01 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch23.pt
-20:54:01 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-0.8498)
-20:54:11 [INFO]   [24/100] batch 50/644 loss=32.6479 lr=4.49e-04
-20:54:20 [INFO]   [24/100] batch 100/644 loss=32.8586 lr=4.49e-04
-20:54:30 [INFO]   [24/100] batch 150/644 loss=33.0896 lr=4.49e-04
-20:54:39 [INFO]   [24/100] batch 200/644 loss=32.7934 lr=4.49e-04
-20:54:48 [INFO]   [24/100] batch 250/644 loss=32.6099 lr=4.49e-04
-20:54:58 [INFO]   [24/100] batch 300/644 loss=32.4546 lr=4.49e-04
-20:55:07 [INFO]   [24/100] batch 350/644 loss=32.1137 lr=4.49e-04
-20:55:16 [INFO]   [24/100] batch 400/644 loss=32.3462 lr=4.49e-04
-20:55:26 [INFO]   [24/100] batch 450/644 loss=32.4262 lr=4.49e-04
-20:55:35 [INFO]   [24/100] batch 500/644 loss=32.2040 lr=4.49e-04
-20:55:44 [INFO]   [24/100] batch 550/644 loss=32.1283 lr=4.49e-04
-20:55:53 [INFO]   [24/100] batch 600/644 loss=32.1477 lr=4.49e-04
-20:56:49 [INFO] Epoch 24/100 (120.6s) | loss=32.2989 (raw=32.0263) pos=1.2074 siz=-1.2060 ori=0.9463 vel=0.8634 nis=0.6447 ua=1.00 contrast=1.5099 | val=-1.0500 val_pos=-0.1177 | k_m=323.83 k_s=468.68 k_reg=0.0000 dp_reg=0.0001 | NaN=0
-20:56:49 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch24.pt
-20:56:49 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-1.0500)
-20:56:59 [INFO]   [25/100] batch 50/644 loss=32.9491 lr=4.44e-04
-20:57:09 [INFO]   [25/100] batch 100/644 loss=31.8442 lr=4.44e-04
-20:57:18 [INFO]   [25/100] batch 150/644 loss=31.9102 lr=4.44e-04
-20:57:27 [INFO]   [25/100] batch 200/644 loss=31.3848 lr=4.44e-04
-20:57:36 [INFO]   [25/100] batch 250/644 loss=31.3896 lr=4.44e-04
-20:57:46 [INFO]   [25/100] batch 300/644 loss=31.6909 lr=4.44e-04
-20:57:55 [INFO]   [25/100] batch 350/644 loss=31.4549 lr=4.44e-04
-20:58:04 [INFO]   [25/100] batch 400/644 loss=31.5702 lr=4.44e-04
-20:58:13 [INFO]   [25/100] batch 450/644 loss=31.6406 lr=4.44e-04
-20:58:23 [INFO]   [25/100] batch 500/644 loss=31.4922 lr=4.44e-04
-20:58:33 [INFO]   [25/100] batch 550/644 loss=31.6885 lr=4.44e-04
-20:58:42 [INFO]   [25/100] batch 600/644 loss=31.7951 lr=4.44e-04
-20:59:36 [INFO] Epoch 25/100 (120.9s) | loss=32.0809 (raw=31.7949) pos=1.2042 siz=-1.2033 ori=0.9264 vel=0.8564 nis=0.6425 ua=1.00 contrast=1.4532 | val=-1.2807 val_pos=-0.1266 | k_m=323.82 k_s=468.80 k_reg=0.0000 dp_reg=0.0001 | NaN=0
-20:59:36 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch25.pt
-20:59:36 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-1.2807)
-20:59:46 [INFO]   [26/100] batch 50/644 loss=33.0513 lr=4.39e-04
-20:59:55 [INFO]   [26/100] batch 100/644 loss=31.7539 lr=4.39e-04
-21:00:05 [INFO]   [26/100] batch 150/644 loss=31.8387 lr=4.39e-04
-21:00:14 [INFO]   [26/100] batch 200/644 loss=31.7220 lr=4.39e-04
-21:00:23 [INFO]   [26/100] batch 250/644 loss=32.1743 lr=4.39e-04
-21:00:32 [INFO]   [26/100] batch 300/644 loss=31.8482 lr=4.39e-04
-21:00:41 [INFO]   [26/100] batch 350/644 loss=31.7876 lr=4.39e-04
-21:00:50 [INFO]   [26/100] batch 400/644 loss=31.7138 lr=4.39e-04
-21:01:00 [INFO]   [26/100] batch 450/644 loss=31.6857 lr=4.39e-04
-21:01:09 [INFO]   [26/100] batch 500/644 loss=31.7587 lr=4.39e-04
-21:01:18 [INFO]   [26/100] batch 550/644 loss=31.7366 lr=4.39e-04
-21:01:28 [INFO]   [26/100] batch 600/644 loss=31.7674 lr=4.39e-04
-21:02:22 [INFO] Epoch 26/100 (119.6s) | loss=31.9654 (raw=31.6828) pos=1.1965 siz=-1.2089 ori=0.9388 vel=0.8522 nis=0.6425 ua=1.00 contrast=1.5107 | val=-1.4766 val_pos=-0.1353 | k_m=323.96 k_s=468.58 k_reg=0.0000 dp_reg=0.0001 | NaN=0
-21:02:22 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch26.pt
-21:02:22 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-1.4766)
-21:02:32 [INFO]   [27/100] batch 50/644 loss=31.5885 lr=4.34e-04
-21:02:41 [INFO]   [27/100] batch 100/644 loss=31.7588 lr=4.34e-04
-21:02:51 [INFO]   [27/100] batch 150/644 loss=31.6867 lr=4.34e-04
-21:03:00 [INFO]   [27/100] batch 200/644 loss=31.5940 lr=4.34e-04
-21:03:09 [INFO]   [27/100] batch 250/644 loss=31.6872 lr=4.34e-04
-21:03:18 [INFO]   [27/100] batch 300/644 loss=32.1468 lr=4.34e-04
-21:03:27 [INFO]   [27/100] batch 350/644 loss=32.0253 lr=4.34e-04
-21:03:36 [INFO]   [27/100] batch 400/644 loss=31.9600 lr=4.34e-04
-21:03:46 [INFO]   [27/100] batch 450/644 loss=31.8350 lr=4.34e-04
-21:03:55 [INFO]   [27/100] batch 500/644 loss=31.9100 lr=4.34e-04
-21:04:05 [INFO]   [27/100] batch 550/644 loss=31.8651 lr=4.34e-04
-21:04:14 [INFO]   [27/100] batch 600/644 loss=31.8314 lr=4.34e-04
-21:05:08 [INFO] Epoch 27/100 (120.4s) | loss=32.1242 (raw=31.8381) pos=1.2008 siz=-1.2125 ori=0.9467 vel=0.8492 nis=0.6441 ua=1.00 contrast=1.5241 | val=-1.5240 val_pos=-0.1374 | k_m=324.04 k_s=468.59 k_reg=0.0000 dp_reg=0.0001 | NaN=0
-21:05:08 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch27.pt
-21:05:08 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-1.5240)
-21:05:17 [INFO]   [28/100] batch 50/644 loss=28.9820 lr=4.28e-04
-21:05:27 [INFO]   [28/100] batch 100/644 loss=30.4853 lr=4.28e-04
-21:05:36 [INFO]   [28/100] batch 150/644 loss=30.7647 lr=4.28e-04
-21:05:45 [INFO]   [28/100] batch 200/644 loss=30.4977 lr=4.28e-04
-21:05:54 [INFO]   [28/100] batch 250/644 loss=30.8856 lr=4.28e-04
-21:06:03 [INFO]   [28/100] batch 300/644 loss=31.2531 lr=4.28e-04
-21:06:13 [INFO]   [28/100] batch 350/644 loss=31.7655 lr=4.28e-04
-21:06:22 [INFO]   [28/100] batch 400/644 loss=31.8856 lr=4.28e-04
-21:06:31 [INFO]   [28/100] batch 450/644 loss=31.8119 lr=4.28e-04
-21:06:41 [INFO]   [28/100] batch 500/644 loss=31.6758 lr=4.28e-04
-21:06:50 [INFO]   [28/100] batch 550/644 loss=31.5948 lr=4.28e-04
-21:06:59 [INFO]   [28/100] batch 600/644 loss=31.5983 lr=4.28e-04
-21:07:52 [INFO] Epoch 28/100 (119.9s) | loss=31.9863 (raw=31.6928) pos=1.1981 siz=-1.2134 ori=0.9378 vel=0.8427 nis=0.6420 ua=1.00 contrast=1.5068 | val=-1.6489 val_pos=-0.1417 | k_m=324.04 k_s=468.76 k_reg=0.0000 dp_reg=0.0001 | NaN=0
-21:07:52 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch28.pt
-21:07:52 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-1.6489)
-21:08:02 [INFO]   [29/100] batch 50/644 loss=31.8332 lr=4.22e-04
-21:08:11 [INFO]   [29/100] batch 100/644 loss=31.8917 lr=4.22e-04
-21:08:20 [INFO]   [29/100] batch 150/644 loss=31.5805 lr=4.22e-04
-21:08:29 [INFO]   [29/100] batch 200/644 loss=31.4644 lr=4.22e-04
-21:08:39 [INFO]   [29/100] batch 250/644 loss=31.3244 lr=4.22e-04
-21:08:48 [INFO]   [29/100] batch 300/644 loss=31.3942 lr=4.22e-04
-21:08:58 [INFO]   [29/100] batch 350/644 loss=31.5817 lr=4.22e-04
-21:09:07 [INFO]   [29/100] batch 400/644 loss=31.5328 lr=4.22e-04
-21:09:16 [INFO]   [29/100] batch 450/644 loss=31.5990 lr=4.22e-04
-21:09:26 [INFO]   [29/100] batch 500/644 loss=31.5950 lr=4.22e-04
-21:09:35 [INFO]   [29/100] batch 550/644 loss=31.5118 lr=4.22e-04
-21:09:44 [INFO]   [29/100] batch 600/644 loss=31.4704 lr=4.22e-04
-21:10:36 [INFO] Epoch 29/100 (119.9s) | loss=31.7282 (raw=31.4290) pos=1.1918 siz=-1.2096 ori=0.9214 vel=0.8425 nis=0.6405 ua=1.00 contrast=1.5020 | val=-1.7633 val_pos=-0.1463 | k_m=323.84 k_s=468.79 k_reg=0.0000 dp_reg=0.0001 | NaN=0
-21:10:37 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch29.pt
-21:10:37 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-1.7633)
-21:10:46 [INFO]   [30/100] batch 50/644 loss=32.1051 lr=4.16e-04
-21:10:56 [INFO]   [30/100] batch 100/644 loss=31.2495 lr=4.16e-04
-21:11:05 [INFO]   [30/100] batch 150/644 loss=31.3260 lr=4.16e-04
-21:11:15 [INFO]   [30/100] batch 200/644 loss=31.3655 lr=4.16e-04
-21:11:24 [INFO]   [30/100] batch 250/644 loss=31.6490 lr=4.16e-04
-21:11:33 [INFO]   [30/100] batch 300/644 loss=31.4499 lr=4.16e-04
-21:11:42 [INFO]   [30/100] batch 350/644 loss=31.4680 lr=4.16e-04
-21:11:52 [INFO]   [30/100] batch 400/644 loss=31.4422 lr=4.16e-04
-21:12:01 [INFO]   [30/100] batch 450/644 loss=31.4384 lr=4.16e-04
-21:12:10 [INFO]   [30/100] batch 500/644 loss=31.3976 lr=4.16e-04
-21:12:19 [INFO]   [30/100] batch 550/644 loss=31.3782 lr=4.16e-04
-21:12:28 [INFO]   [30/100] batch 600/644 loss=31.2816 lr=4.16e-04
-21:13:22 [INFO] Epoch 30/100 (120.0s) | loss=31.5822 (raw=31.2720) pos=1.1795 siz=-1.2021 ori=0.9380 vel=0.8330 nis=0.6418 ua=1.00 contrast=1.4598 | val=-1.8447 val_pos=-0.1511 | k_m=323.97 k_s=468.81 k_reg=0.0000 dp_reg=0.0001 | NaN=0
-21:13:22 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch30.pt
-21:13:22 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-1.8447)
-21:13:32 [INFO]   [31/100] batch 50/644 loss=30.8504 lr=4.10e-04
-21:13:41 [INFO]   [31/100] batch 100/644 loss=31.1219 lr=4.10e-04
-21:13:51 [INFO]   [31/100] batch 150/644 loss=31.1649 lr=4.10e-04
-21:14:00 [INFO]   [31/100] batch 200/644 loss=31.3001 lr=4.10e-04
-21:14:09 [INFO]   [31/100] batch 250/644 loss=31.0858 lr=4.10e-04
-21:14:18 [INFO]   [31/100] batch 300/644 loss=31.1786 lr=4.10e-04
-21:14:27 [INFO]   [31/100] batch 350/644 loss=31.2349 lr=4.10e-04
-21:14:37 [INFO]   [31/100] batch 400/644 loss=31.2564 lr=4.10e-04
-21:14:46 [INFO]   [31/100] batch 450/644 loss=31.2937 lr=4.10e-04
-21:14:55 [INFO]   [31/100] batch 500/644 loss=31.2269 lr=4.10e-04
-21:15:04 [INFO]   [31/100] batch 550/644 loss=31.3597 lr=4.10e-04
-21:15:13 [INFO]   [31/100] batch 600/644 loss=31.3505 lr=4.10e-04
-21:16:07 [INFO] Epoch 31/100 (119.6s) | loss=31.4322 (raw=31.1148) pos=1.1772 siz=-1.2080 ori=0.9295 vel=0.8283 nis=0.6397 ua=1.00 contrast=1.4480 | val=-2.0251 val_pos=-0.1569 | k_m=323.85 k_s=469.09 k_reg=0.0000 dp_reg=0.0001 | NaN=0
-21:16:07 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch31.pt
-21:16:07 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-2.0251)
-21:16:17 [INFO]   [32/100] batch 50/644 loss=31.4835 lr=4.04e-04
-21:16:26 [INFO]   [32/100] batch 100/644 loss=32.1015 lr=4.04e-04
-21:16:36 [INFO]   [32/100] batch 150/644 loss=31.8807 lr=4.04e-04
-21:16:45 [INFO]   [32/100] batch 200/644 loss=31.9866 lr=4.04e-04
-21:16:54 [INFO]   [32/100] batch 250/644 loss=31.5699 lr=4.04e-04
-21:17:03 [INFO]   [32/100] batch 300/644 loss=31.4696 lr=4.04e-04
-21:17:12 [INFO]   [32/100] batch 350/644 loss=31.4267 lr=4.04e-04
-21:17:22 [INFO]   [32/100] batch 400/644 loss=31.3097 lr=4.04e-04
-21:17:31 [INFO]   [32/100] batch 450/644 loss=31.1984 lr=4.04e-04
-21:17:40 [INFO]   [32/100] batch 500/644 loss=31.1970 lr=4.04e-04
-21:17:50 [INFO]   [32/100] batch 550/644 loss=31.0987 lr=4.04e-04
-21:17:59 [INFO]   [32/100] batch 600/644 loss=31.0977 lr=4.04e-04
-21:18:54 [INFO] Epoch 32/100 (120.2s) | loss=31.4107 (raw=31.0955) pos=1.1773 siz=-1.2085 ori=0.9248 vel=0.8259 nis=0.6400 ua=1.00 contrast=1.4956 | val=-1.9693 val_pos=-0.1543 | k_m=323.90 k_s=468.83 k_reg=0.0000 dp_reg=0.0001 | NaN=0
-21:19:03 [INFO]   [33/100] batch 50/644 loss=31.4111 lr=3.98e-04
-21:19:12 [INFO]   [33/100] batch 100/644 loss=31.3612 lr=3.98e-04
-21:19:21 [INFO]   [33/100] batch 150/644 loss=31.5840 lr=3.98e-04
-21:19:31 [INFO]   [33/100] batch 200/644 loss=31.5131 lr=3.98e-04
-21:19:40 [INFO]   [33/100] batch 250/644 loss=31.5740 lr=3.98e-04
-21:19:49 [INFO]   [33/100] batch 300/644 loss=31.7753 lr=3.98e-04
-21:19:58 [INFO]   [33/100] batch 350/644 loss=31.4543 lr=3.98e-04
-21:20:07 [INFO]   [33/100] batch 400/644 loss=31.4083 lr=3.98e-04
-21:20:16 [INFO]   [33/100] batch 450/644 loss=31.1595 lr=3.98e-04
-21:20:26 [INFO]   [33/100] batch 500/644 loss=31.2062 lr=3.98e-04
-21:20:35 [INFO]   [33/100] batch 550/644 loss=31.1799 lr=3.98e-04
-21:20:44 [INFO]   [33/100] batch 600/644 loss=31.0934 lr=3.98e-04
-21:21:38 [INFO] Epoch 33/100 (118.9s) | loss=31.3828 (raw=31.0632) pos=1.1730 siz=-1.2112 ori=0.9364 vel=0.8260 nis=0.6410 ua=1.00 contrast=1.4985 | val=-2.1585 val_pos=-0.1615 | k_m=323.70 k_s=468.91 k_reg=0.0000 dp_reg=0.0001 | NaN=0
-21:21:38 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch33.pt
-21:21:38 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-2.1585)
-21:21:48 [INFO]   [34/100] batch 50/644 loss=30.0909 lr=3.91e-04
-21:21:57 [INFO]   [34/100] batch 100/644 loss=30.3607 lr=3.91e-04
-21:22:06 [INFO]   [34/100] batch 150/644 loss=30.9027 lr=3.91e-04
-21:22:15 [INFO]   [34/100] batch 200/644 loss=30.9525 lr=3.91e-04
-21:22:25 [INFO]   [34/100] batch 250/644 loss=30.8337 lr=3.91e-04
-21:22:34 [INFO]   [34/100] batch 300/644 loss=30.9628 lr=3.91e-04
-21:22:43 [INFO]   [34/100] batch 350/644 loss=31.0887 lr=3.91e-04
-21:22:53 [INFO]   [34/100] batch 400/644 loss=31.0766 lr=3.91e-04
-21:23:02 [INFO]   [34/100] batch 450/644 loss=31.0407 lr=3.91e-04
-21:23:12 [INFO]   [34/100] batch 500/644 loss=30.8572 lr=3.91e-04
-21:23:21 [INFO]   [34/100] batch 550/644 loss=30.8840 lr=3.91e-04
-21:23:31 [INFO]   [34/100] batch 600/644 loss=30.9628 lr=3.91e-04
-21:24:24 [INFO] Epoch 34/100 (120.6s) | loss=31.2974 (raw=30.9607) pos=1.1701 siz=-1.2121 ori=0.9370 vel=0.8257 nis=0.6405 ua=1.00 contrast=1.4060 | val=-2.3126 val_pos=-0.1686 | k_m=323.62 k_s=469.06 k_reg=0.0000 dp_reg=0.0001 | NaN=0
-21:24:24 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch34.pt
-21:24:24 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-2.3126)
-21:24:34 [INFO]   [35/100] batch 50/644 loss=30.1516 lr=3.84e-04
-21:24:43 [INFO]   [35/100] batch 100/644 loss=30.2559 lr=3.84e-04
-21:24:52 [INFO]   [35/100] batch 150/644 loss=30.9109 lr=3.84e-04
-21:25:01 [INFO]   [35/100] batch 200/644 loss=30.7545 lr=3.84e-04
-21:25:11 [INFO]   [35/100] batch 250/644 loss=30.8732 lr=3.84e-04
-21:25:20 [INFO]   [35/100] batch 300/644 loss=31.0640 lr=3.84e-04
-21:25:30 [INFO]   [35/100] batch 350/644 loss=31.0912 lr=3.84e-04
-21:25:39 [INFO]   [35/100] batch 400/644 loss=30.9885 lr=3.84e-04
-21:25:49 [INFO]   [35/100] batch 450/644 loss=31.0049 lr=3.84e-04
-21:25:58 [INFO]   [35/100] batch 500/644 loss=31.1232 lr=3.84e-04
-21:26:07 [INFO]   [35/100] batch 550/644 loss=31.0462 lr=3.84e-04
-21:26:16 [INFO]   [35/100] batch 600/644 loss=31.0506 lr=3.84e-04
-21:27:09 [INFO] Epoch 35/100 (120.7s) | loss=31.3151 (raw=30.9847) pos=1.1718 siz=-1.2107 ori=0.9301 vel=0.8275 nis=0.6390 ua=1.00 contrast=1.4920 | val=-2.2507 val_pos=-0.1655 | k_m=323.86 k_s=469.10 k_reg=0.0000 dp_reg=0.0001 | NaN=0
-21:27:19 [INFO]   [36/100] batch 50/644 loss=31.3743 lr=3.77e-04
-21:27:29 [INFO]   [36/100] batch 100/644 loss=31.9402 lr=3.77e-04
-21:27:38 [INFO]   [36/100] batch 150/644 loss=31.9513 lr=3.77e-04
-21:27:48 [INFO]   [36/100] batch 200/644 loss=31.1895 lr=3.77e-04
-21:27:57 [INFO]   [36/100] batch 250/644 loss=31.2470 lr=3.77e-04
-21:28:06 [INFO]   [36/100] batch 300/644 loss=31.0780 lr=3.77e-04
-21:28:16 [INFO]   [36/100] batch 350/644 loss=31.1786 lr=3.77e-04
-21:28:25 [INFO]   [36/100] batch 400/644 loss=31.1699 lr=3.77e-04
-21:28:34 [INFO]   [36/100] batch 450/644 loss=31.1269 lr=3.77e-04
-21:28:43 [INFO]   [36/100] batch 500/644 loss=31.1744 lr=3.77e-04
-21:28:52 [INFO]   [36/100] batch 550/644 loss=31.2357 lr=3.77e-04
-21:29:02 [INFO]   [36/100] batch 600/644 loss=31.0697 lr=3.77e-04
-21:29:55 [INFO] Epoch 36/100 (120.2s) | loss=31.4231 (raw=31.0757) pos=1.1749 siz=-1.2039 ori=0.9314 vel=0.8218 nis=0.6379 ua=1.00 contrast=1.3928 | val=-2.4473 val_pos=-0.1737 | k_m=323.73 k_s=468.94 k_reg=0.0000 dp_reg=0.0001 | NaN=0
-21:29:55 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch36.pt
-21:29:55 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-2.4473)
-21:30:05 [INFO]   [37/100] batch 50/644 loss=28.8830 lr=3.70e-04
-21:30:15 [INFO]   [37/100] batch 100/644 loss=29.6169 lr=3.70e-04
-21:30:24 [INFO]   [37/100] batch 150/644 loss=30.4909 lr=3.70e-04
-21:30:34 [INFO]   [37/100] batch 200/644 loss=30.6706 lr=3.70e-04
-21:30:43 [INFO]   [37/100] batch 250/644 loss=30.4803 lr=3.70e-04
-21:30:53 [INFO]   [37/100] batch 300/644 loss=30.5821 lr=3.70e-04
-21:31:01 [INFO]   [37/100] batch 350/644 loss=30.4521 lr=3.70e-04
-21:31:09 [INFO]   [37/100] batch 400/644 loss=30.4147 lr=3.70e-04
-21:31:17 [INFO]   [37/100] batch 450/644 loss=30.4329 lr=3.70e-04
-21:31:25 [INFO]   [37/100] batch 500/644 loss=30.6935 lr=3.70e-04
-21:31:32 [INFO]   [37/100] batch 550/644 loss=30.7529 lr=3.70e-04
-21:31:41 [INFO]   [37/100] batch 600/644 loss=30.9486 lr=3.70e-04
-21:32:35 [INFO] Epoch 37/100 (113.9s) | loss=31.2024 (raw=30.8553) pos=1.1635 siz=-1.2068 ori=0.9413 vel=0.8138 nis=0.6386 ua=1.00 contrast=1.4105 | val=-2.5619 val_pos=-0.1786 | k_m=323.90 k_s=469.03 k_reg=0.0000 dp_reg=0.0001 | NaN=0
-21:32:35 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch37.pt
-21:32:35 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-2.5619)
-21:32:45 [INFO]   [38/100] batch 50/644 loss=30.4117 lr=3.63e-04
-21:32:54 [INFO]   [38/100] batch 100/644 loss=30.4981 lr=3.63e-04
-21:33:03 [INFO]   [38/100] batch 150/644 loss=30.1004 lr=3.63e-04
-21:33:12 [INFO]   [38/100] batch 200/644 loss=30.6669 lr=3.63e-04
-21:33:21 [INFO]   [38/100] batch 250/644 loss=30.4672 lr=3.63e-04
-21:33:31 [INFO]   [38/100] batch 300/644 loss=30.8997 lr=3.63e-04
-21:33:40 [INFO]   [38/100] batch 350/644 loss=31.0793 lr=3.63e-04
-21:33:49 [INFO]   [38/100] batch 400/644 loss=31.1314 lr=3.63e-04
-21:33:59 [INFO]   [38/100] batch 450/644 loss=31.2146 lr=3.63e-04
-21:34:08 [INFO]   [38/100] batch 500/644 loss=31.1066 lr=3.63e-04
+
+21:02:30 [INFO] Device: cuda
+21:02:38 [INFO] Train: 82701 samples, 646 batches (Tmax=8, Kmax=4, adaptive=True, Tmin=4, Kmin=1, source=det, history_source=fusion, init_state_source=fusion, tracker_compat=mctrack)
+21:02:38 [INFO] Val:   82631 samples, 646 batches (Tmax=8, Kmax=4, adaptive=False, Tmin=4, Kmin=1, source=det, history_source=fusion, init_state_source=fusion, tracker_compat=mctrack)
+21:06:59 [INFO] Logging to checkpoints/mamba_dekf/train.log
+21:06:59 [INFO] Device: cuda
+21:07:09 [INFO] Train: 82701 samples, 646 batches (Tmax=8, Kmax=4, adaptive=True, Tmin=4, Kmin=1, source=det, history_source=fusion, init_state_source=fusion, tracker_compat=mctrack)
+21:07:09 [INFO] Val:   82631 samples, 646 batches (Tmax=8, Kmax=4, adaptive=False, Tmin=4, Kmin=1, source=det, history_source=fusion, init_state_source=fusion, tracker_compat=mctrack)
+21:07:09 [INFO] TemporalMamba: 468,536 trainable parameters (backbone=mamba_ssm)
+21:07:09 [INFO] Optimizer: base_lr=0.0005, mamba_lr=3e-05, mamba_params=436,608, other_params=31,928
+21:07:09 [INFO] TensorBoard logs → checkpoints/mamba_dekf/tensorboard  (view: tensorboard --logdir checkpoints/mamba_dekf/tensorboard)
+21:07:20 [INFO]   [1/100] batch 50/646 loss=47.7932 lr=5.00e-06
+21:07:29 [INFO]   [1/100] batch 100/646 loss=47.7236 lr=5.00e-06
+21:07:37 [INFO]   [1/100] batch 150/646 loss=47.4215 lr=5.00e-06
+21:07:55 [INFO]   [1/100] batch 250/646 loss=47.2186 lr=5.00e-06
+21:08:04 [INFO]   [1/100] batch 300/646 loss=47.1505 lr=5.00e-06
+21:08:13 [INFO]   [1/100] batch 350/646 loss=47.1213 lr=5.00e-06
+21:08:22 [INFO]   [1/100] batch 400/646 loss=47.1640 lr=5.00e-06
+21:08:30 [INFO]   [1/100] batch 450/646 loss=47.0776 lr=5.00e-06
+21:08:39 [INFO]   [1/100] batch 500/646 loss=47.1503 lr=5.00e-06
+21:08:48 [INFO]   [1/100] batch 550/646 loss=47.2136 lr=5.00e-06
+21:08:57 [INFO]   [1/100] batch 600/646 loss=47.1727 lr=5.00e-06
+21:09:54 [INFO] Epoch 1/100 (116.1s) | loss=50.1008 (raw=47.2001) pos=1.9813 siz=-1.0923 ori=0.2460 vel=0.0000 nis=0.7528 ua=0.00 contrast=3.0253 | val=51.9359 val_pos=1.8674 | k_m=278.06 k_s=408.88 k_reg=0.0000 dp_reg=0.0000 | NaN=0
+21:09:54 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=34.0881)
+21:09:54 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=44.4088)
+21:09:54 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=49.0564)
+21:09:54 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=77.6102)
+21:09:54 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=146.9495)
+21:09:54 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=154.5563)
+21:09:54 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=120.4925)
+21:09:54 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch1.pt
+21:09:54 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=51.9359)
+21:10:03 [INFO]   [2/100] batch 50/646 loss=46.6037 lr=1.70e-04
+21:10:12 [INFO]   [2/100] batch 100/646 loss=46.6735 lr=1.70e-04
+21:10:21 [INFO]   [2/100] batch 150/646 loss=46.9447 lr=1.70e-04
+21:10:30 [INFO]   [2/100] batch 200/646 loss=47.0743 lr=1.70e-04
+21:10:39 [INFO]   [2/100] batch 250/646 loss=47.2769 lr=1.70e-04
+21:10:47 [INFO]   [2/100] batch 300/646 loss=47.2047 lr=1.70e-04
+21:10:57 [INFO]   [2/100] batch 350/646 loss=47.0561 lr=1.70e-04
+21:11:06 [INFO]   [2/100] batch 400/646 loss=47.1388 lr=1.70e-04
+21:11:15 [INFO]   [2/100] batch 450/646 loss=47.2886 lr=1.70e-04
+21:11:24 [INFO]   [2/100] batch 500/646 loss=47.1661 lr=1.70e-04
+21:11:33 [INFO]   [2/100] batch 550/646 loss=47.1805 lr=1.70e-04
+21:11:42 [INFO]   [2/100] batch 600/646 loss=47.1573 lr=1.70e-04
+21:12:38 [INFO] Epoch 2/100 (115.9s) | loss=47.8965 (raw=47.1667) pos=1.9824 siz=-1.0866 ori=0.2462 vel=0.0000 nis=0.7542 ua=0.00 contrast=2.7175 | val=50.1693 val_pos=1.8656 | k_m=80.58 k_s=116.36 k_reg=0.0000 dp_reg=0.0000 | NaN=0
+21:12:38 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=34.0155)
+21:12:38 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=48.3782)
+21:12:38 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=76.2935)
+21:12:38 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=146.5072)
+21:12:38 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=153.7358)
+21:12:38 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=120.4378)
+21:12:39 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch2.pt
+21:12:39 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=50.1693)
+21:12:48 [INFO]   [3/100] batch 50/646 loss=47.2231 lr=3.35e-04
+21:12:57 [INFO]   [3/100] batch 100/646 loss=46.8361 lr=3.35e-04
+21:13:05 [INFO]   [3/100] batch 150/646 loss=47.0585 lr=3.35e-04
+21:13:14 [INFO]   [3/100] batch 200/646 loss=47.1148 lr=3.35e-04
+21:13:23 [INFO]   [3/100] batch 250/646 loss=46.7754 lr=3.35e-04
+21:13:31 [INFO]   [3/100] batch 300/646 loss=46.7837 lr=3.35e-04
+21:13:40 [INFO]   [3/100] batch 350/646 loss=46.8841 lr=3.35e-04
+21:13:48 [INFO]   [3/100] batch 400/646 loss=46.9534 lr=3.35e-04
+21:13:57 [INFO]   [3/100] batch 450/646 loss=46.8965 lr=3.35e-04
+21:14:06 [INFO]   [3/100] batch 500/646 loss=46.8879 lr=3.35e-04
+21:14:15 [INFO]   [3/100] batch 550/646 loss=46.8812 lr=3.35e-04
+21:14:23 [INFO]   [3/100] batch 600/646 loss=46.9554 lr=3.35e-04
+21:15:19 [INFO] Epoch 3/100 (112.3s) | loss=47.6386 (raw=46.9714) pos=1.9801 siz=-1.0946 ori=0.2457 vel=0.0000 nis=0.7520 ua=0.00 contrast=2.4118 | val=50.1456 val_pos=1.8666 | k_m=61.97 k_s=89.05 k_reg=0.0000 dp_reg=0.0000 | NaN=0
+21:15:19 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=44.2904)
+21:15:19 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=120.2296)
+21:15:19 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch3.pt
+21:15:19 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=50.1456)
+21:15:29 [INFO]   [4/100] batch 50/646 loss=45.2063 lr=5.00e-04
+21:15:37 [INFO]   [4/100] batch 100/646 loss=46.3997 lr=5.00e-04
+21:15:46 [INFO]   [4/100] batch 150/646 loss=46.4781 lr=5.00e-04
+21:15:55 [INFO]   [4/100] batch 200/646 loss=46.6627 lr=5.00e-04
+21:16:04 [INFO]   [4/100] batch 250/646 loss=46.5700 lr=5.00e-04
+21:16:12 [INFO]   [4/100] batch 300/646 loss=46.6462 lr=5.00e-04
+21:16:21 [INFO]   [4/100] batch 350/646 loss=46.6484 lr=5.00e-04
+21:16:30 [INFO]   [4/100] batch 400/646 loss=46.6388 lr=5.00e-04
+21:16:38 [INFO]   [4/100] batch 450/646 loss=46.6838 lr=5.00e-04
+21:16:47 [INFO]   [4/100] batch 500/646 loss=46.6984 lr=5.00e-04
+21:16:56 [INFO]   [4/100] batch 550/646 loss=46.6537 lr=5.00e-04
+21:17:04 [INFO]   [4/100] batch 600/646 loss=46.7184 lr=5.00e-04
+21:18:02 [INFO] Epoch 4/100 (113.0s) | loss=47.3963 (raw=46.7253) pos=1.9760 siz=-1.1048 ori=0.2452 vel=0.0000 nis=0.7496 ua=0.00 contrast=2.1185 | val=50.1585 val_pos=1.8680 | k_m=51.59 k_s=73.33 k_reg=0.0000 dp_reg=0.0000 | NaN=0
+21:18:02 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=48.3724)
+21:18:12 [INFO]   [5/100] batch 50/646 loss=45.7571 lr=5.00e-04
+21:18:20 [INFO]   [5/100] batch 100/646 loss=46.6331 lr=5.00e-04
+21:18:29 [INFO]   [5/100] batch 150/646 loss=46.7363 lr=5.00e-04
+21:18:38 [INFO]   [5/100] batch 200/646 loss=46.4401 lr=5.00e-04
+21:18:46 [INFO]   [5/100] batch 250/646 loss=46.6392 lr=5.00e-04
+21:18:55 [INFO]   [5/100] batch 300/646 loss=46.5621 lr=5.00e-04
+21:19:04 [INFO]   [5/100] batch 350/646 loss=46.6708 lr=5.00e-04
+21:19:13 [INFO]   [5/100] batch 400/646 loss=46.7610 lr=5.00e-04
+21:19:21 [INFO]   [5/100] batch 450/646 loss=46.7549 lr=5.00e-04
+21:19:30 [INFO]   [5/100] batch 500/646 loss=46.7716 lr=5.00e-04
+21:19:39 [INFO]   [5/100] batch 550/646 loss=46.8336 lr=5.00e-04
+21:19:47 [INFO]   [5/100] batch 600/646 loss=46.8280 lr=5.00e-04
+21:20:46 [INFO] Epoch 5/100 (113.2s) | loss=47.5143 (raw=46.8508) pos=1.9800 siz=-1.0952 ori=0.2459 vel=0.0000 nis=0.7532 ua=0.00 contrast=2.0159 | val=50.1171 val_pos=1.8681 | k_m=43.30 k_s=60.59 k_reg=0.0000 dp_reg=0.0000 | NaN=0
+21:20:46 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=48.3602)
+21:20:46 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch5.pt
+21:20:46 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=50.1171)
+21:20:55 [INFO]   [6/100] batch 50/646 loss=47.1488 lr=4.99e-04
+21:21:04 [INFO]   [6/100] batch 100/646 loss=47.0548 lr=4.99e-04
+21:21:12 [INFO]   [6/100] batch 150/646 loss=47.1507 lr=4.99e-04
+21:21:20 [INFO]   [6/100] batch 200/646 loss=47.0184 lr=4.99e-04
+21:21:28 [INFO]   [6/100] batch 250/646 loss=46.9560 lr=4.99e-04
+21:21:36 [INFO]   [6/100] batch 300/646 loss=46.9222 lr=4.99e-04
+21:21:45 [INFO]   [6/100] batch 350/646 loss=46.9662 lr=4.99e-04
+21:21:54 [INFO]   [6/100] batch 400/646 loss=46.9204 lr=4.99e-04
+21:22:02 [INFO]   [6/100] batch 450/646 loss=46.8120 lr=4.99e-04
+21:22:11 [INFO]   [6/100] batch 500/646 loss=46.8924 lr=4.99e-04
+21:22:20 [INFO]   [6/100] batch 550/646 loss=46.9436 lr=4.99e-04
+21:22:28 [INFO]   [6/100] batch 600/646 loss=46.9026 lr=4.99e-04
+21:23:30 [INFO] Epoch 6/100 (110.6s) | loss=47.5897 (raw=46.9225) pos=1.9828 siz=-1.0836 ori=0.2445 vel=0.0000 nis=0.7507 ua=0.00 contrast=1.8695 | val=49.9781 val_pos=1.8643 | k_m=37.36 k_s=51.26 k_reg=0.0000 dp_reg=0.0000 | NaN=0
+21:23:30 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=76.0655)
+21:23:30 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=145.8177)
+21:23:30 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=120.1085)
+21:23:30 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch6.pt
+21:23:30 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=49.9781)
+21:23:39 [INFO]   [7/100] batch 50/646 loss=47.0869 lr=4.99e-04
+21:23:48 [INFO]   [7/100] batch 100/646 loss=47.1191 lr=4.99e-04
+21:23:57 [INFO]   [7/100] batch 150/646 loss=46.9395 lr=4.99e-04
+21:24:05 [INFO]   [7/100] batch 200/646 loss=46.8830 lr=4.99e-04
+21:24:14 [INFO]   [7/100] batch 250/646 loss=46.7809 lr=4.99e-04
+21:24:22 [INFO]   [7/100] batch 300/646 loss=46.7935 lr=4.99e-04
+21:24:31 [INFO]   [7/100] batch 350/646 loss=46.7830 lr=4.99e-04
+21:24:40 [INFO]   [7/100] batch 400/646 loss=46.9352 lr=4.99e-04
+21:24:49 [INFO]   [7/100] batch 450/646 loss=46.8987 lr=4.99e-04
+21:24:57 [INFO]   [7/100] batch 500/646 loss=46.8883 lr=4.99e-04
+21:25:06 [INFO]   [7/100] batch 550/646 loss=46.8905 lr=4.99e-04
+21:25:15 [INFO]   [7/100] batch 600/646 loss=46.9224 lr=4.99e-04
+21:26:11 [INFO] Epoch 7/100 (112.8s) | loss=47.5855 (raw=46.9438) pos=1.9838 siz=-1.0947 ori=0.2466 vel=0.0000 nis=0.7535 ua=0.00 contrast=1.9861 | val=50.0901 val_pos=1.8670 | k_m=32.76 k_s=43.96 k_reg=0.0000 dp_reg=0.0000 | NaN=0
+21:26:20 [INFO]   [8/100] batch 50/646 loss=47.7083 lr=4.98e-04
+21:26:29 [INFO]   [8/100] batch 100/646 loss=47.4430 lr=4.98e-04
+21:26:38 [INFO]   [8/100] batch 150/646 loss=47.3048 lr=4.98e-04
+21:26:47 [INFO]   [8/100] batch 200/646 loss=47.0953 lr=4.98e-04
+21:26:55 [INFO]   [8/100] batch 250/646 loss=47.3176 lr=4.98e-04
+21:27:04 [INFO]   [8/100] batch 300/646 loss=47.1458 lr=4.98e-04
+21:27:14 [INFO]   [8/100] batch 350/646 loss=47.1201 lr=4.98e-04
+21:27:23 [INFO]   [8/100] batch 400/646 loss=47.0736 lr=4.98e-04
+21:27:32 [INFO]   [8/100] batch 450/646 loss=47.1224 lr=4.98e-04
+21:27:40 [INFO]   [8/100] batch 500/646 loss=47.0439 lr=4.98e-04
+21:27:49 [INFO]   [8/100] batch 550/646 loss=47.0130 lr=4.98e-04
+21:27:59 [INFO]   [8/100] batch 600/646 loss=46.8648 lr=4.98e-04
+21:28:58 [INFO] Epoch 8/100 (116.8s) | loss=47.5910 (raw=46.9402) pos=1.9849 siz=-1.0917 ori=0.2450 vel=0.0000 nis=0.7521 ua=0.00 contrast=1.8727 | val=50.1322 val_pos=1.8701 | k_m=29.03 k_s=38.03 k_reg=0.0000 dp_reg=0.0000 | NaN=0
+21:29:08 [INFO]   [9/100] batch 50/646 loss=45.2142 lr=4.97e-04
+21:29:17 [INFO]   [9/100] batch 100/646 loss=43.9779 lr=4.97e-04
+21:29:26 [INFO]   [9/100] batch 150/646 loss=43.5626 lr=4.97e-04
+21:29:36 [INFO]   [9/100] batch 200/646 loss=43.0900 lr=4.97e-04
+21:29:45 [INFO]   [9/100] batch 250/646 loss=42.6552 lr=4.97e-04
+21:29:54 [INFO]   [9/100] batch 300/646 loss=42.1330 lr=4.97e-04
+21:30:03 [INFO]   [9/100] batch 350/646 loss=41.7529 lr=4.97e-04
+21:30:12 [INFO]   [9/100] batch 400/646 loss=41.6503 lr=4.97e-04
+21:30:22 [INFO]   [9/100] batch 450/646 loss=41.2289 lr=4.97e-04
+21:30:31 [INFO]   [9/100] batch 500/646 loss=40.8598 lr=4.97e-04
+21:30:39 [INFO]   [9/100] batch 550/646 loss=40.3207 lr=4.97e-04
+21:30:48 [INFO]   [9/100] batch 600/646 loss=40.0146 lr=4.97e-04
+21:31:46 [INFO] Epoch 9/100 (118.2s) | loss=40.6120 (raw=39.8383) pos=1.6731 siz=-1.1099 ori=0.3579 vel=0.0000 nis=0.7475 ua=0.12 contrast=1.6744 | val=29.4724 val_pos=1.0560 | k_m=26.43 k_s=34.05 k_reg=0.0000 dp_reg=0.0000 | NaN=0
+21:31:46 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=14.9785)
+21:31:46 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=19.6144)
+21:31:46 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=30.1633)
+21:31:46 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=60.9438)
+21:31:46 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=139.5240)
+21:31:46 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=131.3228)
+21:31:46 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=106.8395)
+21:31:46 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch9.pt
+21:31:46 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=29.4724)
+21:31:56 [INFO]   [10/100] batch 50/646 loss=48.1645 lr=4.95e-04
+21:32:05 [INFO]   [10/100] batch 100/646 loss=46.7470 lr=4.95e-04
+21:32:15 [INFO]   [10/100] batch 150/646 loss=46.7345 lr=4.95e-04
+21:32:24 [INFO]   [10/100] batch 200/646 loss=46.3972 lr=4.95e-04
+21:32:34 [INFO]   [10/100] batch 250/646 loss=46.3517 lr=4.95e-04
+21:32:43 [INFO]   [10/100] batch 300/646 loss=46.1530 lr=4.95e-04
+21:32:53 [INFO]   [10/100] batch 350/646 loss=45.8710 lr=4.95e-04
+21:33:02 [INFO]   [10/100] batch 400/646 loss=45.8638 lr=4.95e-04
+21:33:11 [INFO]   [10/100] batch 450/646 loss=45.5977 lr=4.95e-04
+21:33:21 [INFO]   [10/100] batch 500/646 loss=45.4273 lr=4.95e-04
+21:33:30 [INFO]   [10/100] batch 550/646 loss=45.2176 lr=4.95e-04
+21:33:39 [INFO]   [10/100] batch 600/646 loss=45.0118 lr=4.95e-04
+21:34:37 [INFO] Epoch 10/100 (121.9s) | loss=45.6912 (raw=44.7864) pos=1.8465 siz=-1.1216 ori=0.4472 vel=1.4190 nis=0.6674 ua=0.25 contrast=1.8099 | val=18.3355 val_pos=0.6228 | k_m=24.53 k_s=31.66 k_reg=0.0000 dp_reg=0.0000 | NaN=0
+21:34:37 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=5.9634)
+21:34:37 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=4.9356)
+21:34:37 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=21.7973)
+21:34:37 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=52.4482)
+21:34:37 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=133.1474)
+21:34:37 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=121.8774)
+21:34:37 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=95.4370)
+21:34:37 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch10.pt
+21:34:37 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=18.3355)
+21:34:47 [INFO]   [11/100] batch 50/646 loss=43.8069 lr=4.94e-04
+21:34:56 [INFO]   [11/100] batch 100/646 loss=42.9688 lr=4.94e-04
+21:35:05 [INFO]   [11/100] batch 150/646 loss=42.6227 lr=4.94e-04
+21:35:15 [INFO]   [11/100] batch 200/646 loss=42.0738 lr=4.94e-04
+21:35:25 [INFO]   [11/100] batch 250/646 loss=42.0175 lr=4.94e-04
+21:35:34 [INFO]   [11/100] batch 300/646 loss=41.6808 lr=4.94e-04
+21:35:43 [INFO]   [11/100] batch 350/646 loss=41.5829 lr=4.94e-04
+21:35:52 [INFO]   [11/100] batch 400/646 loss=41.3799 lr=4.94e-04
+21:36:01 [INFO]   [11/100] batch 450/646 loss=41.1496 lr=4.94e-04
+21:36:10 [INFO]   [11/100] batch 500/646 loss=40.9570 lr=4.94e-04
+21:36:19 [INFO]   [11/100] batch 550/646 loss=40.6543 lr=4.94e-04
+21:36:29 [INFO]   [11/100] batch 600/646 loss=40.4292 lr=4.94e-04
+21:37:27 [INFO] Epoch 11/100 (120.0s) | loss=41.3284 (raw=40.2683) pos=1.6395 siz=-1.1259 ori=0.5426 vel=1.2556 nis=0.6675 ua=0.38 contrast=1.6881 | val=12.0874 val_pos=0.3719 | k_m=23.08 k_s=29.39 k_reg=0.0000 dp_reg=0.0000 | NaN=0
+21:37:27 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=2.0031)
+21:37:27 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-5.8405)
+21:37:27 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=16.8467)
+21:37:27 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=47.1325)
+21:37:27 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=131.4084)
+21:37:27 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=118.9493)
+21:37:27 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=88.8248)
+21:37:27 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch11.pt
+21:37:27 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=12.0874)
+21:37:37 [INFO]   [12/100] batch 50/646 loss=39.7393 lr=4.92e-04
+21:37:46 [INFO]   [12/100] batch 100/646 loss=40.1148 lr=4.92e-04
+21:37:55 [INFO]   [12/100] batch 150/646 loss=39.7387 lr=4.92e-04
+21:38:04 [INFO]   [12/100] batch 200/646 loss=39.0179 lr=4.92e-04
+21:38:14 [INFO]   [12/100] batch 250/646 loss=39.0163 lr=4.92e-04
+21:38:23 [INFO]   [12/100] batch 300/646 loss=38.8214 lr=4.92e-04
+21:38:32 [INFO]   [12/100] batch 350/646 loss=38.3429 lr=4.92e-04
+21:38:41 [INFO]   [12/100] batch 400/646 loss=38.1211 lr=4.92e-04
+21:38:50 [INFO]   [12/100] batch 450/646 loss=38.0276 lr=4.92e-04
+21:39:00 [INFO]   [12/100] batch 500/646 loss=37.8937 lr=4.92e-04
+21:39:09 [INFO]   [12/100] batch 550/646 loss=37.7642 lr=4.92e-04
+21:39:18 [INFO]   [12/100] batch 600/646 loss=37.4955 lr=4.92e-04
+21:40:15 [INFO] Epoch 12/100 (119.6s) | loss=38.5593 (raw=37.3875) pos=1.4966 siz=-1.1320 ori=0.6425 vel=1.1364 nis=0.6658 ua=0.50 contrast=1.6058 | val=8.0018 val_pos=0.2095 | k_m=21.79 k_s=27.35 k_reg=0.0000 dp_reg=0.0000 | NaN=0
+21:40:15 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-0.0979)
+21:40:15 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-13.4196)
+21:40:15 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=11.7924)
+21:40:15 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=42.7630)
+21:40:15 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=125.5444)
+21:40:15 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=113.9104)
+21:40:15 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=84.7650)
+21:40:15 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch12.pt
+21:40:15 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=8.0018)
+21:40:25 [INFO]   [13/100] batch 50/646 loss=36.3664 lr=4.89e-04
+21:40:35 [INFO]   [13/100] batch 100/646 loss=36.3833 lr=4.89e-04
+21:40:44 [INFO]   [13/100] batch 150/646 loss=36.5739 lr=4.89e-04
+21:40:53 [INFO]   [13/100] batch 200/646 loss=36.5579 lr=4.89e-04
+21:41:02 [INFO]   [13/100] batch 250/646 loss=36.2066 lr=4.89e-04
+21:41:12 [INFO]   [13/100] batch 300/646 loss=36.5947 lr=4.89e-04
+21:41:21 [INFO]   [13/100] batch 350/646 loss=36.1589 lr=4.89e-04
+21:41:30 [INFO]   [13/100] batch 400/646 loss=36.2602 lr=4.89e-04
+21:41:40 [INFO]   [13/100] batch 450/646 loss=36.2787 lr=4.89e-04
+21:41:49 [INFO]   [13/100] batch 500/646 loss=36.0814 lr=4.89e-04
+21:41:58 [INFO]   [13/100] batch 550/646 loss=35.8488 lr=4.89e-04
+21:42:08 [INFO]   [13/100] batch 600/646 loss=35.8995 lr=4.89e-04
+21:43:05 [INFO] Epoch 13/100 (121.1s) | loss=37.0527 (raw=35.8239) pos=1.4070 siz=-1.1371 ori=0.7322 vel=1.0530 nis=0.6605 ua=0.62 contrast=1.7115 | val=5.5046 val_pos=0.1099 | k_m=20.81 k_s=25.58 k_reg=0.0000 dp_reg=0.0000 | NaN=0
+21:43:05 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-1.0047)
+21:43:05 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-18.3180)
+21:43:05 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=9.2903)
+21:43:05 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=39.4382)
+21:43:05 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=124.1085)
+21:43:05 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=111.0529)
+21:43:05 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=80.4058)
+21:43:05 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch13.pt
+21:43:05 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=5.5046)
+21:43:15 [INFO]   [14/100] batch 50/646 loss=34.6475 lr=4.87e-04
+21:43:24 [INFO]   [14/100] batch 100/646 loss=34.7766 lr=4.87e-04
+21:43:33 [INFO]   [14/100] batch 150/646 loss=35.0540 lr=4.87e-04
+21:43:43 [INFO]   [14/100] batch 200/646 loss=34.9763 lr=4.87e-04
+21:43:52 [INFO]   [14/100] batch 250/646 loss=34.9725 lr=4.87e-04
+21:44:02 [INFO]   [14/100] batch 300/646 loss=34.6648 lr=4.87e-04
+21:44:11 [INFO]   [14/100] batch 350/646 loss=34.5738 lr=4.87e-04
+21:44:21 [INFO]   [14/100] batch 400/646 loss=34.3899 lr=4.87e-04
+21:44:30 [INFO]   [14/100] batch 450/646 loss=34.4104 lr=4.87e-04
+21:44:40 [INFO]   [14/100] batch 500/646 loss=34.4367 lr=4.87e-04
+21:44:50 [INFO]   [14/100] batch 550/646 loss=34.4948 lr=4.87e-04
+21:44:59 [INFO]   [14/100] batch 600/646 loss=34.6327 lr=4.87e-04
+21:45:57 [INFO] Epoch 14/100 (122.7s) | loss=35.9710 (raw=34.6609) pos=1.3391 siz=-1.1450 ori=0.8145 vel=0.9992 nis=0.6567 ua=0.75 contrast=1.5699 | val=3.9233 val_pos=0.0475 | k_m=20.00 k_s=24.04 k_reg=0.0000 dp_reg=0.0000 | NaN=0
+21:45:57 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-2.3532)
+21:45:57 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-19.6206)
+21:45:57 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=7.8728)
+21:45:57 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=36.0345)
+21:45:57 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=121.5568)
+21:45:57 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=110.0065)
+21:45:57 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=77.6184)
+21:45:57 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch14.pt
+21:45:57 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=3.9233)
+21:46:07 [INFO]   [15/100] batch 50/646 loss=33.9675 lr=4.84e-04
+21:46:16 [INFO]   [15/100] batch 100/646 loss=35.0912 lr=4.84e-04
+21:46:25 [INFO]   [15/100] batch 150/646 loss=35.3295 lr=4.84e-04
+21:46:34 [INFO]   [15/100] batch 200/646 loss=35.3637 lr=4.84e-04
+21:46:43 [INFO]   [15/100] batch 250/646 loss=35.5282 lr=4.84e-04
+21:46:53 [INFO]   [15/100] batch 300/646 loss=35.1292 lr=4.84e-04
+21:47:02 [INFO]   [15/100] batch 350/646 loss=35.0544 lr=4.84e-04
+21:47:12 [INFO]   [15/100] batch 400/646 loss=34.9664 lr=4.84e-04
+21:47:21 [INFO]   [15/100] batch 450/646 loss=35.0247 lr=4.84e-04
+21:47:31 [INFO]   [15/100] batch 500/646 loss=35.0788 lr=4.84e-04
+21:47:40 [INFO]   [15/100] batch 550/646 loss=35.1682 lr=4.84e-04
+21:47:49 [INFO]   [15/100] batch 600/646 loss=35.0634 lr=4.84e-04
+21:48:47 [INFO] Epoch 15/100 (121.3s) | loss=36.4511 (raw=35.1022) pos=1.3274 siz=-1.1501 ori=0.9167 vel=0.9812 nis=0.6577 ua=0.88 contrast=1.5480 | val=3.5276 val_pos=0.0327 | k_m=19.23 k_s=22.57 k_reg=0.0000 dp_reg=0.0000 | NaN=0
+21:48:47 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-19.8657)
+21:48:47 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=7.5098)
+21:48:47 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=32.6825)
+21:48:47 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=119.0175)
+21:48:47 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=107.7048)
+21:48:47 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=75.7516)
+21:48:47 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch15.pt
+21:48:47 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=3.5276)
+21:48:57 [INFO]   [16/100] batch 50/646 loss=35.3705 lr=4.81e-04
+21:49:07 [INFO]   [16/100] batch 100/646 loss=35.8107 lr=4.81e-04
+21:49:16 [INFO]   [16/100] batch 150/646 loss=35.7529 lr=4.81e-04
+21:49:25 [INFO]   [16/100] batch 200/646 loss=35.9008 lr=4.81e-04
+21:49:34 [INFO]   [16/100] batch 250/646 loss=35.9117 lr=4.81e-04
+21:49:44 [INFO]   [16/100] batch 300/646 loss=35.7641 lr=4.81e-04
+21:49:53 [INFO]   [16/100] batch 350/646 loss=35.7884 lr=4.81e-04
+21:50:02 [INFO]   [16/100] batch 400/646 loss=35.5588 lr=4.81e-04
+21:50:11 [INFO]   [16/100] batch 450/646 loss=35.6255 lr=4.81e-04
+21:50:20 [INFO]   [16/100] batch 500/646 loss=35.5051 lr=4.81e-04
+21:50:30 [INFO]   [16/100] batch 550/646 loss=35.5061 lr=4.81e-04
+21:50:39 [INFO]   [16/100] batch 600/646 loss=35.5032 lr=4.81e-04
+21:51:37 [INFO] Epoch 16/100 (120.2s) | loss=36.7703 (raw=35.3817) pos=1.3103 siz=-1.1454 ori=1.0097 vel=0.9599 nis=0.6542 ua=1.00 contrast=1.5004 | val=3.0539 val_pos=0.0130 | k_m=18.49 k_s=21.22 k_reg=0.0000 dp_reg=0.0000 | NaN=0
+21:51:37 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-2.4346)
+21:51:37 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-20.1618)
+21:51:37 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=31.5994)
+21:51:37 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=116.5891)
+21:51:37 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=105.7146)
+21:51:37 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=73.3756)
+21:51:38 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch16.pt
+21:51:38 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=3.0539)
+21:51:48 [INFO]   [17/100] batch 50/646 loss=35.5564 lr=4.78e-04
+21:51:57 [INFO]   [17/100] batch 100/646 loss=35.3321 lr=4.78e-04
+21:52:07 [INFO]   [17/100] batch 150/646 loss=35.5711 lr=4.78e-04
+21:52:16 [INFO]   [17/100] batch 200/646 loss=35.6576 lr=4.78e-04
+21:52:26 [INFO]   [17/100] batch 250/646 loss=35.7497 lr=4.78e-04
+21:52:35 [INFO]   [17/100] batch 300/646 loss=35.6324 lr=4.78e-04
+21:52:44 [INFO]   [17/100] batch 350/646 loss=35.3924 lr=4.78e-04
+21:52:54 [INFO]   [17/100] batch 400/646 loss=35.2680 lr=4.78e-04
+21:53:03 [INFO]   [17/100] batch 450/646 loss=35.2130 lr=4.78e-04
+21:53:12 [INFO]   [17/100] batch 500/646 loss=35.2520 lr=4.78e-04
+21:53:21 [INFO]   [17/100] batch 550/646 loss=35.1801 lr=4.78e-04
+21:53:31 [INFO]   [17/100] batch 600/646 loss=35.1319 lr=4.78e-04
+21:54:30 [INFO] Epoch 17/100 (121.9s) | loss=36.4954 (raw=35.0957) pos=1.2987 siz=-1.1541 ori=1.0117 vel=0.9441 nis=0.6546 ua=1.00 contrast=1.6137 | val=2.8479 val_pos=0.0047 | k_m=17.81 k_s=19.81 k_reg=0.0000 dp_reg=0.0000 | NaN=0
+21:54:30 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-20.3809)
+21:54:30 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=7.2363)
+21:54:30 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=29.1874)
+21:54:30 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=114.4015)
+21:54:30 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=71.9571)
+21:54:30 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch17.pt
+21:54:30 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=2.8479)
+21:54:40 [INFO]   [18/100] batch 50/646 loss=33.7251 lr=4.75e-04
+21:54:49 [INFO]   [18/100] batch 100/646 loss=34.5323 lr=4.75e-04
+21:54:58 [INFO]   [18/100] batch 150/646 loss=34.6071 lr=4.75e-04
+21:55:07 [INFO]   [18/100] batch 200/646 loss=34.7781 lr=4.75e-04
+21:55:16 [INFO]   [18/100] batch 250/646 loss=34.6816 lr=4.75e-04
+21:55:25 [INFO]   [18/100] batch 300/646 loss=34.3513 lr=4.75e-04
+21:55:34 [INFO]   [18/100] batch 350/646 loss=34.3619 lr=4.75e-04
+21:55:43 [INFO]   [18/100] batch 400/646 loss=34.4972 lr=4.75e-04
+21:55:52 [INFO]   [18/100] batch 450/646 loss=34.4713 lr=4.75e-04
+21:56:01 [INFO]   [18/100] batch 500/646 loss=34.4054 lr=4.75e-04
+21:56:11 [INFO]   [18/100] batch 550/646 loss=34.4611 lr=4.75e-04
+21:56:20 [INFO]   [18/100] batch 600/646 loss=34.4123 lr=4.75e-04
+21:57:18 [INFO] Epoch 18/100 (118.6s) | loss=36.0529 (raw=34.6259) pos=1.2850 siz=-1.1487 ori=0.9923 vel=0.9217 nis=0.6530 ua=1.00 contrast=1.5848 | val=2.3116 val_pos=-0.0172 | k_m=17.04 k_s=18.37 k_reg=0.0000 dp_reg=0.0001 | NaN=0
+21:57:18 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-2.5799)
+21:57:18 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-20.5810)
+21:57:18 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=27.2617)
+21:57:18 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=112.4512)
+21:57:18 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=103.7219)
+21:57:18 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=69.9921)
+21:57:18 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch18.pt
+21:57:18 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=2.3116)
+21:57:28 [INFO]   [19/100] batch 50/646 loss=35.3957 lr=4.71e-04
+21:57:37 [INFO]   [19/100] batch 100/646 loss=34.7923 lr=4.71e-04
+21:57:46 [INFO]   [19/100] batch 150/646 loss=34.4913 lr=4.71e-04
+21:57:56 [INFO]   [19/100] batch 200/646 loss=34.5638 lr=4.71e-04
+21:58:05 [INFO]   [19/100] batch 250/646 loss=34.4920 lr=4.71e-04
+21:58:14 [INFO]   [19/100] batch 300/646 loss=34.3056 lr=4.71e-04
+21:58:23 [INFO]   [19/100] batch 350/646 loss=34.2884 lr=4.71e-04
+21:58:32 [INFO]   [19/100] batch 400/646 loss=34.2898 lr=4.71e-04
+21:58:42 [INFO]   [19/100] batch 450/646 loss=34.2393 lr=4.71e-04
+21:58:51 [INFO]   [19/100] batch 500/646 loss=34.2962 lr=4.71e-04
+21:59:00 [INFO]   [19/100] batch 550/646 loss=34.3209 lr=4.71e-04
+21:59:10 [INFO]   [19/100] batch 600/646 loss=34.3715 lr=4.71e-04
+22:00:06 [INFO] Epoch 19/100 (120.1s) | loss=35.7981 (raw=34.3332) pos=1.2735 siz=-1.1487 ori=0.9950 vel=0.9082 nis=0.6526 ua=1.00 contrast=1.4996 | val=1.9357 val_pos=-0.0317 | k_m=16.21 k_s=16.92 k_reg=0.0000 dp_reg=0.0001 | NaN=0
+22:00:06 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-2.9453)
+22:00:06 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-20.6961)
+22:00:06 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=25.0782)
+22:00:06 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=110.0897)
+22:00:06 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=69.3175)
+22:00:06 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch19.pt
+22:00:06 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=1.9357)
+22:00:16 [INFO]   [20/100] batch 50/646 loss=34.1059 lr=4.67e-04
+22:00:25 [INFO]   [20/100] batch 100/646 loss=33.2852 lr=4.67e-04
+22:00:34 [INFO]   [20/100] batch 150/646 loss=33.0301 lr=4.67e-04
+22:00:44 [INFO]   [20/100] batch 200/646 loss=33.4419 lr=4.67e-04
+22:00:53 [INFO]   [20/100] batch 250/646 loss=33.8653 lr=4.67e-04
+22:01:03 [INFO]   [20/100] batch 300/646 loss=33.8781 lr=4.67e-04
+22:01:12 [INFO]   [20/100] batch 350/646 loss=34.0090 lr=4.67e-04
+22:01:22 [INFO]   [20/100] batch 400/646 loss=34.0915 lr=4.67e-04
+22:01:31 [INFO]   [20/100] batch 450/646 loss=34.1164 lr=4.67e-04
+22:01:40 [INFO]   [20/100] batch 500/646 loss=34.2061 lr=4.67e-04
+22:01:50 [INFO]   [20/100] batch 550/646 loss=34.1456 lr=4.67e-04
+22:01:59 [INFO]   [20/100] batch 600/646 loss=34.0981 lr=4.67e-04
+22:02:55 [INFO] Epoch 20/100 (121.1s) | loss=35.4730 (raw=33.9994) pos=1.2629 siz=-1.1563 ori=0.9889 vel=0.8996 nis=0.6524 ua=1.00 contrast=1.5520 | val=1.1000 val_pos=-0.0650 | k_m=15.49 k_s=15.53 k_reg=0.0000 dp_reg=0.0001 | NaN=0
+22:02:55 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-20.7838)
+22:02:55 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=6.8778)
+22:02:55 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=24.2605)
+22:02:55 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=108.6338)
+22:02:55 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=101.9984)
+22:02:55 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=61.0309)
+22:02:55 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch20.pt
+22:02:55 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=1.1000)
+22:03:05 [INFO]   [21/100] batch 50/646 loss=33.6768 lr=4.63e-04
+22:03:14 [INFO]   [21/100] batch 100/646 loss=33.9035 lr=4.63e-04
+22:03:24 [INFO]   [21/100] batch 150/646 loss=33.5469 lr=4.63e-04
+22:03:33 [INFO]   [21/100] batch 200/646 loss=33.7118 lr=4.63e-04
+22:03:43 [INFO]   [21/100] batch 250/646 loss=33.8442 lr=4.63e-04
+22:03:52 [INFO]   [21/100] batch 300/646 loss=33.7775 lr=4.63e-04
+22:04:02 [INFO]   [21/100] batch 350/646 loss=33.7151 lr=4.63e-04
+22:04:11 [INFO]   [21/100] batch 400/646 loss=33.5803 lr=4.63e-04
+22:04:20 [INFO]   [21/100] batch 450/646 loss=33.5033 lr=4.63e-04
+22:04:30 [INFO]   [21/100] batch 500/646 loss=33.7051 lr=4.63e-04
+22:04:39 [INFO]   [21/100] batch 550/646 loss=33.7241 lr=4.63e-04
+22:04:49 [INFO]   [21/100] batch 600/646 loss=33.7168 lr=4.63e-04
+22:05:45 [INFO] Epoch 21/100 (122.0s) | loss=35.3610 (raw=33.8601) pos=1.2550 siz=-1.1565 ori=0.9998 vel=0.8917 nis=0.6555 ua=1.00 contrast=1.4733 | val=0.9090 val_pos=-0.0738 | k_m=14.87 k_s=14.38 k_reg=0.0000 dp_reg=0.0001 | NaN=0
+22:05:45 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-3.2193)
+22:05:45 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-20.8119)
+22:05:45 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=22.1967)
+22:05:45 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=106.7333)
+22:05:45 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=101.4829)
+22:05:45 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch21.pt
+22:05:45 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=0.9090)
+22:05:55 [INFO]   [22/100] batch 50/646 loss=32.9428 lr=4.59e-04
+22:06:05 [INFO]   [22/100] batch 100/646 loss=33.4357 lr=4.59e-04
+22:06:14 [INFO]   [22/100] batch 150/646 loss=33.6339 lr=4.59e-04
+22:06:24 [INFO]   [22/100] batch 200/646 loss=33.5169 lr=4.59e-04
+22:06:33 [INFO]   [22/100] batch 250/646 loss=33.4818 lr=4.59e-04
+22:06:42 [INFO]   [22/100] batch 300/646 loss=33.4575 lr=4.59e-04
+22:06:52 [INFO]   [22/100] batch 350/646 loss=33.4584 lr=4.59e-04
+22:07:01 [INFO]   [22/100] batch 400/646 loss=33.3135 lr=4.59e-04
+22:07:10 [INFO]   [22/100] batch 450/646 loss=33.2563 lr=4.59e-04
+22:07:20 [INFO]   [22/100] batch 500/646 loss=33.3631 lr=4.59e-04
+22:07:29 [INFO]   [22/100] batch 550/646 loss=33.3595 lr=4.59e-04
+22:07:38 [INFO]   [22/100] batch 600/646 loss=33.3725 lr=4.59e-04
+22:08:37 [INFO] Epoch 22/100 (121.7s) | loss=34.8055 (raw=33.2880) pos=1.2342 siz=-1.1571 ori=0.9924 vel=0.8803 nis=0.6522 ua=1.00 contrast=1.4965 | val=0.6439 val_pos=-0.0846 | k_m=14.23 k_s=13.35 k_reg=0.0000 dp_reg=0.0001 | NaN=0
+22:08:37 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-20.8551)
+22:08:37 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=20.3885)
+22:08:37 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=104.6442)
+22:08:37 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=100.7077)
+22:08:37 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=60.6373)
+22:08:37 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch22.pt
+22:08:37 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=0.6439)
+22:08:47 [INFO]   [23/100] batch 50/646 loss=33.4544 lr=4.54e-04
+22:08:57 [INFO]   [23/100] batch 100/646 loss=33.0159 lr=4.54e-04
+22:09:06 [INFO]   [23/100] batch 150/646 loss=32.9868 lr=4.54e-04
+22:09:15 [INFO]   [23/100] batch 200/646 loss=33.2789 lr=4.54e-04
+22:09:24 [INFO]   [23/100] batch 250/646 loss=33.0604 lr=4.54e-04
+22:09:33 [INFO]   [23/100] batch 300/646 loss=33.0794 lr=4.54e-04
+22:09:43 [INFO]   [23/100] batch 350/646 loss=33.1712 lr=4.54e-04
+22:09:52 [INFO]   [23/100] batch 400/646 loss=33.0739 lr=4.54e-04
+22:10:02 [INFO]   [23/100] batch 450/646 loss=33.2479 lr=4.54e-04
+22:10:11 [INFO]   [23/100] batch 500/646 loss=33.2541 lr=4.54e-04
+22:10:20 [INFO]   [23/100] batch 550/646 loss=33.3385 lr=4.54e-04
+22:10:29 [INFO]   [23/100] batch 600/646 loss=33.3383 lr=4.54e-04
+22:11:29 [INFO] Epoch 23/100 (120.7s) | loss=34.8671 (raw=33.3465) pos=1.2363 siz=-1.1585 ori=0.9911 vel=0.8695 nis=0.6525 ua=1.00 contrast=1.5739 | val=0.4407 val_pos=-0.0954 | k_m=13.55 k_s=12.43 k_reg=0.0000 dp_reg=0.0001 | NaN=0
+22:11:29 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-20.8955)
+22:11:29 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=18.1221)
+22:11:29 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=102.8897)
+22:11:29 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=59.5681)
+22:11:29 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch23.pt
+22:11:29 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=0.4407)
+22:11:39 [INFO]   [24/100] batch 50/646 loss=33.8982 lr=4.49e-04
+22:11:48 [INFO]   [24/100] batch 100/646 loss=33.3584 lr=4.49e-04
+22:11:58 [INFO]   [24/100] batch 150/646 loss=33.0340 lr=4.49e-04
+22:12:08 [INFO]   [24/100] batch 200/646 loss=32.9956 lr=4.49e-04
+22:12:18 [INFO]   [24/100] batch 250/646 loss=33.2071 lr=4.49e-04
+22:12:27 [INFO]   [24/100] batch 300/646 loss=33.3302 lr=4.49e-04
+22:12:38 [INFO]   [24/100] batch 350/646 loss=33.3804 lr=4.49e-04
+22:12:47 [INFO]   [24/100] batch 400/646 loss=33.4268 lr=4.49e-04
+22:12:57 [INFO]   [24/100] batch 450/646 loss=33.2529 lr=4.49e-04
+22:13:06 [INFO]   [24/100] batch 500/646 loss=33.2899 lr=4.49e-04
+22:13:16 [INFO]   [24/100] batch 550/646 loss=33.3303 lr=4.49e-04
+22:13:25 [INFO]   [24/100] batch 600/646 loss=33.1577 lr=4.49e-04
+22:14:22 [INFO] Epoch 24/100 (125.2s) | loss=34.6151 (raw=33.0713) pos=1.2285 siz=-1.1496 ori=0.9779 vel=0.8631 nis=0.6495 ua=1.00 contrast=1.4934 | val=0.0079 val_pos=-0.1086 | k_m=13.00 k_s=11.70 k_reg=0.0000 dp_reg=0.0001 | NaN=0
+22:14:22 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-3.5338)
+22:14:22 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-21.0075)
+22:14:22 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=17.5294)
+22:14:22 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=100.6707)
+22:14:22 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=58.5042)
+22:14:22 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch24.pt
+22:14:22 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=0.0079)
+22:14:32 [INFO]   [25/100] batch 50/646 loss=32.4143 lr=4.44e-04
+22:14:41 [INFO]   [25/100] batch 100/646 loss=32.8259 lr=4.44e-04
+22:14:51 [INFO]   [25/100] batch 150/646 loss=32.9021 lr=4.44e-04
+22:15:00 [INFO]   [25/100] batch 200/646 loss=32.7690 lr=4.44e-04
+22:15:09 [INFO]   [25/100] batch 250/646 loss=32.8918 lr=4.44e-04
+22:15:18 [INFO]   [25/100] batch 300/646 loss=32.7923 lr=4.44e-04
+22:15:27 [INFO]   [25/100] batch 350/646 loss=32.7539 lr=4.44e-04
+22:15:36 [INFO]   [25/100] batch 400/646 loss=32.7105 lr=4.44e-04
+22:15:46 [INFO]   [25/100] batch 450/646 loss=32.8614 lr=4.44e-04
+22:15:55 [INFO]   [25/100] batch 500/646 loss=32.9138 lr=4.44e-04
+22:16:04 [INFO]   [25/100] batch 550/646 loss=32.8832 lr=4.44e-04
+22:16:14 [INFO]   [25/100] batch 600/646 loss=32.9681 lr=4.44e-04
+22:17:15 [INFO] Epoch 25/100 (121.5s) | loss=34.5167 (raw=32.9614) pos=1.2197 siz=-1.1518 ori=0.9940 vel=0.8531 nis=0.6516 ua=1.00 contrast=1.4887 | val=-0.1203 val_pos=-0.1151 | k_m=12.32 k_s=10.99 k_reg=0.0000 dp_reg=0.0001 | NaN=0
+22:17:15 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-21.1089)
+22:17:15 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=6.8743)
+22:17:15 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=16.1565)
+22:17:15 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=95.1762)
+22:17:15 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=100.3230)
+22:17:15 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch25.pt
+22:17:15 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-0.1203)
+22:17:26 [INFO]   [26/100] batch 50/646 loss=33.5560 lr=4.39e-04
+22:17:35 [INFO]   [26/100] batch 100/646 loss=33.0466 lr=4.39e-04
+22:17:46 [INFO]   [26/100] batch 150/646 loss=33.8327 lr=4.39e-04
+22:17:55 [INFO]   [26/100] batch 200/646 loss=33.3923 lr=4.39e-04
+22:18:05 [INFO]   [26/100] batch 250/646 loss=33.1521 lr=4.39e-04
+22:18:15 [INFO]   [26/100] batch 300/646 loss=33.1174 lr=4.39e-04
+22:18:25 [INFO]   [26/100] batch 350/646 loss=33.2663 lr=4.39e-04
+22:18:35 [INFO]   [26/100] batch 400/646 loss=33.0471 lr=4.39e-04
+22:18:45 [INFO]   [26/100] batch 450/646 loss=33.2999 lr=4.39e-04
+22:18:54 [INFO]   [26/100] batch 500/646 loss=33.2417 lr=4.39e-04
+22:19:04 [INFO]   [26/100] batch 550/646 loss=33.1978 lr=4.39e-04
+22:19:14 [INFO]   [26/100] batch 600/646 loss=33.1200 lr=4.39e-04
+22:20:15 [INFO] Epoch 26/100 (127.9s) | loss=34.6245 (raw=33.0571) pos=1.2252 siz=-1.1467 ori=0.9857 vel=0.8550 nis=0.6495 ua=1.00 contrast=1.4761 | val=-0.2179 val_pos=-0.1202 | k_m=11.90 k_s=10.59 k_reg=0.0000 dp_reg=0.0001 | NaN=0
+22:20:15 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-21.1812)
+22:20:15 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=93.3973)
+22:20:15 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch26.pt
+22:20:15 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-0.2179)
+22:20:26 [INFO]   [27/100] batch 50/646 loss=34.6247 lr=4.34e-04
+22:20:36 [INFO]   [27/100] batch 100/646 loss=34.2129 lr=4.34e-04
+22:20:47 [INFO]   [27/100] batch 150/646 loss=33.7216 lr=4.34e-04
+22:20:56 [INFO]   [27/100] batch 200/646 loss=33.5722 lr=4.34e-04
+22:21:06 [INFO]   [27/100] batch 250/646 loss=33.2737 lr=4.34e-04
+22:21:15 [INFO]   [27/100] batch 300/646 loss=33.1550 lr=4.34e-04
+22:21:24 [INFO]   [27/100] batch 350/646 loss=33.2121 lr=4.34e-04
+22:21:33 [INFO]   [27/100] batch 400/646 loss=33.2182 lr=4.34e-04
+22:21:42 [INFO]   [27/100] batch 450/646 loss=33.0948 lr=4.34e-04
+22:21:51 [INFO]   [27/100] batch 500/646 loss=32.9117 lr=4.34e-04
+22:22:00 [INFO]   [27/100] batch 550/646 loss=32.9406 lr=4.34e-04
+22:22:10 [INFO]   [27/100] batch 600/646 loss=32.8435 lr=4.34e-04
+22:23:09 [INFO] Epoch 27/100 (123.0s) | loss=34.4087 (raw=32.8414) pos=1.2171 siz=-1.1518 ori=0.9848 vel=0.8506 nis=0.6497 ua=1.00 contrast=1.5428 | val=-0.2392 val_pos=-0.1206 | k_m=11.49 k_s=10.36 k_reg=0.0000 dp_reg=0.0001 | NaN=0
+22:23:09 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-21.2212)
+22:23:09 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=6.8080)
+22:23:09 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=92.6414)
+22:23:09 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=97.9266)
+22:23:09 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=58.4838)
+22:23:09 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch27.pt
+22:23:09 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-0.2392)
+22:23:19 [INFO]   [28/100] batch 50/646 loss=33.1338 lr=4.28e-04
+22:23:28 [INFO]   [28/100] batch 100/646 loss=32.2809 lr=4.28e-04
+22:23:38 [INFO]   [28/100] batch 150/646 loss=32.6320 lr=4.28e-04
+22:23:47 [INFO]   [28/100] batch 200/646 loss=32.6027 lr=4.28e-04
+22:23:56 [INFO]   [28/100] batch 250/646 loss=32.3357 lr=4.28e-04
+22:24:06 [INFO]   [28/100] batch 300/646 loss=32.4643 lr=4.28e-04
+22:24:15 [INFO]   [28/100] batch 350/646 loss=32.5879 lr=4.28e-04
+22:24:24 [INFO]   [28/100] batch 400/646 loss=32.7763 lr=4.28e-04
+22:24:33 [INFO]   [28/100] batch 450/646 loss=32.6997 lr=4.28e-04
+22:24:43 [INFO]   [28/100] batch 500/646 loss=32.7651 lr=4.28e-04
+22:24:52 [INFO]   [28/100] batch 550/646 loss=32.6292 lr=4.28e-04
+22:25:02 [INFO]   [28/100] batch 600/646 loss=32.6259 lr=4.28e-04
+22:26:01 [INFO] Epoch 28/100 (121.4s) | loss=34.2271 (raw=32.6385) pos=1.2094 siz=-1.1584 ori=0.9908 vel=0.8429 nis=0.6481 ua=1.00 contrast=1.4673 | val=-0.3715 val_pos=-0.1265 | k_m=10.99 k_s=10.14 k_reg=0.0000 dp_reg=0.0001 | NaN=0
+22:26:01 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-21.2834)
+22:26:01 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=89.0457)
+22:26:01 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch28.pt
+22:26:01 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-0.3715)
+22:26:11 [INFO]   [29/100] batch 50/646 loss=31.4714 lr=4.22e-04
+22:26:20 [INFO]   [29/100] batch 100/646 loss=32.2907 lr=4.22e-04
+22:26:29 [INFO]   [29/100] batch 150/646 loss=32.5217 lr=4.22e-04
+22:26:39 [INFO]   [29/100] batch 200/646 loss=32.5867 lr=4.22e-04
+22:26:48 [INFO]   [29/100] batch 250/646 loss=32.4857 lr=4.22e-04
+22:26:57 [INFO]   [29/100] batch 300/646 loss=32.2368 lr=4.22e-04
+22:27:06 [INFO]   [29/100] batch 350/646 loss=32.2460 lr=4.22e-04
+22:27:16 [INFO]   [29/100] batch 400/646 loss=32.2141 lr=4.22e-04
+22:27:25 [INFO]   [29/100] batch 450/646 loss=32.1503 lr=4.22e-04
+22:27:35 [INFO]   [29/100] batch 500/646 loss=32.3051 lr=4.22e-04
+22:27:44 [INFO]   [29/100] batch 550/646 loss=32.3491 lr=4.22e-04
+22:27:54 [INFO]   [29/100] batch 600/646 loss=32.4154 lr=4.22e-04
+22:28:51 [INFO] Epoch 29/100 (121.4s) | loss=33.9969 (raw=32.4002) pos=1.2004 siz=-1.1563 ori=0.9878 vel=0.8419 nis=0.6467 ua=1.00 contrast=1.4643 | val=-0.3807 val_pos=-0.1269 | k_m=10.41 k_s=9.62 k_reg=0.0000 dp_reg=0.0001 | NaN=0
+22:28:51 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-3.6168)
+22:28:51 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-21.3056)
+22:28:51 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=86.9374)
+22:28:51 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=96.9519)
+22:28:51 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch29.pt
+22:28:51 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-0.3807)
+22:29:01 [INFO]   [30/100] batch 50/646 loss=33.4198 lr=4.16e-04
+22:29:11 [INFO]   [30/100] batch 100/646 loss=33.0045 lr=4.16e-04
+22:29:20 [INFO]   [30/100] batch 150/646 loss=32.8279 lr=4.16e-04
+22:29:29 [INFO]   [30/100] batch 200/646 loss=33.0674 lr=4.16e-04
+22:29:39 [INFO]   [30/100] batch 250/646 loss=33.0079 lr=4.16e-04
+22:29:49 [INFO]   [30/100] batch 300/646 loss=32.9025 lr=4.16e-04
+22:29:58 [INFO]   [30/100] batch 350/646 loss=32.9214 lr=4.16e-04
+22:30:08 [INFO]   [30/100] batch 400/646 loss=33.0138 lr=4.16e-04
+22:30:17 [INFO]   [30/100] batch 450/646 loss=32.9830 lr=4.16e-04
+22:30:27 [INFO]   [30/100] batch 500/646 loss=32.9277 lr=4.16e-04
+22:30:36 [INFO]   [30/100] batch 550/646 loss=32.7062 lr=4.16e-04
+22:30:45 [INFO]   [30/100] batch 600/646 loss=32.5663 lr=4.16e-04
+22:31:42 [INFO] Epoch 30/100 (122.7s) | loss=34.1095 (raw=32.5099) pos=1.2050 siz=-1.1602 ori=0.9892 vel=0.8413 nis=0.6484 ua=1.00 contrast=1.4770 | val=-0.7022 val_pos=-0.1392 | k_m=10.21 k_s=9.92 k_reg=0.0000 dp_reg=0.0001 | NaN=0
+22:31:42 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-3.9019)
+22:31:42 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-21.3505)
+22:31:42 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=6.3833)
+22:31:42 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=16.0862)
+22:31:42 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=84.6535)
+22:31:43 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=58.3618)
+22:31:43 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch30.pt
+22:31:43 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-0.7022)
+22:31:53 [INFO]   [31/100] batch 50/646 loss=33.2501 lr=4.10e-04
+22:32:02 [INFO]   [31/100] batch 100/646 loss=32.4360 lr=4.10e-04
+22:32:12 [INFO]   [31/100] batch 150/646 loss=32.5830 lr=4.10e-04
+22:32:21 [INFO]   [31/100] batch 200/646 loss=32.9795 lr=4.10e-04
+22:32:31 [INFO]   [31/100] batch 250/646 loss=32.8950 lr=4.10e-04
+22:32:41 [INFO]   [31/100] batch 300/646 loss=32.7567 lr=4.10e-04
+22:32:50 [INFO]   [31/100] batch 350/646 loss=32.7007 lr=4.10e-04
+22:33:00 [INFO]   [31/100] batch 400/646 loss=32.6372 lr=4.10e-04
+22:33:09 [INFO]   [31/100] batch 450/646 loss=32.8368 lr=4.10e-04
+22:33:19 [INFO]   [31/100] batch 500/646 loss=32.8238 lr=4.10e-04
+22:33:28 [INFO]   [31/100] batch 550/646 loss=32.7721 lr=4.10e-04
+22:33:37 [INFO]   [31/100] batch 600/646 loss=32.6161 lr=4.10e-04
+22:34:35 [INFO] Epoch 31/100 (123.3s) | loss=34.2160 (raw=32.6124) pos=1.2081 siz=-1.1573 ori=0.9898 vel=0.8383 nis=0.6467 ua=1.00 contrast=1.4977 | val=-0.3449 val_pos=-0.1249 | k_m=9.90 k_s=9.95 k_reg=0.0000 dp_reg=0.0001 | NaN=0
+22:34:35 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=82.2166)
+22:34:45 [INFO]   [32/100] batch 50/646 loss=32.9236 lr=4.04e-04
+22:34:54 [INFO]   [32/100] batch 100/646 loss=32.0841 lr=4.04e-04
+22:35:04 [INFO]   [32/100] batch 150/646 loss=32.0303 lr=4.04e-04
+22:35:13 [INFO]   [32/100] batch 200/646 loss=31.9370 lr=4.04e-04
+22:35:22 [INFO]   [32/100] batch 250/646 loss=31.9085 lr=4.04e-04
+22:35:32 [INFO]   [32/100] batch 300/646 loss=32.1060 lr=4.04e-04
+22:35:41 [INFO]   [32/100] batch 350/646 loss=31.9079 lr=4.04e-04
+22:35:50 [INFO]   [32/100] batch 400/646 loss=31.8249 lr=4.04e-04
+22:35:59 [INFO]   [32/100] batch 450/646 loss=31.9329 lr=4.04e-04
+22:36:09 [INFO]   [32/100] batch 500/646 loss=31.8879 lr=4.04e-04
+22:36:18 [INFO]   [32/100] batch 550/646 loss=31.9775 lr=4.04e-04
+22:36:27 [INFO]   [32/100] batch 600/646 loss=32.0064 lr=4.04e-04
+22:37:25 [INFO] Epoch 32/100 (120.7s) | loss=33.6542 (raw=32.0509) pos=1.1861 siz=-1.1623 ori=0.9907 vel=0.8281 nis=0.6473 ua=1.00 contrast=1.5178 | val=-0.8157 val_pos=-0.1447 | k_m=9.51 k_s=9.86 k_reg=0.0000 dp_reg=0.0001 | NaN=0
+22:37:25 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-21.4799)
+22:37:25 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=78.9019)
+22:37:25 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=96.6509)
+22:37:25 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch32.pt
+22:37:25 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-0.8157)
+22:37:35 [INFO]   [33/100] batch 50/646 loss=32.3315 lr=3.98e-04
+22:37:44 [INFO]   [33/100] batch 100/646 loss=33.3097 lr=3.98e-04
+22:37:54 [INFO]   [33/100] batch 150/646 loss=33.3130 lr=3.98e-04
+22:38:03 [INFO]   [33/100] batch 200/646 loss=32.6857 lr=3.98e-04
+22:38:13 [INFO]   [33/100] batch 250/646 loss=32.6395 lr=3.98e-04
+22:38:22 [INFO]   [33/100] batch 300/646 loss=32.4756 lr=3.98e-04
+22:38:31 [INFO]   [33/100] batch 350/646 loss=32.5028 lr=3.98e-04
+22:38:41 [INFO]   [33/100] batch 400/646 loss=32.4302 lr=3.98e-04
+22:38:51 [INFO]   [33/100] batch 450/646 loss=32.5002 lr=3.98e-04
+22:39:00 [INFO]   [33/100] batch 500/646 loss=32.4897 lr=3.98e-04
+22:39:10 [INFO]   [33/100] batch 550/646 loss=32.5007 lr=3.98e-04
+22:39:19 [INFO]   [33/100] batch 600/646 loss=32.4958 lr=3.98e-04
+22:40:18 [INFO] Epoch 33/100 (123.0s) | loss=34.0661 (raw=32.4554) pos=1.2030 siz=-1.1582 ori=0.9860 vel=0.8349 nis=0.6477 ua=1.00 contrast=1.5102 | val=-1.0667 val_pos=-0.1548 | k_m=9.20 k_s=9.94 k_reg=0.0000 dp_reg=0.0001 | NaN=0
+22:40:18 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-4.0672)
+22:40:18 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-21.5115)
+22:40:18 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=16.0476)
+22:40:18 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=77.0524)
+22:40:18 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=57.7309)
+22:40:18 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch33.pt
+22:40:18 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-1.0667)
+22:40:28 [INFO]   [34/100] batch 50/646 loss=32.8692 lr=3.91e-04
+22:40:37 [INFO]   [34/100] batch 100/646 loss=32.0998 lr=3.91e-04
+22:40:47 [INFO]   [34/100] batch 150/646 loss=31.9056 lr=3.91e-04
+22:40:56 [INFO]   [34/100] batch 200/646 loss=31.9784 lr=3.91e-04
+22:41:05 [INFO]   [34/100] batch 250/646 loss=32.1851 lr=3.91e-04
+22:41:15 [INFO]   [34/100] batch 300/646 loss=32.2114 lr=3.91e-04
+22:41:24 [INFO]   [34/100] batch 350/646 loss=32.0953 lr=3.91e-04
+22:41:34 [INFO]   [34/100] batch 400/646 loss=32.2908 lr=3.91e-04
+22:41:43 [INFO]   [34/100] batch 450/646 loss=32.2466 lr=3.91e-04
+22:41:53 [INFO]   [34/100] batch 500/646 loss=32.2561 lr=3.91e-04
+22:42:02 [INFO]   [34/100] batch 550/646 loss=32.1508 lr=3.91e-04
+22:42:12 [INFO]   [34/100] batch 600/646 loss=32.1358 lr=3.91e-04
+22:43:09 [INFO] Epoch 34/100 (122.9s) | loss=33.7122 (raw=32.0848) pos=1.1893 siz=-1.1601 ori=0.9861 vel=0.8282 nis=0.6448 ua=1.00 contrast=1.4444 | val=-0.9366 val_pos=-0.1485 | k_m=8.88 k_s=9.91 k_reg=0.0000 dp_reg=0.0001 | NaN=0
+22:43:09 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-21.6208)
+22:43:10 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=6.3589)
+22:43:10 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=76.1280)
+22:43:19 [INFO]   [35/100] batch 50/646 loss=31.7319 lr=3.84e-04
+22:43:28 [INFO]   [35/100] batch 100/646 loss=32.0142 lr=3.84e-04
+22:43:38 [INFO]   [35/100] batch 150/646 loss=31.8188 lr=3.84e-04
+22:43:47 [INFO]   [35/100] batch 200/646 loss=32.0141 lr=3.84e-04
+22:43:56 [INFO]   [35/100] batch 250/646 loss=31.8004 lr=3.84e-04
+22:44:05 [INFO]   [35/100] batch 300/646 loss=32.1986 lr=3.84e-04
+22:44:15 [INFO]   [35/100] batch 350/646 loss=32.4090 lr=3.84e-04
+22:44:24 [INFO]   [35/100] batch 400/646 loss=32.2099 lr=3.84e-04
+22:44:34 [INFO]   [35/100] batch 450/646 loss=32.0864 lr=3.84e-04
+22:44:43 [INFO]   [35/100] batch 500/646 loss=32.1098 lr=3.84e-04
+22:44:52 [INFO]   [35/100] batch 550/646 loss=32.0470 lr=3.84e-04
+22:45:00 [INFO]   [35/100] batch 600/646 loss=32.0295 lr=3.84e-04
+22:45:58 [INFO] Epoch 35/100 (119.4s) | loss=33.6482 (raw=32.0341) pos=1.1847 siz=-1.1608 ori=0.9911 vel=0.8260 nis=0.6450 ua=1.00 contrast=1.5514 | val=-1.1517 val_pos=-0.1576 | k_m=8.66 k_s=9.86 k_reg=0.0000 dp_reg=0.0001 | NaN=0
+22:45:58 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-4.0984)
+22:45:59 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-21.7066)
+22:45:59 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=15.9304)
+22:45:59 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=73.3280)
+22:45:59 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch35.pt
+22:45:59 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-1.1517)
+22:46:08 [INFO]   [36/100] batch 50/646 loss=31.3794 lr=3.77e-04
+22:46:18 [INFO]   [36/100] batch 100/646 loss=31.4848 lr=3.77e-04
+22:46:27 [INFO]   [36/100] batch 150/646 loss=31.9759 lr=3.77e-04
+22:46:37 [INFO]   [36/100] batch 200/646 loss=32.0488 lr=3.77e-04
+22:46:46 [INFO]   [36/100] batch 250/646 loss=32.1738 lr=3.77e-04
+22:46:55 [INFO]   [36/100] batch 300/646 loss=32.1591 lr=3.77e-04
+22:47:05 [INFO]   [36/100] batch 350/646 loss=32.2270 lr=3.77e-04
+22:47:14 [INFO]   [36/100] batch 400/646 loss=32.1399 lr=3.77e-04
+22:47:23 [INFO]   [36/100] batch 450/646 loss=32.2718 lr=3.77e-04
+22:47:33 [INFO]   [36/100] batch 500/646 loss=32.3550 lr=3.77e-04
+22:47:42 [INFO]   [36/100] batch 550/646 loss=32.3950 lr=3.77e-04
+22:47:51 [INFO]   [36/100] batch 600/646 loss=32.4739 lr=3.77e-04
+22:48:48 [INFO] Epoch 36/100 (120.6s) | loss=34.0991 (raw=32.4652) pos=1.2031 siz=-1.1511 ori=0.9836 vel=0.8328 nis=0.6464 ua=1.00 contrast=1.4784 | val=-1.2314 val_pos=-0.1616 | k_m=8.46 k_s=9.94 k_reg=0.0000 dp_reg=0.0001 | NaN=0
+22:48:48 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-21.9687)
+22:48:48 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=70.5327)
+22:48:48 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch36.pt
+22:48:48 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-1.2314)
+22:48:58 [INFO]   [37/100] batch 50/646 loss=33.4265 lr=3.70e-04
+22:49:08 [INFO]   [37/100] batch 100/646 loss=32.9928 lr=3.70e-04
+22:49:17 [INFO]   [37/100] batch 150/646 loss=32.6433 lr=3.70e-04
+22:49:26 [INFO]   [37/100] batch 200/646 loss=32.3418 lr=3.70e-04
+22:49:35 [INFO]   [37/100] batch 250/646 loss=32.0962 lr=3.70e-04
+22:49:45 [INFO]   [37/100] batch 300/646 loss=32.2380 lr=3.70e-04
+22:49:54 [INFO]   [37/100] batch 350/646 loss=32.2632 lr=3.70e-04
+22:50:03 [INFO]   [37/100] batch 400/646 loss=32.0583 lr=3.70e-04
+22:50:12 [INFO]   [37/100] batch 450/646 loss=31.7489 lr=3.70e-04
+22:50:22 [INFO]   [37/100] batch 500/646 loss=31.7415 lr=3.70e-04
+22:50:31 [INFO]   [37/100] batch 550/646 loss=31.9099 lr=3.70e-04
+22:50:40 [INFO]   [37/100] batch 600/646 loss=31.8345 lr=3.70e-04
+22:51:36 [INFO] Epoch 37/100 (119.8s) | loss=33.4920 (raw=31.8432) pos=1.1808 siz=-1.1626 ori=0.9852 vel=0.8238 nis=0.6446 ua=1.00 contrast=1.4161 | val=-1.3333 val_pos=-0.1646 | k_m=8.03 k_s=9.34 k_reg=0.0000 dp_reg=0.0001 | NaN=0
+22:51:36 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-4.2520)
+22:51:36 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-22.0595)
+22:51:36 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch37.pt
+22:51:36 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-1.3333)
+22:51:46 [INFO]   [38/100] batch 50/646 loss=30.6474 lr=3.63e-04
+22:51:56 [INFO]   [38/100] batch 100/646 loss=30.5245 lr=3.63e-04
+22:52:05 [INFO]   [38/100] batch 150/646 loss=30.9244 lr=3.63e-04
+22:52:15 [INFO]   [38/100] batch 200/646 loss=31.2161 lr=3.63e-04
+22:52:23 [INFO]   [38/100] batch 250/646 loss=31.5982 lr=3.63e-04
+22:52:33 [INFO]   [38/100] batch 300/646 loss=31.2876 lr=3.63e-04
+22:52:42 [INFO]   [38/100] batch 350/646 loss=31.2596 lr=3.63e-04
+22:52:52 [INFO]   [38/100] batch 400/646 loss=31.4367 lr=3.63e-04
+22:53:01 [INFO]   [38/100] batch 450/646 loss=31.5324 lr=3.63e-04
+22:53:10 [INFO]   [38/100] batch 500/646 loss=31.5004 lr=3.63e-04
+22:53:19 [INFO]   [38/100] batch 550/646 loss=31.5446 lr=3.63e-04
+22:53:29 [INFO]   [38/100] batch 600/646 loss=31.6520 lr=3.63e-04
+22:54:28 [INFO] Epoch 38/100 (121.2s) | loss=33.3856 (raw=31.7426) pos=1.1738 siz=-1.1586 ori=0.9884 vel=0.8195 nis=0.6444 ua=1.00 contrast=1.5179 | val=-1.3202 val_pos=-0.1651 | k_m=8.12 k_s=9.98 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+22:54:29 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-22.2411)
+22:54:29 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=68.0614)
+22:54:38 [INFO]   [39/100] batch 50/646 loss=30.0604 lr=3.56e-04
+22:54:48 [INFO]   [39/100] batch 100/646 loss=31.2518 lr=3.56e-04
+22:54:57 [INFO]   [39/100] batch 150/646 loss=30.8086 lr=3.56e-04
+22:55:06 [INFO]   [39/100] batch 200/646 loss=31.1165 lr=3.56e-04
+22:55:16 [INFO]   [39/100] batch 250/646 loss=31.1606 lr=3.56e-04
+22:55:25 [INFO]   [39/100] batch 300/646 loss=31.2979 lr=3.56e-04
+22:55:35 [INFO]   [39/100] batch 350/646 loss=31.7373 lr=3.56e-04
+22:55:44 [INFO]   [39/100] batch 400/646 loss=31.6350 lr=3.56e-04
+22:55:53 [INFO]   [39/100] batch 450/646 loss=31.7378 lr=3.56e-04
+22:56:03 [INFO]   [39/100] batch 500/646 loss=31.6151 lr=3.56e-04
+22:56:12 [INFO]   [39/100] batch 550/646 loss=31.5159 lr=3.56e-04
+22:56:21 [INFO]   [39/100] batch 600/646 loss=31.6195 lr=3.56e-04
+22:57:22 [INFO] Epoch 39/100 (121.6s) | loss=33.3113 (raw=31.6455) pos=1.1711 siz=-1.1568 ori=0.9861 vel=0.8145 nis=0.6434 ua=1.00 contrast=1.4450 | val=-1.5203 val_pos=-0.1731 | k_m=7.95 k_s=9.97 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+22:57:22 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-22.3244)
+22:57:23 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=6.1020)
+22:57:23 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=65.6718)
+22:57:23 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=95.2412)
+22:57:23 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch39.pt
+22:57:23 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-1.5203)
+22:57:33 [INFO]   [40/100] batch 50/646 loss=31.4272 lr=3.48e-04
+22:57:42 [INFO]   [40/100] batch 100/646 loss=31.6420 lr=3.48e-04
+22:57:51 [INFO]   [40/100] batch 150/646 loss=31.6436 lr=3.48e-04
+22:58:01 [INFO]   [40/100] batch 200/646 loss=32.2381 lr=3.48e-04
+22:58:11 [INFO]   [40/100] batch 250/646 loss=32.3511 lr=3.48e-04
+22:58:22 [INFO]   [40/100] batch 300/646 loss=32.4468 lr=3.48e-04
+22:58:32 [INFO]   [40/100] batch 350/646 loss=32.2008 lr=3.48e-04
+22:58:41 [INFO]   [40/100] batch 400/646 loss=31.9998 lr=3.48e-04
+22:58:51 [INFO]   [40/100] batch 450/646 loss=31.7388 lr=3.48e-04
+22:59:01 [INFO]   [40/100] batch 500/646 loss=31.7258 lr=3.48e-04
+22:59:10 [INFO]   [40/100] batch 550/646 loss=31.7120 lr=3.48e-04
+22:59:19 [INFO]   [40/100] batch 600/646 loss=31.6147 lr=3.48e-04
+23:00:16 [INFO] Epoch 40/100 (125.3s) | loss=33.1930 (raw=31.5260) pos=1.1658 siz=-1.1560 ori=0.9850 vel=0.8132 nis=0.6437 ua=1.00 contrast=1.5060 | val=-1.3321 val_pos=-0.1669 | k_m=7.77 k_s=9.92 k_reg=0.0000 dp_reg=0.0001 | NaN=0
+23:00:16 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-22.3767)
+23:00:16 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch40.pt
+23:00:26 [INFO]   [41/100] batch 50/646 loss=30.4790 lr=3.41e-04
+23:00:35 [INFO]   [41/100] batch 100/646 loss=30.0622 lr=3.41e-04
+23:00:45 [INFO]   [41/100] batch 150/646 loss=30.2525 lr=3.41e-04
+23:00:54 [INFO]   [41/100] batch 200/646 loss=30.1342 lr=3.41e-04
+23:01:04 [INFO]   [41/100] batch 250/646 loss=30.3470 lr=3.41e-04
+23:01:13 [INFO]   [41/100] batch 300/646 loss=30.4798 lr=3.41e-04
+23:01:23 [INFO]   [41/100] batch 350/646 loss=30.7661 lr=3.41e-04
+23:01:32 [INFO]   [41/100] batch 400/646 loss=30.7507 lr=3.41e-04
+23:01:41 [INFO]   [41/100] batch 450/646 loss=30.8209 lr=3.41e-04
+23:01:51 [INFO]   [41/100] batch 500/646 loss=30.6982 lr=3.41e-04
+23:02:00 [INFO]   [41/100] batch 550/646 loss=30.7797 lr=3.41e-04
+23:02:09 [INFO]   [41/100] batch 600/646 loss=30.9268 lr=3.41e-04
+23:03:08 [INFO] Epoch 41/100 (121.8s) | loss=32.8075 (raw=31.1188) pos=1.1558 siz=-1.1634 ori=0.9723 vel=0.8070 nis=0.6423 ua=1.00 contrast=1.4272 | val=-1.8446 val_pos=-0.1874 | k_m=7.68 k_s=9.96 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+23:03:08 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-22.4203)
+23:03:08 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=63.6904)
+23:03:08 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=90.1644)
+23:03:08 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=57.1401)
+23:03:08 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch41.pt
+23:03:08 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-1.8446)
+23:03:18 [INFO]   [42/100] batch 50/646 loss=31.2853 lr=3.33e-04
+23:03:28 [INFO]   [42/100] batch 100/646 loss=31.0022 lr=3.33e-04
+23:03:37 [INFO]   [42/100] batch 150/646 loss=31.4274 lr=3.33e-04
+23:03:46 [INFO]   [42/100] batch 200/646 loss=31.3847 lr=3.33e-04
+23:03:55 [INFO]   [42/100] batch 250/646 loss=31.4427 lr=3.33e-04
+23:04:04 [INFO]   [42/100] batch 300/646 loss=31.5712 lr=3.33e-04
+23:04:13 [INFO]   [42/100] batch 350/646 loss=31.6780 lr=3.33e-04
+23:04:22 [INFO]   [42/100] batch 400/646 loss=31.5531 lr=3.33e-04
+23:04:32 [INFO]   [42/100] batch 450/646 loss=31.4483 lr=3.33e-04
+23:04:41 [INFO]   [42/100] batch 500/646 loss=31.3729 lr=3.33e-04
+23:04:50 [INFO]   [42/100] batch 550/646 loss=31.3370 lr=3.33e-04
+23:04:59 [INFO]   [42/100] batch 600/646 loss=31.3733 lr=3.33e-04
+23:05:56 [INFO] Epoch 42/100 (119.8s) | loss=33.0549 (raw=31.3605) pos=1.1634 siz=-1.1585 ori=0.9747 vel=0.8142 nis=0.6430 ua=1.00 contrast=1.4570 | val=-1.6977 val_pos=-0.1822 | k_m=7.37 k_s=9.40 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+23:05:56 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-22.5154)
+23:05:56 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=15.9093)
+23:05:56 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=61.2671)
+23:06:07 [INFO]   [43/100] batch 50/646 loss=32.6188 lr=3.26e-04
+23:06:16 [INFO]   [43/100] batch 100/646 loss=32.3256 lr=3.26e-04
+23:06:25 [INFO]   [43/100] batch 150/646 loss=31.5803 lr=3.26e-04
+23:06:34 [INFO]   [43/100] batch 200/646 loss=31.8751 lr=3.26e-04
+23:06:44 [INFO]   [43/100] batch 250/646 loss=31.6760 lr=3.26e-04
+23:06:53 [INFO]   [43/100] batch 300/646 loss=31.6753 lr=3.26e-04
+23:07:02 [INFO]   [43/100] batch 350/646 loss=31.7682 lr=3.26e-04
+23:07:11 [INFO]   [43/100] batch 400/646 loss=31.6926 lr=3.26e-04
+23:07:21 [INFO]   [43/100] batch 450/646 loss=31.7445 lr=3.26e-04
+23:07:30 [INFO]   [43/100] batch 500/646 loss=31.7450 lr=3.26e-04
+23:07:40 [INFO]   [43/100] batch 550/646 loss=31.6374 lr=3.26e-04
+23:07:50 [INFO]   [43/100] batch 600/646 loss=31.6911 lr=3.26e-04
+23:08:46 [INFO] Epoch 43/100 (121.9s) | loss=33.3322 (raw=31.6195) pos=1.1676 siz=-1.1548 ori=0.9960 vel=0.8169 nis=0.6475 ua=1.00 contrast=1.3613 | val=-1.9764 val_pos=-0.1931 | k_m=7.26 k_s=9.35 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+23:08:46 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-22.6772)
+23:08:46 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=5.9385)
+23:08:46 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=60.0399)
+23:08:46 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=88.8455)
+23:08:46 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch43.pt
+23:08:46 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-1.9764)
+23:08:56 [INFO]   [44/100] batch 50/646 loss=29.3202 lr=3.18e-04
+23:09:05 [INFO]   [44/100] batch 100/646 loss=30.0614 lr=3.18e-04
+23:09:14 [INFO]   [44/100] batch 150/646 loss=30.4489 lr=3.18e-04
+23:09:24 [INFO]   [44/100] batch 200/646 loss=30.8704 lr=3.18e-04
+23:09:33 [INFO]   [44/100] batch 250/646 loss=31.0834 lr=3.18e-04
+23:09:43 [INFO]   [44/100] batch 300/646 loss=31.1401 lr=3.18e-04
+23:09:52 [INFO]   [44/100] batch 350/646 loss=31.2233 lr=3.18e-04
+23:10:02 [INFO]   [44/100] batch 400/646 loss=31.1740 lr=3.18e-04
+23:10:12 [INFO]   [44/100] batch 450/646 loss=31.2083 lr=3.18e-04
+23:10:21 [INFO]   [44/100] batch 500/646 loss=31.3298 lr=3.18e-04
+23:10:30 [INFO]   [44/100] batch 550/646 loss=31.2801 lr=3.18e-04
+23:10:40 [INFO]   [44/100] batch 600/646 loss=31.3063 lr=3.18e-04
+23:11:35 [INFO] Epoch 44/100 (122.2s) | loss=33.0214 (raw=31.3165) pos=1.1574 siz=-1.1588 ori=0.9890 vel=0.8051 nis=0.6437 ua=1.00 contrast=1.4566 | val=-1.9657 val_pos=-0.1928 | k_m=7.10 k_s=9.02 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+23:11:35 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-22.6865)
+23:11:35 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=88.6746)
+23:11:45 [INFO]   [45/100] batch 50/646 loss=32.3127 lr=3.10e-04
+23:11:54 [INFO]   [45/100] batch 100/646 loss=32.0292 lr=3.10e-04
+23:12:04 [INFO]   [45/100] batch 150/646 loss=31.8723 lr=3.10e-04
+23:12:13 [INFO]   [45/100] batch 200/646 loss=32.0341 lr=3.10e-04
+23:12:23 [INFO]   [45/100] batch 250/646 loss=32.1728 lr=3.10e-04
+23:12:32 [INFO]   [45/100] batch 300/646 loss=31.9815 lr=3.10e-04
+23:12:41 [INFO]   [45/100] batch 350/646 loss=32.0301 lr=3.10e-04
+23:12:50 [INFO]   [45/100] batch 400/646 loss=31.8437 lr=3.10e-04
+23:12:59 [INFO]   [45/100] batch 450/646 loss=31.6328 lr=3.10e-04
+23:13:09 [INFO]   [45/100] batch 500/646 loss=31.6034 lr=3.10e-04
+23:13:18 [INFO]   [45/100] batch 550/646 loss=31.4678 lr=3.10e-04
+23:13:27 [INFO]   [45/100] batch 600/646 loss=31.4873 lr=3.10e-04
+23:14:25 [INFO] Epoch 45/100 (120.6s) | loss=33.0842 (raw=31.3759) pos=1.1642 siz=-1.1592 ori=0.9749 vel=0.8090 nis=0.6429 ua=1.00 contrast=1.4424 | val=-1.7226 val_pos=-0.1830 | k_m=7.24 k_s=9.58 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+23:14:25 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=5.6970)
+23:14:25 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=59.1595)
+23:14:35 [INFO]   [46/100] batch 50/646 loss=32.2648 lr=3.02e-04
+23:14:44 [INFO]   [46/100] batch 100/646 loss=31.5930 lr=3.02e-04
+23:14:53 [INFO]   [46/100] batch 150/646 loss=31.0666 lr=3.02e-04
+23:15:03 [INFO]   [46/100] batch 200/646 loss=31.3159 lr=3.02e-04
+23:15:12 [INFO]   [46/100] batch 250/646 loss=31.4914 lr=3.02e-04
+23:15:21 [INFO]   [46/100] batch 300/646 loss=31.7038 lr=3.02e-04
+23:15:30 [INFO]   [46/100] batch 350/646 loss=31.6333 lr=3.02e-04
+23:15:39 [INFO]   [46/100] batch 400/646 loss=31.5533 lr=3.02e-04
+23:15:49 [INFO]   [46/100] batch 450/646 loss=31.5981 lr=3.02e-04
+23:15:58 [INFO]   [46/100] batch 500/646 loss=31.4936 lr=3.02e-04
+23:16:07 [INFO]   [46/100] batch 550/646 loss=31.5079 lr=3.02e-04
+23:16:16 [INFO]   [46/100] batch 600/646 loss=31.5304 lr=3.02e-04
+23:17:14 [INFO] Epoch 46/100 (120.0s) | loss=33.3032 (raw=31.5941) pos=1.1684 siz=-1.1617 ori=0.9930 vel=0.8138 nis=0.6449 ua=1.00 contrast=1.4048 | val=-2.1471 val_pos=-0.1995 | k_m=7.03 k_s=9.05 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+23:17:14 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-4.5416)
+23:17:14 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-22.7336)
+23:17:14 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch46.pt
+23:17:14 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-2.1471)
+23:17:24 [INFO]   [47/100] batch 50/646 loss=27.7279 lr=2.94e-04
+23:17:34 [INFO]   [47/100] batch 100/646 loss=29.4746 lr=2.94e-04
+23:17:43 [INFO]   [47/100] batch 150/646 loss=30.3758 lr=2.94e-04
+23:17:52 [INFO]   [47/100] batch 200/646 loss=30.5670 lr=2.94e-04
+23:18:01 [INFO]   [47/100] batch 250/646 loss=30.7518 lr=2.94e-04
+23:18:11 [INFO]   [47/100] batch 300/646 loss=30.9851 lr=2.94e-04
+23:18:20 [INFO]   [47/100] batch 350/646 loss=30.9922 lr=2.94e-04
+23:18:29 [INFO]   [47/100] batch 400/646 loss=30.9552 lr=2.94e-04
+23:18:39 [INFO]   [47/100] batch 450/646 loss=30.9882 lr=2.94e-04
+23:18:48 [INFO]   [47/100] batch 500/646 loss=30.8840 lr=2.94e-04
+23:18:57 [INFO]   [47/100] batch 550/646 loss=30.9268 lr=2.94e-04
+23:19:07 [INFO]   [47/100] batch 600/646 loss=31.0723 lr=2.94e-04
+23:20:05 [INFO] Epoch 47/100 (121.3s) | loss=32.8616 (raw=31.1488) pos=1.1542 siz=-1.1586 ori=0.9802 vel=0.8039 nis=0.6423 ua=1.00 contrast=1.3830 | val=-2.1919 val_pos=-0.2004 | k_m=7.11 k_s=9.31 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+23:20:05 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=5.5476)
+23:20:05 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=57.0082)
+23:20:05 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch47.pt
+23:20:05 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-2.1919)
+23:20:15 [INFO]   [48/100] batch 50/646 loss=31.8788 lr=2.86e-04
+23:20:24 [INFO]   [48/100] batch 100/646 loss=31.0292 lr=2.86e-04
+23:20:34 [INFO]   [48/100] batch 150/646 loss=31.2228 lr=2.86e-04
+23:20:43 [INFO]   [48/100] batch 200/646 loss=31.3848 lr=2.86e-04
+23:20:52 [INFO]   [48/100] batch 250/646 loss=31.0643 lr=2.86e-04
+23:21:02 [INFO]   [48/100] batch 300/646 loss=31.7121 lr=2.86e-04
+23:21:11 [INFO]   [48/100] batch 350/646 loss=31.5764 lr=2.86e-04
+23:21:21 [INFO]   [48/100] batch 400/646 loss=31.7349 lr=2.86e-04
+23:21:30 [INFO]   [48/100] batch 450/646 loss=31.6580 lr=2.86e-04
+23:21:40 [INFO]   [48/100] batch 500/646 loss=31.5625 lr=2.86e-04
+23:21:50 [INFO]   [48/100] batch 550/646 loss=31.4788 lr=2.86e-04
+23:21:59 [INFO]   [48/100] batch 600/646 loss=31.3749 lr=2.86e-04
+23:22:57 [INFO] Epoch 48/100 (123.1s) | loss=33.2028 (raw=31.4940) pos=1.1662 siz=-1.1624 ori=0.9858 vel=0.8113 nis=0.6445 ua=1.00 contrast=1.4477 | val=-2.1567 val_pos=-0.2007 | k_m=6.99 k_s=8.97 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+23:22:57 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-22.7625)
+23:23:07 [INFO]   [49/100] batch 50/646 loss=30.7169 lr=2.78e-04
+23:23:16 [INFO]   [49/100] batch 100/646 loss=31.0202 lr=2.78e-04
+23:23:26 [INFO]   [49/100] batch 150/646 loss=31.4532 lr=2.78e-04
+23:23:36 [INFO]   [49/100] batch 200/646 loss=31.4477 lr=2.78e-04
+23:23:45 [INFO]   [49/100] batch 250/646 loss=31.5029 lr=2.78e-04
+23:23:54 [INFO]   [49/100] batch 300/646 loss=31.3325 lr=2.78e-04
+23:24:04 [INFO]   [49/100] batch 350/646 loss=31.4239 lr=2.78e-04
+23:24:14 [INFO]   [49/100] batch 400/646 loss=31.3839 lr=2.78e-04
+23:24:23 [INFO]   [49/100] batch 450/646 loss=31.2819 lr=2.78e-04
+23:24:33 [INFO]   [49/100] batch 500/646 loss=31.2376 lr=2.78e-04
+23:24:42 [INFO]   [49/100] batch 550/646 loss=31.1585 lr=2.78e-04
+23:24:52 [INFO]   [49/100] batch 600/646 loss=31.1667 lr=2.78e-04
+23:25:47 [INFO] Epoch 49/100 (123.3s) | loss=32.9159 (raw=31.1898) pos=1.1667 siz=-1.1536 ori=0.9366 vel=0.8112 nis=0.6395 ua=1.00 contrast=1.4815 | val=-2.5552 val_pos=-0.1932 | k_m=6.96 k_s=9.12 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+23:25:47 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-25.1323)
+23:25:47 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=56.9044)
+23:25:47 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch49.pt
+23:25:47 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-2.5552)
+23:25:57 [INFO]   [50/100] batch 50/646 loss=30.9244 lr=2.70e-04
+23:26:07 [INFO]   [50/100] batch 100/646 loss=30.7481 lr=2.70e-04
+23:26:16 [INFO]   [50/100] batch 150/646 loss=30.5900 lr=2.70e-04
+23:26:25 [INFO]   [50/100] batch 200/646 loss=30.9284 lr=2.70e-04
+23:26:35 [INFO]   [50/100] batch 250/646 loss=30.8264 lr=2.70e-04
+23:26:44 [INFO]   [50/100] batch 300/646 loss=30.6766 lr=2.70e-04
+23:26:54 [INFO]   [50/100] batch 350/646 loss=30.6334 lr=2.70e-04
+23:27:03 [INFO]   [50/100] batch 400/646 loss=30.5914 lr=2.70e-04
+23:27:12 [INFO]   [50/100] batch 450/646 loss=30.6370 lr=2.70e-04
+23:27:21 [INFO]   [50/100] batch 500/646 loss=30.6467 lr=2.70e-04
+23:27:31 [INFO]   [50/100] batch 550/646 loss=30.4873 lr=2.70e-04
+23:27:40 [INFO]   [50/100] batch 600/646 loss=30.5777 lr=2.70e-04
+23:28:38 [INFO] Epoch 50/100 (121.0s) | loss=32.2923 (raw=30.5255) pos=1.1600 siz=-1.1623 ori=0.8793 vel=0.8081 nis=0.6321 ua=1.00 contrast=1.4201 | val=-3.1947 val_pos=-0.2027 | k_m=7.39 k_s=10.32 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+23:28:38 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-26.6783)
+23:28:38 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=88.5341)
+23:28:38 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch50.pt
+23:28:38 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-3.1947)
+23:28:49 [INFO]   [51/100] batch 50/646 loss=29.9307 lr=2.62e-04
+23:28:58 [INFO]   [51/100] batch 100/646 loss=30.3596 lr=2.62e-04
+23:29:07 [INFO]   [51/100] batch 150/646 loss=30.0853 lr=2.62e-04
+23:29:17 [INFO]   [51/100] batch 200/646 loss=30.3542 lr=2.62e-04
+23:29:25 [INFO]   [51/100] batch 250/646 loss=29.8496 lr=2.62e-04
+23:29:35 [INFO]   [51/100] batch 300/646 loss=29.6595 lr=2.62e-04
+23:29:44 [INFO]   [51/100] batch 350/646 loss=29.8037 lr=2.62e-04
+23:29:53 [INFO]   [51/100] batch 400/646 loss=29.8386 lr=2.62e-04
+23:30:03 [INFO]   [51/100] batch 450/646 loss=29.8951 lr=2.62e-04
+23:30:12 [INFO]   [51/100] batch 500/646 loss=29.8577 lr=2.62e-04
+23:30:21 [INFO]   [51/100] batch 550/646 loss=29.9345 lr=2.62e-04
+23:30:30 [INFO]   [51/100] batch 600/646 loss=29.9332 lr=2.62e-04
+23:31:30 [INFO] Epoch 51/100 (120.9s) | loss=31.6949 (raw=29.8987) pos=1.1544 siz=-1.1715 ori=0.8232 vel=0.8067 nis=0.6234 ua=1.00 contrast=1.3674 | val=-3.4893 val_pos=-0.2047 | k_m=7.95 k_s=12.33 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+23:31:30 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-27.6718)
+23:31:30 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=55.9715)
+23:31:30 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch51.pt
+23:31:30 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-3.4893)
+23:31:40 [INFO]   [52/100] batch 50/646 loss=30.1472 lr=2.54e-04
+23:31:50 [INFO]   [52/100] batch 100/646 loss=29.7448 lr=2.54e-04
+23:31:59 [INFO]   [52/100] batch 150/646 loss=29.7999 lr=2.54e-04
+23:32:08 [INFO]   [52/100] batch 200/646 loss=29.7007 lr=2.54e-04
+23:32:18 [INFO]   [52/100] batch 250/646 loss=29.5215 lr=2.54e-04
+23:32:27 [INFO]   [52/100] batch 300/646 loss=29.3755 lr=2.54e-04
+23:32:36 [INFO]   [52/100] batch 350/646 loss=29.4687 lr=2.54e-04
+23:32:46 [INFO]   [52/100] batch 400/646 loss=29.4908 lr=2.54e-04
+23:32:55 [INFO]   [52/100] batch 450/646 loss=29.6122 lr=2.54e-04
+23:33:04 [INFO]   [52/100] batch 500/646 loss=29.5870 lr=2.54e-04
+23:33:14 [INFO]   [52/100] batch 550/646 loss=29.5850 lr=2.54e-04
+23:33:24 [INFO]   [52/100] batch 600/646 loss=29.6052 lr=2.54e-04
+23:34:22 [INFO] Epoch 52/100 (122.0s) | loss=31.4291 (raw=29.6280) pos=1.1506 siz=-1.1555 ori=0.7877 vel=0.8080 nis=0.6188 ua=1.00 contrast=1.4153 | val=-3.7466 val_pos=-0.2081 | k_m=8.72 k_s=14.10 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+23:34:22 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-28.3441)
+23:34:22 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=5.5296)
+23:34:22 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=54.5412)
+23:34:22 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=87.2904)
+23:34:22 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch52.pt
+23:34:22 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-3.7466)
+23:34:32 [INFO]   [53/100] batch 50/646 loss=30.2864 lr=2.46e-04
+23:34:41 [INFO]   [53/100] batch 100/646 loss=30.2499 lr=2.46e-04
+23:34:51 [INFO]   [53/100] batch 150/646 loss=30.2814 lr=2.46e-04
+23:35:00 [INFO]   [53/100] batch 200/646 loss=30.1362 lr=2.46e-04
+23:35:09 [INFO]   [53/100] batch 250/646 loss=30.2105 lr=2.46e-04
+23:35:19 [INFO]   [53/100] batch 300/646 loss=30.2049 lr=2.46e-04
+23:35:28 [INFO]   [53/100] batch 350/646 loss=29.8324 lr=2.46e-04
+23:35:38 [INFO]   [53/100] batch 400/646 loss=29.7455 lr=2.46e-04
+23:35:47 [INFO]   [53/100] batch 450/646 loss=29.7373 lr=2.46e-04
+23:35:56 [INFO]   [53/100] batch 500/646 loss=29.6946 lr=2.46e-04
+23:36:06 [INFO]   [53/100] batch 550/646 loss=29.7445 lr=2.46e-04
+23:36:15 [INFO]   [53/100] batch 600/646 loss=29.6664 lr=2.46e-04
+23:37:11 [INFO] Epoch 53/100 (121.4s) | loss=31.3886 (raw=29.5745) pos=1.1530 siz=-1.1555 ori=0.7730 vel=0.8041 nis=0.6161 ua=1.00 contrast=1.4075 | val=-3.7812 val_pos=-0.2046 | k_m=8.94 k_s=14.64 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+23:37:11 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-28.8666)
+23:37:11 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=54.0139)
+23:37:11 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch53.pt
+23:37:11 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-3.7812)
+23:37:21 [INFO]   [54/100] batch 50/646 loss=29.6033 lr=2.38e-04
+23:37:30 [INFO]   [54/100] batch 100/646 loss=29.7542 lr=2.38e-04
+23:37:40 [INFO]   [54/100] batch 150/646 loss=30.2095 lr=2.38e-04
+23:37:49 [INFO]   [54/100] batch 200/646 loss=29.7786 lr=2.38e-04
+23:37:59 [INFO]   [54/100] batch 250/646 loss=29.5004 lr=2.38e-04
+23:38:09 [INFO]   [54/100] batch 300/646 loss=29.3374 lr=2.38e-04
+23:38:18 [INFO]   [54/100] batch 350/646 loss=29.2676 lr=2.38e-04
+23:38:28 [INFO]   [54/100] batch 400/646 loss=29.1872 lr=2.38e-04
+23:38:37 [INFO]   [54/100] batch 450/646 loss=29.2705 lr=2.38e-04
+23:38:46 [INFO]   [54/100] batch 500/646 loss=29.3398 lr=2.38e-04
+23:38:56 [INFO]   [54/100] batch 550/646 loss=29.3502 lr=2.38e-04
+23:39:05 [INFO]   [54/100] batch 600/646 loss=29.3649 lr=2.38e-04
+23:40:02 [INFO] Epoch 54/100 (122.8s) | loss=31.2302 (raw=29.3925) pos=1.1543 siz=-1.1549 ori=0.7467 vel=0.8012 nis=0.6128 ua=1.00 contrast=1.3441 | val=-3.9376 val_pos=-0.2075 | k_m=9.16 k_s=15.09 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+23:40:03 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-29.3893)
+23:40:03 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=15.5282)
+23:40:03 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch54.pt
+23:40:03 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-3.9376)
+23:40:13 [INFO]   [55/100] batch 50/646 loss=28.8897 lr=2.30e-04
+23:40:22 [INFO]   [55/100] batch 100/646 loss=28.3760 lr=2.30e-04
+23:40:32 [INFO]   [55/100] batch 150/646 loss=28.6890 lr=2.30e-04
+23:40:41 [INFO]   [55/100] batch 200/646 loss=28.8528 lr=2.30e-04
+23:40:50 [INFO]   [55/100] batch 250/646 loss=28.9157 lr=2.30e-04
+23:40:59 [INFO]   [55/100] batch 300/646 loss=28.9435 lr=2.30e-04
+23:41:09 [INFO]   [55/100] batch 350/646 loss=29.1496 lr=2.30e-04
+23:41:18 [INFO]   [55/100] batch 400/646 loss=29.3994 lr=2.30e-04
+23:41:27 [INFO]   [55/100] batch 450/646 loss=29.3618 lr=2.30e-04
+23:41:36 [INFO]   [55/100] batch 500/646 loss=29.3990 lr=2.30e-04
+23:41:45 [INFO]   [55/100] batch 550/646 loss=29.3314 lr=2.30e-04
+23:41:54 [INFO]   [55/100] batch 600/646 loss=29.4412 lr=2.30e-04
+23:42:55 [INFO] Epoch 55/100 (120.2s) | loss=31.1403 (raw=29.3007) pos=1.1535 siz=-1.1598 ori=0.7378 vel=0.8074 nis=0.6092 ua=1.00 contrast=1.4126 | val=-4.0666 val_pos=-0.2085 | k_m=9.27 k_s=15.05 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+23:42:55 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-29.7587)
+23:42:55 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=5.4865)
+23:42:55 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=52.8457)
+23:42:55 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch55.pt
+23:42:55 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-4.0666)
+23:43:05 [INFO]   [56/100] batch 50/646 loss=29.9079 lr=2.22e-04
+23:43:14 [INFO]   [56/100] batch 100/646 loss=29.5390 lr=2.22e-04
+23:43:23 [INFO]   [56/100] batch 150/646 loss=29.3930 lr=2.22e-04
+23:43:32 [INFO]   [56/100] batch 200/646 loss=29.5873 lr=2.22e-04
+23:43:42 [INFO]   [56/100] batch 250/646 loss=29.3022 lr=2.22e-04
+23:43:51 [INFO]   [56/100] batch 300/646 loss=29.4641 lr=2.22e-04
+23:44:01 [INFO]   [56/100] batch 350/646 loss=29.5273 lr=2.22e-04
+23:44:10 [INFO]   [56/100] batch 400/646 loss=29.5753 lr=2.22e-04
+23:44:20 [INFO]   [56/100] batch 450/646 loss=29.4971 lr=2.22e-04
+23:44:29 [INFO]   [56/100] batch 500/646 loss=29.3512 lr=2.22e-04
+23:44:40 [INFO]   [56/100] batch 550/646 loss=29.1863 lr=2.22e-04
+23:44:49 [INFO]   [56/100] batch 600/646 loss=29.0781 lr=2.22e-04
+23:45:47 [INFO] Epoch 56/100 (122.8s) | loss=30.9395 (raw=29.0901) pos=1.1461 siz=-1.1564 ori=0.7335 vel=0.8021 nis=0.6077 ua=1.00 contrast=1.3787 | val=-4.1363 val_pos=-0.2085 | k_m=9.38 k_s=15.39 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+23:45:47 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-4.6706)
+23:45:47 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-30.0970)
+23:45:47 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch56.pt
+23:45:47 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-4.1363)
+23:45:58 [INFO]   [57/100] batch 50/646 loss=27.9854 lr=2.14e-04
+23:46:07 [INFO]   [57/100] batch 100/646 loss=28.9182 lr=2.14e-04
+23:46:17 [INFO]   [57/100] batch 150/646 loss=29.1938 lr=2.14e-04
+23:46:26 [INFO]   [57/100] batch 200/646 loss=29.4206 lr=2.14e-04
+23:46:36 [INFO]   [57/100] batch 250/646 loss=29.3393 lr=2.14e-04
+23:46:45 [INFO]   [57/100] batch 300/646 loss=29.4227 lr=2.14e-04
+23:46:54 [INFO]   [57/100] batch 350/646 loss=29.2573 lr=2.14e-04
+23:47:04 [INFO]   [57/100] batch 400/646 loss=29.1845 lr=2.14e-04
+23:47:14 [INFO]   [57/100] batch 450/646 loss=29.1694 lr=2.14e-04
+23:47:23 [INFO]   [57/100] batch 500/646 loss=29.0423 lr=2.14e-04
+23:47:33 [INFO]   [57/100] batch 550/646 loss=28.9684 lr=2.14e-04
+23:47:43 [INFO]   [57/100] batch 600/646 loss=28.9931 lr=2.14e-04
+23:48:41 [INFO] Epoch 57/100 (124.4s) | loss=30.7621 (raw=28.8998) pos=1.1445 siz=-1.1632 ori=0.7189 vel=0.7946 nis=0.6036 ua=1.00 contrast=1.3634 | val=-4.3007 val_pos=-0.2127 | k_m=9.59 k_s=15.53 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+23:48:41 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-30.3569)
+23:48:41 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch57.pt
+23:48:41 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-4.3007)
+23:48:51 [INFO]   [58/100] batch 50/646 loss=29.3585 lr=2.06e-04
+23:48:59 [INFO]   [58/100] batch 100/646 loss=30.1535 lr=2.06e-04
+23:49:08 [INFO]   [58/100] batch 150/646 loss=30.0034 lr=2.06e-04
+23:49:17 [INFO]   [58/100] batch 200/646 loss=29.9428 lr=2.06e-04
+23:49:27 [INFO]   [58/100] batch 250/646 loss=29.7678 lr=2.06e-04
+23:49:36 [INFO]   [58/100] batch 300/646 loss=29.5584 lr=2.06e-04
+23:49:46 [INFO]   [58/100] batch 350/646 loss=29.4318 lr=2.06e-04
+23:49:55 [INFO]   [58/100] batch 400/646 loss=29.4587 lr=2.06e-04
+23:50:05 [INFO]   [58/100] batch 450/646 loss=29.3149 lr=2.06e-04
+23:50:14 [INFO]   [58/100] batch 500/646 loss=29.1687 lr=2.06e-04
+23:50:23 [INFO]   [58/100] batch 550/646 loss=29.2272 lr=2.06e-04
+23:50:33 [INFO]   [58/100] batch 600/646 loss=29.2482 lr=2.06e-04
+23:51:31 [INFO] Epoch 58/100 (120.0s) | loss=30.9350 (raw=29.0712) pos=1.1535 siz=-1.1528 ori=0.7027 vel=0.8067 nis=0.5999 ua=1.00 contrast=1.4232 | val=-4.4171 val_pos=-0.2136 | k_m=9.54 k_s=15.10 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+23:51:31 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-30.5709)
+23:51:31 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=56.4066)
+23:51:31 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch58.pt
+23:51:31 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-4.4171)
+23:51:41 [INFO]   [59/100] batch 50/646 loss=28.3943 lr=1.98e-04
+23:51:50 [INFO]   [59/100] batch 100/646 loss=27.8770 lr=1.98e-04
+23:52:00 [INFO]   [59/100] batch 150/646 loss=28.2347 lr=1.98e-04
+23:52:09 [INFO]   [59/100] batch 200/646 loss=28.3299 lr=1.98e-04
+23:52:19 [INFO]   [59/100] batch 250/646 loss=28.3079 lr=1.98e-04
+23:52:28 [INFO]   [59/100] batch 300/646 loss=28.3027 lr=1.98e-04
+23:52:37 [INFO]   [59/100] batch 350/646 loss=28.6240 lr=1.98e-04
+23:52:46 [INFO]   [59/100] batch 400/646 loss=28.7159 lr=1.98e-04
+23:52:55 [INFO]   [59/100] batch 450/646 loss=28.8068 lr=1.98e-04
+23:53:04 [INFO]   [59/100] batch 500/646 loss=29.0047 lr=1.98e-04
+23:53:13 [INFO]   [59/100] batch 550/646 loss=28.9816 lr=1.98e-04
+23:53:23 [INFO]   [59/100] batch 600/646 loss=28.9577 lr=1.98e-04
+23:54:21 [INFO] Epoch 59/100 (119.8s) | loss=30.7536 (raw=28.8676) pos=1.1541 siz=-1.1593 ori=0.6819 vel=0.8044 nis=0.5967 ua=1.00 contrast=1.3305 | val=-4.5034 val_pos=-0.2155 | k_m=9.91 k_s=16.39 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+23:54:21 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-4.6914)
+23:54:21 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-30.7929)
+23:54:21 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=15.3300)
+23:54:21 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=86.9927)
+23:54:21 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch59.pt
+23:54:21 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-4.5034)
+23:54:31 [INFO]   [60/100] batch 50/646 loss=28.2195 lr=1.90e-04
+23:54:41 [INFO]   [60/100] batch 100/646 loss=28.1862 lr=1.90e-04
+23:54:50 [INFO]   [60/100] batch 150/646 loss=28.1022 lr=1.90e-04
+23:54:59 [INFO]   [60/100] batch 200/646 loss=28.4003 lr=1.90e-04
+23:55:08 [INFO]   [60/100] batch 250/646 loss=28.4547 lr=1.90e-04
+23:55:17 [INFO]   [60/100] batch 300/646 loss=28.6191 lr=1.90e-04
+23:55:26 [INFO]   [60/100] batch 350/646 loss=28.7098 lr=1.90e-04
+23:55:36 [INFO]   [60/100] batch 400/646 loss=28.6690 lr=1.90e-04
+23:55:45 [INFO]   [60/100] batch 450/646 loss=28.6692 lr=1.90e-04
+23:55:53 [INFO]   [60/100] batch 500/646 loss=28.6199 lr=1.90e-04
+23:56:03 [INFO]   [60/100] batch 550/646 loss=28.8781 lr=1.90e-04
+23:56:12 [INFO]   [60/100] batch 600/646 loss=28.8851 lr=1.90e-04
+23:57:10 [INFO] Epoch 60/100 (119.5s) | loss=30.7241 (raw=28.8372) pos=1.1482 siz=-1.1568 ori=0.6954 vel=0.8004 nis=0.5974 ua=1.00 contrast=1.3422 | val=-4.4306 val_pos=-0.2108 | k_m=9.63 k_s=15.68 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+23:57:10 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-31.0014)
+23:57:10 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=52.1722)
+23:57:10 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch60.pt
+23:57:20 [INFO]   [61/100] batch 50/646 loss=28.7452 lr=1.82e-04
+23:57:29 [INFO]   [61/100] batch 100/646 loss=29.7763 lr=1.82e-04
+23:57:38 [INFO]   [61/100] batch 150/646 loss=28.7212 lr=1.82e-04
+23:57:48 [INFO]   [61/100] batch 200/646 loss=28.7203 lr=1.82e-04
+23:57:57 [INFO]   [61/100] batch 250/646 loss=28.6110 lr=1.82e-04
+23:58:06 [INFO]   [61/100] batch 300/646 loss=28.8376 lr=1.82e-04
+23:58:16 [INFO]   [61/100] batch 350/646 loss=28.8405 lr=1.82e-04
+23:58:25 [INFO]   [61/100] batch 400/646 loss=28.8971 lr=1.82e-04
+23:58:35 [INFO]   [61/100] batch 450/646 loss=28.8382 lr=1.82e-04
+23:58:44 [INFO]   [61/100] batch 500/646 loss=28.8917 lr=1.82e-04
+23:58:53 [INFO]   [61/100] batch 550/646 loss=28.9279 lr=1.82e-04
+23:59:03 [INFO]   [61/100] batch 600/646 loss=28.8700 lr=1.82e-04
+00:00:00 [INFO] Epoch 61/100 (120.8s) | loss=30.8508 (raw=28.9507) pos=1.1549 siz=-1.1622 ori=0.6936 vel=0.8052 nis=0.5966 ua=1.00 contrast=1.2976 | val=-4.5948 val_pos=-0.2175 | k_m=9.89 k_s=15.79 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+00:00:00 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-31.2147)
+00:00:00 [INFO]   New best class 3 model -> checkpoints/mamba_dekf/best_class_3.pt (class_val_loss=15.3148)
+00:00:00 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch61.pt
+00:00:00 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-4.5948)
+00:00:10 [INFO]   [62/100] batch 50/646 loss=28.8085 lr=1.74e-04
+00:00:19 [INFO]   [62/100] batch 100/646 loss=28.2953 lr=1.74e-04
+00:00:29 [INFO]   [62/100] batch 150/646 loss=28.3589 lr=1.74e-04
+00:00:38 [INFO]   [62/100] batch 200/646 loss=28.8775 lr=1.74e-04
+00:00:48 [INFO]   [62/100] batch 250/646 loss=29.1446 lr=1.74e-04
+00:00:57 [INFO]   [62/100] batch 300/646 loss=29.2424 lr=1.74e-04
+00:01:06 [INFO]   [62/100] batch 350/646 loss=28.9734 lr=1.74e-04
+00:01:16 [INFO]   [62/100] batch 400/646 loss=28.8347 lr=1.74e-04
+00:01:25 [INFO]   [62/100] batch 450/646 loss=28.9730 lr=1.74e-04
+00:01:35 [INFO]   [62/100] batch 500/646 loss=28.8955 lr=1.74e-04
+00:01:44 [INFO]   [62/100] batch 550/646 loss=28.7005 lr=1.74e-04
+00:01:54 [INFO]   [62/100] batch 600/646 loss=28.7185 lr=1.74e-04
+00:02:50 [INFO] Epoch 62/100 (122.3s) | loss=30.5552 (raw=28.6663) pos=1.1467 siz=-1.1552 ori=0.6737 vel=0.8008 nis=0.5932 ua=1.00 contrast=1.4177 | val=-4.6914 val_pos=-0.2199 | k_m=9.77 k_s=15.58 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+00:02:50 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-31.2709)
+00:02:51 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=51.0499)
+00:02:51 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch62.pt
+00:02:51 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-4.6914)
+00:03:00 [INFO]   [63/100] batch 50/646 loss=28.7291 lr=1.67e-04
+00:03:10 [INFO]   [63/100] batch 100/646 loss=28.7327 lr=1.67e-04
+00:03:19 [INFO]   [63/100] batch 150/646 loss=28.3503 lr=1.67e-04
+00:03:28 [INFO]   [63/100] batch 200/646 loss=28.0342 lr=1.67e-04
+00:03:38 [INFO]   [63/100] batch 250/646 loss=28.1710 lr=1.67e-04
+00:03:48 [INFO]   [63/100] batch 300/646 loss=28.5499 lr=1.67e-04
+00:03:57 [INFO]   [63/100] batch 350/646 loss=28.7329 lr=1.67e-04
+00:04:07 [INFO]   [63/100] batch 400/646 loss=28.8996 lr=1.67e-04
+00:04:16 [INFO]   [63/100] batch 450/646 loss=28.7826 lr=1.67e-04
+00:04:25 [INFO]   [63/100] batch 500/646 loss=28.7452 lr=1.67e-04
+00:04:34 [INFO]   [63/100] batch 550/646 loss=28.7815 lr=1.67e-04
+00:04:43 [INFO]   [63/100] batch 600/646 loss=28.6240 lr=1.67e-04
+00:05:42 [INFO] Epoch 63/100 (121.2s) | loss=30.4470 (raw=28.5345) pos=1.1465 siz=-1.1637 ori=0.6664 vel=0.8010 nis=0.5915 ua=1.00 contrast=1.3205 | val=-4.6237 val_pos=-0.2156 | k_m=9.60 k_s=15.19 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+00:05:42 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-31.3921)
+00:05:52 [INFO]   [64/100] batch 50/646 loss=29.1861 lr=1.59e-04
+00:06:02 [INFO]   [64/100] batch 100/646 loss=29.0633 lr=1.59e-04
+00:06:11 [INFO]   [64/100] batch 150/646 loss=28.8669 lr=1.59e-04
+00:06:20 [INFO]   [64/100] batch 200/646 loss=28.4891 lr=1.59e-04
+00:06:30 [INFO]   [64/100] batch 250/646 loss=28.6143 lr=1.59e-04
+00:06:39 [INFO]   [64/100] batch 300/646 loss=28.4814 lr=1.59e-04
+00:06:48 [INFO]   [64/100] batch 350/646 loss=28.5236 lr=1.59e-04
+00:06:57 [INFO]   [64/100] batch 400/646 loss=28.3549 lr=1.59e-04
+00:07:06 [INFO]   [64/100] batch 450/646 loss=28.4190 lr=1.59e-04
+00:07:16 [INFO]   [64/100] batch 500/646 loss=28.4860 lr=1.59e-04
+00:07:25 [INFO]   [64/100] batch 550/646 loss=28.5555 lr=1.59e-04
+00:07:34 [INFO]   [64/100] batch 600/646 loss=28.5312 lr=1.59e-04
+00:08:31 [INFO] Epoch 64/100 (121.2s) | loss=30.5501 (raw=28.6359) pos=1.1494 siz=-1.1580 ori=0.6656 vel=0.7998 nis=0.5896 ua=1.00 contrast=1.3442 | val=-4.4713 val_pos=-0.2086 | k_m=9.90 k_s=15.65 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+00:08:31 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-31.4791)
+00:08:31 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=5.1475)
+00:08:41 [INFO]   [65/100] batch 50/646 loss=27.0843 lr=1.52e-04
+00:08:50 [INFO]   [65/100] batch 100/646 loss=27.8415 lr=1.52e-04
+00:08:59 [INFO]   [65/100] batch 150/646 loss=27.8718 lr=1.52e-04
+00:09:08 [INFO]   [65/100] batch 200/646 loss=27.8543 lr=1.52e-04
+00:09:18 [INFO]   [65/100] batch 250/646 loss=28.2913 lr=1.52e-04
+00:09:27 [INFO]   [65/100] batch 300/646 loss=28.4650 lr=1.52e-04
+00:09:36 [INFO]   [65/100] batch 350/646 loss=28.5892 lr=1.52e-04
+00:09:45 [INFO]   [65/100] batch 400/646 loss=28.6493 lr=1.52e-04
+00:09:54 [INFO]   [65/100] batch 450/646 loss=28.8000 lr=1.52e-04
+00:10:03 [INFO]   [65/100] batch 500/646 loss=28.7383 lr=1.52e-04
+00:10:11 [INFO]   [65/100] batch 550/646 loss=28.5890 lr=1.52e-04
+00:10:20 [INFO]   [65/100] batch 600/646 loss=28.7879 lr=1.52e-04
+00:11:19 [INFO] Epoch 65/100 (118.0s) | loss=30.6531 (raw=28.7348) pos=1.1533 siz=-1.1600 ori=0.6666 vel=0.8020 nis=0.5894 ua=1.00 contrast=1.3620 | val=-4.5975 val_pos=-0.2142 | k_m=9.75 k_s=15.37 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+00:11:19 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-31.5638)
+00:11:19 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=86.7952)
+00:11:28 [INFO]   [66/100] batch 50/646 loss=28.1398 lr=1.44e-04
+00:11:36 [INFO]   [66/100] batch 100/646 loss=27.8619 lr=1.44e-04
+00:11:46 [INFO]   [66/100] batch 150/646 loss=28.1827 lr=1.44e-04
+00:11:55 [INFO]   [66/100] batch 200/646 loss=28.2820 lr=1.44e-04
+00:12:04 [INFO]   [66/100] batch 250/646 loss=28.3389 lr=1.44e-04
+00:12:13 [INFO]   [66/100] batch 300/646 loss=28.1904 lr=1.44e-04
+00:12:23 [INFO]   [66/100] batch 350/646 loss=28.3194 lr=1.44e-04
+00:12:32 [INFO]   [66/100] batch 400/646 loss=28.3889 lr=1.44e-04
+00:12:42 [INFO]   [66/100] batch 450/646 loss=28.5239 lr=1.44e-04
+00:12:51 [INFO]   [66/100] batch 500/646 loss=28.5376 lr=1.44e-04
+00:13:01 [INFO]   [66/100] batch 550/646 loss=28.4977 lr=1.44e-04
+00:13:10 [INFO]   [66/100] batch 600/646 loss=28.5413 lr=1.44e-04
+00:14:08 [INFO] Epoch 66/100 (120.5s) | loss=30.3227 (raw=28.4013) pos=1.1428 siz=-1.1603 ori=0.6585 vel=0.7983 nis=0.5876 ua=1.00 contrast=1.3381 | val=-4.7866 val_pos=-0.2204 | k_m=9.68 k_s=15.10 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+00:14:08 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-4.7384)
+00:14:08 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-31.6713)
+00:14:08 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch66.pt
+00:14:08 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-4.7866)
+00:14:18 [INFO]   [67/100] batch 50/646 loss=27.0428 lr=1.37e-04
+00:14:27 [INFO]   [67/100] batch 100/646 loss=27.4734 lr=1.37e-04
+00:14:37 [INFO]   [67/100] batch 150/646 loss=27.3626 lr=1.37e-04
+00:14:46 [INFO]   [67/100] batch 200/646 loss=27.8316 lr=1.37e-04
+00:14:55 [INFO]   [67/100] batch 250/646 loss=28.0180 lr=1.37e-04
+00:15:05 [INFO]   [67/100] batch 300/646 loss=28.0411 lr=1.37e-04
+00:15:14 [INFO]   [67/100] batch 350/646 loss=28.0921 lr=1.37e-04
+00:15:23 [INFO]   [67/100] batch 400/646 loss=28.0982 lr=1.37e-04
+00:15:31 [INFO]   [67/100] batch 450/646 loss=27.9329 lr=1.37e-04
+00:15:39 [INFO]   [67/100] batch 500/646 loss=28.0931 lr=1.37e-04
+00:15:48 [INFO]   [67/100] batch 550/646 loss=28.1142 lr=1.37e-04
+00:15:57 [INFO]   [67/100] batch 600/646 loss=28.2127 lr=1.37e-04
+00:16:52 [INFO] Epoch 67/100 (116.4s) | loss=30.2465 (raw=28.3237) pos=1.1418 siz=-1.1609 ori=0.6515 vel=0.7993 nis=0.5860 ua=1.00 contrast=1.3502 | val=-4.7889 val_pos=-0.2184 | k_m=9.55 k_s=14.78 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+00:16:52 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-31.7707)
+00:16:52 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=2.0640)
+00:16:52 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=85.4297)
+00:16:52 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch67.pt
+00:16:52 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-4.7889)
+00:17:03 [INFO]   [68/100] batch 50/646 loss=27.8821 lr=1.30e-04
+00:17:12 [INFO]   [68/100] batch 100/646 loss=28.1046 lr=1.30e-04
+00:17:22 [INFO]   [68/100] batch 150/646 loss=28.0526 lr=1.30e-04
+00:17:31 [INFO]   [68/100] batch 200/646 loss=28.2187 lr=1.30e-04
+00:17:41 [INFO]   [68/100] batch 250/646 loss=28.1091 lr=1.30e-04
+00:17:50 [INFO]   [68/100] batch 300/646 loss=28.0887 lr=1.30e-04
+00:17:59 [INFO]   [68/100] batch 350/646 loss=28.1014 lr=1.30e-04
+00:18:08 [INFO]   [68/100] batch 400/646 loss=28.2094 lr=1.30e-04
+00:18:18 [INFO]   [68/100] batch 450/646 loss=28.1696 lr=1.30e-04
+00:18:27 [INFO]   [68/100] batch 500/646 loss=28.2754 lr=1.30e-04
+00:18:36 [INFO]   [68/100] batch 550/646 loss=28.1327 lr=1.30e-04
+00:18:45 [INFO]   [68/100] batch 600/646 loss=28.0340 lr=1.30e-04
+00:19:45 [INFO] Epoch 68/100 (121.6s) | loss=30.0215 (raw=28.0869) pos=1.1366 siz=-1.1611 ori=0.6386 vel=0.7951 nis=0.5836 ua=1.00 contrast=1.3192 | val=-4.8863 val_pos=-0.2206 | k_m=9.43 k_s=14.30 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+00:19:45 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-4.7621)
+00:19:45 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-31.7856)
+00:19:45 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch68.pt
+00:19:45 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-4.8863)
+00:19:55 [INFO]   [69/100] batch 50/646 loss=27.0212 lr=1.23e-04
+00:20:04 [INFO]   [69/100] batch 100/646 loss=27.4787 lr=1.23e-04
+00:20:14 [INFO]   [69/100] batch 150/646 loss=27.6197 lr=1.23e-04
+00:20:23 [INFO]   [69/100] batch 200/646 loss=27.6739 lr=1.23e-04
+00:20:32 [INFO]   [69/100] batch 250/646 loss=27.7093 lr=1.23e-04
+00:20:41 [INFO]   [69/100] batch 300/646 loss=27.7685 lr=1.23e-04
+00:20:51 [INFO]   [69/100] batch 350/646 loss=27.6957 lr=1.23e-04
+00:21:00 [INFO]   [69/100] batch 400/646 loss=27.7624 lr=1.23e-04
+00:21:10 [INFO]   [69/100] batch 450/646 loss=27.7640 lr=1.23e-04
+00:21:19 [INFO]   [69/100] batch 500/646 loss=27.8117 lr=1.23e-04
+00:21:28 [INFO]   [69/100] batch 550/646 loss=28.0155 lr=1.23e-04
+00:21:38 [INFO]   [69/100] batch 600/646 loss=28.0641 lr=1.23e-04
+00:22:36 [INFO] Epoch 69/100 (122.1s) | loss=30.0379 (raw=28.1066) pos=1.1343 siz=-1.1614 ori=0.6474 vel=0.7977 nis=0.5827 ua=1.00 contrast=1.3607 | val=-4.7291 val_pos=-0.2142 | k_m=9.64 k_s=14.69 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+00:22:36 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-31.8448)
+00:22:36 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=0.8723)
+00:22:46 [INFO]   [70/100] batch 50/646 loss=27.5968 lr=1.16e-04
+00:22:55 [INFO]   [70/100] batch 100/646 loss=28.2084 lr=1.16e-04
+00:23:04 [INFO]   [70/100] batch 150/646 loss=28.2370 lr=1.16e-04
+00:23:13 [INFO]   [70/100] batch 200/646 loss=28.0104 lr=1.16e-04
+00:23:22 [INFO]   [70/100] batch 250/646 loss=28.1796 lr=1.16e-04
+00:23:31 [INFO]   [70/100] batch 300/646 loss=28.0310 lr=1.16e-04
+00:23:41 [INFO]   [70/100] batch 350/646 loss=27.8653 lr=1.16e-04
+00:23:50 [INFO]   [70/100] batch 400/646 loss=28.0484 lr=1.16e-04
+00:23:58 [INFO]   [70/100] batch 450/646 loss=27.9229 lr=1.16e-04
+00:24:08 [INFO]   [70/100] batch 500/646 loss=27.9809 lr=1.16e-04
+00:24:17 [INFO]   [70/100] batch 550/646 loss=27.9644 lr=1.16e-04
+00:24:27 [INFO]   [70/100] batch 600/646 loss=28.1042 lr=1.16e-04
+00:25:25 [INFO] Epoch 70/100 (119.4s) | loss=30.0444 (raw=28.1207) pos=1.1411 siz=-1.1585 ori=0.6225 vel=0.7996 nis=0.5808 ua=1.00 contrast=1.4264 | val=-4.9223 val_pos=-0.2189 | k_m=9.39 k_s=14.10 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+00:25:25 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-31.8639)
+00:25:25 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=-0.5099)
+00:25:25 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=51.0037)
+00:25:25 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch70.pt
+00:25:25 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-4.9223)
+00:25:35 [INFO]   [71/100] batch 50/646 loss=30.1300 lr=1.09e-04
+00:25:45 [INFO]   [71/100] batch 100/646 loss=30.0002 lr=1.09e-04
+00:25:53 [INFO]   [71/100] batch 150/646 loss=29.2995 lr=1.09e-04
+00:26:02 [INFO]   [71/100] batch 200/646 loss=28.9184 lr=1.09e-04
+00:26:11 [INFO]   [71/100] batch 250/646 loss=28.6356 lr=1.09e-04
+00:26:20 [INFO]   [71/100] batch 300/646 loss=28.4899 lr=1.09e-04
+00:26:30 [INFO]   [71/100] batch 350/646 loss=28.4607 lr=1.09e-04
+00:26:40 [INFO]   [71/100] batch 400/646 loss=28.5159 lr=1.09e-04
+00:26:49 [INFO]   [71/100] batch 450/646 loss=28.4881 lr=1.09e-04
+00:26:58 [INFO]   [71/100] batch 500/646 loss=28.4655 lr=1.09e-04
+00:27:07 [INFO]   [71/100] batch 550/646 loss=28.4304 lr=1.09e-04
+00:27:17 [INFO]   [71/100] batch 600/646 loss=28.3055 lr=1.09e-04
+00:28:18 [INFO] Epoch 71/100 (120.2s) | loss=30.2359 (raw=28.2939) pos=1.1429 siz=-1.1541 ori=0.6403 vel=0.7983 nis=0.5828 ua=1.00 contrast=1.3297 | val=-4.8672 val_pos=-0.2177 | k_m=9.29 k_s=13.82 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+00:28:18 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-31.9517)
+00:28:18 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=-0.7152)
+00:28:28 [INFO]   [72/100] batch 50/646 loss=28.5071 lr=1.02e-04
+00:28:37 [INFO]   [72/100] batch 100/646 loss=29.0066 lr=1.02e-04
+00:28:47 [INFO]   [72/100] batch 150/646 loss=28.6939 lr=1.02e-04
+00:28:56 [INFO]   [72/100] batch 200/646 loss=28.5174 lr=1.02e-04
+00:29:05 [INFO]   [72/100] batch 250/646 loss=28.2238 lr=1.02e-04
+00:29:14 [INFO]   [72/100] batch 300/646 loss=28.1190 lr=1.02e-04
+00:29:24 [INFO]   [72/100] batch 350/646 loss=28.2562 lr=1.02e-04
+00:29:33 [INFO]   [72/100] batch 400/646 loss=28.1633 lr=1.02e-04
+00:29:42 [INFO]   [72/100] batch 450/646 loss=28.1715 lr=1.02e-04
+00:29:51 [INFO]   [72/100] batch 500/646 loss=28.1467 lr=1.02e-04
+00:30:00 [INFO]   [72/100] batch 550/646 loss=28.0683 lr=1.02e-04
+00:30:10 [INFO]   [72/100] batch 600/646 loss=28.0535 lr=1.02e-04
+00:31:08 [INFO] Epoch 72/100 (120.1s) | loss=30.0156 (raw=28.0609) pos=1.1389 siz=-1.1586 ori=0.6293 vel=0.7945 nis=0.5792 ua=1.00 contrast=1.2428 | val=-5.0313 val_pos=-0.2223 | k_m=9.16 k_s=13.67 k_reg=0.0000 dp_reg=0.0003 | NaN=0
+00:31:08 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-4.8033)
+00:31:08 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-31.9682)
+00:31:08 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=-1.4965)
+00:31:09 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch72.pt
+00:31:09 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-5.0313)
+00:31:20 [INFO]   [73/100] batch 50/646 loss=28.3064 lr=9.59e-05
+00:31:29 [INFO]   [73/100] batch 100/646 loss=28.1064 lr=9.59e-05
+00:31:38 [INFO]   [73/100] batch 150/646 loss=28.2069 lr=9.59e-05
+00:31:47 [INFO]   [73/100] batch 200/646 loss=28.2595 lr=9.59e-05
+00:31:57 [INFO]   [73/100] batch 250/646 loss=27.9652 lr=9.59e-05
+00:32:06 [INFO]   [73/100] batch 300/646 loss=28.2609 lr=9.59e-05
+00:32:16 [INFO]   [73/100] batch 350/646 loss=28.2738 lr=9.59e-05
+00:32:25 [INFO]   [73/100] batch 400/646 loss=28.1593 lr=9.59e-05
+00:32:33 [INFO]   [73/100] batch 450/646 loss=28.2081 lr=9.59e-05
+00:32:42 [INFO]   [73/100] batch 500/646 loss=28.2065 lr=9.59e-05
+00:32:51 [INFO]   [73/100] batch 550/646 loss=28.1938 lr=9.59e-05
+00:33:00 [INFO]   [73/100] batch 600/646 loss=28.2620 lr=9.59e-05
+00:33:56 [INFO] Epoch 73/100 (119.6s) | loss=30.1400 (raw=28.2053) pos=1.1434 siz=-1.1547 ori=0.6243 vel=0.7954 nis=0.5794 ua=1.00 contrast=1.4071 | val=-5.0550 val_pos=-0.2242 | k_m=9.24 k_s=13.92 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+00:33:56 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-32.0058)
+00:33:56 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=-1.6558)
+00:33:56 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch73.pt
+00:33:56 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-5.0550)
+00:34:06 [INFO]   [74/100] batch 50/646 loss=27.9566 lr=8.96e-05
+00:34:15 [INFO]   [74/100] batch 100/646 loss=27.7650 lr=8.96e-05
+00:34:24 [INFO]   [74/100] batch 150/646 loss=27.7460 lr=8.96e-05
+00:34:33 [INFO]   [74/100] batch 200/646 loss=27.7064 lr=8.96e-05
+00:34:43 [INFO]   [74/100] batch 250/646 loss=27.6792 lr=8.96e-05
+00:34:52 [INFO]   [74/100] batch 300/646 loss=27.7881 lr=8.96e-05
+00:35:02 [INFO]   [74/100] batch 350/646 loss=27.7626 lr=8.96e-05
+00:35:11 [INFO]   [74/100] batch 400/646 loss=27.7861 lr=8.96e-05
+00:35:20 [INFO]   [74/100] batch 450/646 loss=27.7919 lr=8.96e-05
+00:35:29 [INFO]   [74/100] batch 500/646 loss=27.7882 lr=8.96e-05
+00:35:39 [INFO]   [74/100] batch 550/646 loss=28.0139 lr=8.96e-05
+00:35:48 [INFO]   [74/100] batch 600/646 loss=28.0074 lr=8.96e-05
+00:36:45 [INFO] Epoch 74/100 (120.2s) | loss=29.9433 (raw=27.9941) pos=1.1415 siz=-1.1624 ori=0.6112 vel=0.8016 nis=0.5770 ua=1.00 contrast=1.3206 | val=-4.8551 val_pos=-0.2155 | k_m=9.28 k_s=13.83 k_reg=0.0000 dp_reg=0.0003 | NaN=0
+00:36:45 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-32.0203)
+00:36:45 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=-2.1584)
+00:36:55 [INFO]   [75/100] batch 50/646 loss=28.1239 lr=8.35e-05
+00:37:04 [INFO]   [75/100] batch 100/646 loss=27.3820 lr=8.35e-05
+00:37:14 [INFO]   [75/100] batch 150/646 loss=27.4842 lr=8.35e-05
+00:37:23 [INFO]   [75/100] batch 200/646 loss=27.9585 lr=8.35e-05
+00:37:33 [INFO]   [75/100] batch 250/646 loss=28.0032 lr=8.35e-05
+00:37:42 [INFO]   [75/100] batch 300/646 loss=27.9229 lr=8.35e-05
+00:37:51 [INFO]   [75/100] batch 350/646 loss=27.8799 lr=8.35e-05
+00:38:01 [INFO]   [75/100] batch 400/646 loss=27.9153 lr=8.35e-05
+00:38:10 [INFO]   [75/100] batch 450/646 loss=27.8205 lr=8.35e-05
+00:38:19 [INFO]   [75/100] batch 500/646 loss=27.8047 lr=8.35e-05
+00:38:28 [INFO]   [75/100] batch 550/646 loss=27.7949 lr=8.35e-05
+00:38:38 [INFO]   [75/100] batch 600/646 loss=27.8086 lr=8.35e-05
+00:39:35 [INFO] Epoch 75/100 (121.2s) | loss=29.7250 (raw=27.7861) pos=1.1350 siz=-1.1658 ori=0.6046 vel=0.7988 nis=0.5752 ua=1.00 contrast=1.3899 | val=-4.9986 val_pos=-0.2205 | k_m=9.26 k_s=13.81 k_reg=0.0000 dp_reg=0.0003 | NaN=0
+00:39:35 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-4.8135)
+00:39:35 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-32.0370)
+00:39:35 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=-2.6036)
+00:39:45 [INFO]   [76/100] batch 50/646 loss=28.8768 lr=7.76e-05
+00:39:55 [INFO]   [76/100] batch 100/646 loss=28.1141 lr=7.76e-05
+00:40:04 [INFO]   [76/100] batch 150/646 loss=27.8750 lr=7.76e-05
+00:40:13 [INFO]   [76/100] batch 200/646 loss=27.9139 lr=7.76e-05
+00:40:22 [INFO]   [76/100] batch 250/646 loss=28.0045 lr=7.76e-05
+00:40:31 [INFO]   [76/100] batch 300/646 loss=27.9781 lr=7.76e-05
+00:40:40 [INFO]   [76/100] batch 350/646 loss=27.7947 lr=7.76e-05
+00:40:50 [INFO]   [76/100] batch 400/646 loss=27.7663 lr=7.76e-05
+00:40:59 [INFO]   [76/100] batch 450/646 loss=27.9446 lr=7.76e-05
+00:41:08 [INFO]   [76/100] batch 500/646 loss=28.0900 lr=7.76e-05
+00:41:17 [INFO]   [76/100] batch 550/646 loss=28.0737 lr=7.76e-05
+00:41:26 [INFO]   [76/100] batch 600/646 loss=28.1939 lr=7.76e-05
+00:42:25 [INFO] Epoch 76/100 (119.8s) | loss=30.0445 (raw=28.0977) pos=1.1453 siz=-1.1574 ori=0.6081 vel=0.7988 nis=0.5772 ua=1.00 contrast=1.3434 | val=-5.0395 val_pos=-0.2213 | k_m=9.18 k_s=13.42 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+00:42:35 [INFO]   [77/100] batch 50/646 loss=26.5434 lr=7.18e-05
+00:42:44 [INFO]   [77/100] batch 100/646 loss=27.2932 lr=7.18e-05
+00:42:53 [INFO]   [77/100] batch 150/646 loss=27.5096 lr=7.18e-05
+00:43:02 [INFO]   [77/100] batch 200/646 loss=27.9815 lr=7.18e-05
+00:43:12 [INFO]   [77/100] batch 250/646 loss=27.6513 lr=7.18e-05
+00:43:21 [INFO]   [77/100] batch 300/646 loss=27.6390 lr=7.18e-05
+00:43:30 [INFO]   [77/100] batch 350/646 loss=27.6895 lr=7.18e-05
+00:43:39 [INFO]   [77/100] batch 400/646 loss=27.6929 lr=7.18e-05
+00:43:49 [INFO]   [77/100] batch 450/646 loss=27.5247 lr=7.18e-05
+00:43:58 [INFO]   [77/100] batch 500/646 loss=27.6367 lr=7.18e-05
+00:44:08 [INFO]   [77/100] batch 550/646 loss=27.5989 lr=7.18e-05
+00:44:18 [INFO]   [77/100] batch 600/646 loss=27.6215 lr=7.18e-05
+00:45:15 [INFO] Epoch 77/100 (121.7s) | loss=29.6569 (raw=27.7143) pos=1.1307 siz=-1.1673 ori=0.6118 vel=0.7967 nis=0.5766 ua=1.00 contrast=1.3533 | val=-5.0964 val_pos=-0.2227 | k_m=9.34 k_s=14.06 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+00:45:15 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-4.8449)
+00:45:15 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-32.0557)
+00:45:15 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=-3.3937)
+00:45:15 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch77.pt
+00:45:15 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-5.0964)
+00:45:25 [INFO]   [78/100] batch 50/646 loss=28.0925 lr=6.62e-05
+00:45:34 [INFO]   [78/100] batch 100/646 loss=27.9656 lr=6.62e-05
+00:45:43 [INFO]   [78/100] batch 150/646 loss=28.6780 lr=6.62e-05
+00:45:53 [INFO]   [78/100] batch 200/646 loss=28.4467 lr=6.62e-05
+00:46:02 [INFO]   [78/100] batch 250/646 loss=28.4265 lr=6.62e-05
+00:46:12 [INFO]   [78/100] batch 300/646 loss=28.1685 lr=6.62e-05
+00:46:21 [INFO]   [78/100] batch 350/646 loss=28.1846 lr=6.62e-05
+00:46:30 [INFO]   [78/100] batch 400/646 loss=28.2443 lr=6.62e-05
+00:46:40 [INFO]   [78/100] batch 450/646 loss=28.0754 lr=6.62e-05
+00:46:49 [INFO]   [78/100] batch 500/646 loss=28.1194 lr=6.62e-05
+00:46:58 [INFO]   [78/100] batch 550/646 loss=28.1524 lr=6.62e-05
+00:47:08 [INFO]   [78/100] batch 600/646 loss=28.2010 lr=6.62e-05
+00:48:03 [INFO] Epoch 78/100 (120.9s) | loss=30.1725 (raw=28.2296) pos=1.1500 siz=-1.1587 ori=0.6092 vel=0.8014 nis=0.5763 ua=1.00 contrast=1.3883 | val=-5.0221 val_pos=-0.2216 | k_m=8.90 k_s=13.09 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+00:48:04 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-32.0965)
+00:48:04 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=-3.6106)
+00:48:14 [INFO]   [79/100] batch 50/646 loss=26.8738 lr=6.08e-05
+00:48:23 [INFO]   [79/100] batch 100/646 loss=27.4321 lr=6.08e-05
+00:48:32 [INFO]   [79/100] batch 150/646 loss=27.3040 lr=6.08e-05
+00:48:41 [INFO]   [79/100] batch 200/646 loss=27.4425 lr=6.08e-05
+00:48:51 [INFO]   [79/100] batch 250/646 loss=27.3615 lr=6.08e-05
+00:49:00 [INFO]   [79/100] batch 300/646 loss=27.4826 lr=6.08e-05
+00:49:09 [INFO]   [79/100] batch 350/646 loss=27.5038 lr=6.08e-05
+00:49:19 [INFO]   [79/100] batch 400/646 loss=27.6630 lr=6.08e-05
+00:49:28 [INFO]   [79/100] batch 450/646 loss=27.7315 lr=6.08e-05
+00:49:37 [INFO]   [79/100] batch 500/646 loss=27.6946 lr=6.08e-05
+00:49:47 [INFO]   [79/100] batch 550/646 loss=27.7927 lr=6.08e-05
+00:49:56 [INFO]   [79/100] batch 600/646 loss=27.7518 lr=6.08e-05
+00:50:55 [INFO] Epoch 79/100 (121.3s) | loss=29.7838 (raw=27.8461) pos=1.1348 siz=-1.1648 ori=0.6118 vel=0.7927 nis=0.5758 ua=1.00 contrast=1.4162 | val=-5.1950 val_pos=-0.2272 | k_m=9.15 k_s=13.52 k_reg=0.0000 dp_reg=0.0003 | NaN=0
+00:50:55 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-32.1522)
+00:50:55 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=-4.0986)
+00:50:55 [INFO]   New best class 5 model -> checkpoints/mamba_dekf/best_class_5.pt (class_val_loss=85.1059)
+00:50:55 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch79.pt
+00:50:55 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-5.1950)
+00:51:05 [INFO]   [80/100] batch 50/646 loss=27.5379 lr=5.56e-05
+00:51:14 [INFO]   [80/100] batch 100/646 loss=27.9575 lr=5.56e-05
+00:51:23 [INFO]   [80/100] batch 150/646 loss=27.7926 lr=5.56e-05
+00:51:32 [INFO]   [80/100] batch 200/646 loss=27.7459 lr=5.56e-05
+00:51:41 [INFO]   [80/100] batch 250/646 loss=27.3677 lr=5.56e-05
+00:51:51 [INFO]   [80/100] batch 300/646 loss=27.4456 lr=5.56e-05
+00:52:00 [INFO]   [80/100] batch 350/646 loss=27.3567 lr=5.56e-05
+00:52:09 [INFO]   [80/100] batch 400/646 loss=27.2622 lr=5.56e-05
+00:52:18 [INFO]   [80/100] batch 450/646 loss=27.3747 lr=5.56e-05
+00:52:27 [INFO]   [80/100] batch 500/646 loss=27.4404 lr=5.56e-05
+00:52:36 [INFO]   [80/100] batch 550/646 loss=27.4866 lr=5.56e-05
+00:52:45 [INFO]   [80/100] batch 600/646 loss=27.5052 lr=5.56e-05
+00:53:42 [INFO] Epoch 80/100 (118.5s) | loss=29.5675 (raw=27.6138) pos=1.1316 siz=-1.1643 ori=0.5951 vel=0.7952 nis=0.5733 ua=1.00 contrast=1.3212 | val=-5.1322 val_pos=-0.2234 | k_m=9.30 k_s=13.98 k_reg=0.0000 dp_reg=0.0003 | NaN=0
+00:53:42 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-4.8674)
+00:53:42 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-32.1592)
+00:53:42 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch80.pt
+00:53:52 [INFO]   [81/100] batch 50/646 loss=27.9614 lr=5.06e-05
+00:54:01 [INFO]   [81/100] batch 100/646 loss=27.5067 lr=5.06e-05
+00:54:11 [INFO]   [81/100] batch 150/646 loss=27.7644 lr=5.06e-05
+00:54:20 [INFO]   [81/100] batch 200/646 loss=28.2069 lr=5.06e-05
+00:54:29 [INFO]   [81/100] batch 250/646 loss=28.4060 lr=5.06e-05
+00:54:38 [INFO]   [81/100] batch 300/646 loss=28.3217 lr=5.06e-05
+00:54:47 [INFO]   [81/100] batch 350/646 loss=28.1936 lr=5.06e-05
+00:54:57 [INFO]   [81/100] batch 400/646 loss=28.1879 lr=5.06e-05
+00:55:06 [INFO]   [81/100] batch 450/646 loss=28.1097 lr=5.06e-05
+00:55:16 [INFO]   [81/100] batch 500/646 loss=27.9830 lr=5.06e-05
+00:55:25 [INFO]   [81/100] batch 550/646 loss=28.0334 lr=5.06e-05
+00:55:34 [INFO]   [81/100] batch 600/646 loss=27.9946 lr=5.06e-05
+00:56:31 [INFO] Epoch 81/100 (120.8s) | loss=29.9374 (raw=27.9914) pos=1.1431 siz=-1.1581 ori=0.6003 vel=0.7980 nis=0.5739 ua=1.00 contrast=1.3842 | val=-5.1141 val_pos=-0.2232 | k_m=9.19 k_s=13.62 k_reg=0.0000 dp_reg=0.0003 | NaN=0
+00:56:32 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=-4.4672)
+00:56:41 [INFO]   [82/100] batch 50/646 loss=28.2083 lr=4.59e-05
+00:56:51 [INFO]   [82/100] batch 100/646 loss=27.7524 lr=4.59e-05
+00:57:00 [INFO]   [82/100] batch 150/646 loss=27.3637 lr=4.59e-05
+00:57:10 [INFO]   [82/100] batch 200/646 loss=27.5353 lr=4.59e-05
+00:57:19 [INFO]   [82/100] batch 250/646 loss=27.4794 lr=4.59e-05
+00:57:29 [INFO]   [82/100] batch 300/646 loss=27.5123 lr=4.59e-05
+00:57:38 [INFO]   [82/100] batch 350/646 loss=27.5171 lr=4.59e-05
+00:57:48 [INFO]   [82/100] batch 400/646 loss=27.4180 lr=4.59e-05
+00:57:57 [INFO]   [82/100] batch 450/646 loss=27.4768 lr=4.59e-05
+00:58:07 [INFO]   [82/100] batch 500/646 loss=27.4723 lr=4.59e-05
+00:58:17 [INFO]   [82/100] batch 550/646 loss=27.5939 lr=4.59e-05
+00:58:26 [INFO]   [82/100] batch 600/646 loss=27.5283 lr=4.59e-05
+00:59:24 [INFO] Epoch 82/100 (123.1s) | loss=29.6490 (raw=27.6862) pos=1.1344 siz=-1.1628 ori=0.5965 vel=0.7915 nis=0.5736 ua=1.00 contrast=1.2669 | val=-5.1679 val_pos=-0.2250 | k_m=9.24 k_s=13.73 k_reg=0.0000 dp_reg=0.0003 | NaN=0
+00:59:24 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-32.1708)
+00:59:24 [INFO]   New best class 4 model -> checkpoints/mamba_dekf/best_class_4.pt (class_val_loss=50.3340)
+00:59:35 [INFO]   [83/100] batch 50/646 loss=27.9243 lr=4.13e-05
+00:59:44 [INFO]   [83/100] batch 100/646 loss=28.0040 lr=4.13e-05
+00:59:53 [INFO]   [83/100] batch 150/646 loss=28.1050 lr=4.13e-05
+01:00:03 [INFO]   [83/100] batch 200/646 loss=28.2105 lr=4.13e-05
+01:00:13 [INFO]   [83/100] batch 250/646 loss=27.9774 lr=4.13e-05
+01:00:22 [INFO]   [83/100] batch 300/646 loss=27.8094 lr=4.13e-05
+01:00:32 [INFO]   [83/100] batch 350/646 loss=27.8432 lr=4.13e-05
+01:00:42 [INFO]   [83/100] batch 400/646 loss=27.8253 lr=4.13e-05
+01:00:51 [INFO]   [83/100] batch 450/646 loss=27.5924 lr=4.13e-05
+01:01:01 [INFO]   [83/100] batch 500/646 loss=27.4874 lr=4.13e-05
+01:01:10 [INFO]   [83/100] batch 550/646 loss=27.6453 lr=4.13e-05
+01:01:20 [INFO]   [83/100] batch 600/646 loss=27.5281 lr=4.13e-05
+01:02:21 [INFO] Epoch 83/100 (123.9s) | loss=29.5030 (raw=27.5395) pos=1.1308 siz=-1.1639 ori=0.5908 vel=0.7966 nis=0.5722 ua=1.00 contrast=1.2401 | val=-5.2309 val_pos=-0.2275 | k_m=9.12 k_s=13.52 k_reg=0.0000 dp_reg=0.0003 | NaN=0
+01:02:21 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=-4.8586)
+01:02:21 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch83.pt
+01:02:21 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-5.2309)
+01:02:31 [INFO]   [84/100] batch 50/646 loss=28.1878 lr=3.69e-05
+01:02:41 [INFO]   [84/100] batch 100/646 loss=27.6718 lr=3.69e-05
+01:02:51 [INFO]   [84/100] batch 150/646 loss=27.9096 lr=3.69e-05
+01:03:00 [INFO]   [84/100] batch 200/646 loss=27.8553 lr=3.69e-05
+01:03:10 [INFO]   [84/100] batch 250/646 loss=27.9302 lr=3.69e-05
+01:03:20 [INFO]   [84/100] batch 300/646 loss=27.7536 lr=3.69e-05
+01:03:30 [INFO]   [84/100] batch 350/646 loss=27.7736 lr=3.69e-05
+01:03:40 [INFO]   [84/100] batch 400/646 loss=27.9116 lr=3.69e-05
+01:03:50 [INFO]   [84/100] batch 450/646 loss=27.9794 lr=3.69e-05
+01:04:00 [INFO]   [84/100] batch 500/646 loss=27.9776 lr=3.69e-05
+01:04:10 [INFO]   [84/100] batch 550/646 loss=27.8209 lr=3.69e-05
+01:04:20 [INFO]   [84/100] batch 600/646 loss=27.7683 lr=3.69e-05
+01:05:20 [INFO] Epoch 84/100 (127.8s) | loss=29.8406 (raw=27.8879) pos=1.1378 siz=-1.1573 ori=0.6063 vel=0.7945 nis=0.5753 ua=1.00 contrast=1.3123 | val=-5.2058 val_pos=-0.2258 | k_m=9.27 k_s=14.00 k_reg=0.0000 dp_reg=0.0003 | NaN=0
+01:05:20 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=-4.9151)
+01:05:30 [INFO]   [85/100] batch 50/646 loss=28.1358 lr=3.28e-05
+01:05:40 [INFO]   [85/100] batch 100/646 loss=28.1783 lr=3.28e-05
+01:05:49 [INFO]   [85/100] batch 150/646 loss=28.2415 lr=3.28e-05
+01:05:59 [INFO]   [85/100] batch 200/646 loss=28.0638 lr=3.28e-05
+01:06:09 [INFO]   [85/100] batch 250/646 loss=27.7097 lr=3.28e-05
+01:06:19 [INFO]   [85/100] batch 300/646 loss=27.2732 lr=3.28e-05
+01:06:29 [INFO]   [85/100] batch 350/646 loss=27.3219 lr=3.28e-05
+01:06:38 [INFO]   [85/100] batch 400/646 loss=27.3858 lr=3.28e-05
+01:06:48 [INFO]   [85/100] batch 450/646 loss=27.3839 lr=3.28e-05
+01:06:58 [INFO]   [85/100] batch 500/646 loss=27.5342 lr=3.28e-05
+01:07:08 [INFO]   [85/100] batch 550/646 loss=27.5763 lr=3.28e-05
+01:07:18 [INFO]   [85/100] batch 600/646 loss=27.5419 lr=3.28e-05
+01:08:17 [INFO] Epoch 85/100 (127.0s) | loss=29.5657 (raw=27.6053) pos=1.1337 siz=-1.1667 ori=0.5899 vel=0.7972 nis=0.5711 ua=1.00 contrast=1.2909 | val=-5.1724 val_pos=-0.2251 | k_m=9.10 k_s=13.59 k_reg=0.0000 dp_reg=0.0003 | NaN=0
+01:08:17 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=-4.9873)
+01:08:28 [INFO]   [86/100] batch 50/646 loss=27.4946 lr=2.89e-05
+01:08:37 [INFO]   [86/100] batch 100/646 loss=28.0440 lr=2.89e-05
+01:08:47 [INFO]   [86/100] batch 150/646 loss=27.5290 lr=2.89e-05
+01:08:57 [INFO]   [86/100] batch 200/646 loss=27.5316 lr=2.89e-05
+01:09:07 [INFO]   [86/100] batch 250/646 loss=27.4387 lr=2.89e-05
+01:09:17 [INFO]   [86/100] batch 300/646 loss=27.6464 lr=2.89e-05
+01:09:26 [INFO]   [86/100] batch 350/646 loss=27.6345 lr=2.89e-05
+01:09:36 [INFO]   [86/100] batch 400/646 loss=27.6242 lr=2.89e-05
+01:09:45 [INFO]   [86/100] batch 450/646 loss=27.6811 lr=2.89e-05
+01:09:55 [INFO]   [86/100] batch 500/646 loss=27.6855 lr=2.89e-05
+01:10:05 [INFO]   [86/100] batch 550/646 loss=27.8626 lr=2.89e-05
+01:10:15 [INFO]   [86/100] batch 600/646 loss=27.9271 lr=2.89e-05
+01:11:16 [INFO] Epoch 86/100 (126.5s) | loss=29.8506 (raw=27.8934) pos=1.1404 siz=-1.1639 ori=0.6025 vel=0.7978 nis=0.5738 ua=1.00 contrast=1.3235 | val=-5.0677 val_pos=-0.2206 | k_m=9.35 k_s=14.18 k_reg=0.0000 dp_reg=0.0003 | NaN=0
+01:11:16 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=-5.8361)
+01:11:26 [INFO]   [87/100] batch 50/646 loss=29.0711 lr=2.53e-05
+01:11:36 [INFO]   [87/100] batch 100/646 loss=28.5761 lr=2.53e-05
+01:11:46 [INFO]   [87/100] batch 150/646 loss=27.9745 lr=2.53e-05
+01:11:56 [INFO]   [87/100] batch 200/646 loss=27.9774 lr=2.53e-05
+01:12:06 [INFO]   [87/100] batch 250/646 loss=27.6853 lr=2.53e-05
+01:12:15 [INFO]   [87/100] batch 300/646 loss=27.9365 lr=2.53e-05
+01:12:25 [INFO]   [87/100] batch 350/646 loss=27.8021 lr=2.53e-05
+01:12:35 [INFO]   [87/100] batch 400/646 loss=27.8151 lr=2.53e-05
+01:12:45 [INFO]   [87/100] batch 450/646 loss=27.7090 lr=2.53e-05
+01:12:54 [INFO]   [87/100] batch 500/646 loss=27.6276 lr=2.53e-05
+01:13:04 [INFO]   [87/100] batch 550/646 loss=27.7335 lr=2.53e-05
+01:13:14 [INFO]   [87/100] batch 600/646 loss=27.7813 lr=2.53e-05
+01:14:16 [INFO] Epoch 87/100 (127.4s) | loss=29.6037 (raw=27.6537) pos=1.1326 siz=-1.1559 ori=0.5896 vel=0.7895 nis=0.5721 ua=1.00 contrast=1.3648 | val=-5.1915 val_pos=-0.2255 | k_m=9.31 k_s=14.01 k_reg=0.0000 dp_reg=0.0003 | NaN=0
+01:14:16 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-32.1717)
+01:14:26 [INFO]   [88/100] batch 50/646 loss=26.4366 lr=2.18e-05
+01:14:36 [INFO]   [88/100] batch 100/646 loss=27.0886 lr=2.18e-05
+01:14:46 [INFO]   [88/100] batch 150/646 loss=27.7254 lr=2.18e-05
+01:14:55 [INFO]   [88/100] batch 200/646 loss=27.7094 lr=2.18e-05
+01:15:05 [INFO]   [88/100] batch 250/646 loss=27.5768 lr=2.18e-05
+01:15:16 [INFO]   [88/100] batch 300/646 loss=27.9097 lr=2.18e-05
+01:15:26 [INFO]   [88/100] batch 350/646 loss=27.9764 lr=2.18e-05
+01:15:36 [INFO]   [88/100] batch 400/646 loss=27.9596 lr=2.18e-05
+01:15:46 [INFO]   [88/100] batch 450/646 loss=27.8461 lr=2.18e-05
+01:15:55 [INFO]   [88/100] batch 500/646 loss=27.8805 lr=2.18e-05
+01:16:05 [INFO]   [88/100] batch 550/646 loss=27.7530 lr=2.18e-05
+01:16:15 [INFO]   [88/100] batch 600/646 loss=27.7742 lr=2.18e-05
+01:17:16 [INFO] Epoch 88/100 (127.9s) | loss=29.8196 (raw=27.8626) pos=1.1382 siz=-1.1652 ori=0.6058 vel=0.7989 nis=0.5744 ua=1.00 contrast=1.3432 | val=-5.2656 val_pos=-0.2291 | k_m=9.08 k_s=13.56 k_reg=0.0000 dp_reg=0.0002 | NaN=0
+01:17:16 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-4.8706)
+01:17:16 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-32.1848)
+01:17:16 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=56.2014)
+01:17:16 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch88.pt
+01:17:16 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-5.2656)
+01:17:29 [INFO]   [89/100] batch 50/646 loss=26.7502 lr=1.86e-05
+01:17:39 [INFO]   [89/100] batch 100/646 loss=27.9264 lr=1.86e-05
+01:17:49 [INFO]   [89/100] batch 150/646 loss=27.9582 lr=1.86e-05
+01:17:59 [INFO]   [89/100] batch 200/646 loss=28.0554 lr=1.86e-05
+01:18:09 [INFO]   [89/100] batch 250/646 loss=28.1637 lr=1.86e-05
+01:18:18 [INFO]   [89/100] batch 300/646 loss=28.2330 lr=1.86e-05
+01:18:28 [INFO]   [89/100] batch 350/646 loss=28.0872 lr=1.86e-05
+01:18:38 [INFO]   [89/100] batch 400/646 loss=28.0335 lr=1.86e-05
+01:18:48 [INFO]   [89/100] batch 450/646 loss=27.9367 lr=1.86e-05
+01:18:58 [INFO]   [89/100] batch 500/646 loss=27.9603 lr=1.86e-05
+01:19:08 [INFO]   [89/100] batch 550/646 loss=27.9554 lr=1.86e-05
+01:19:17 [INFO]   [89/100] batch 600/646 loss=27.6968 lr=1.86e-05
+01:20:18 [INFO] Epoch 89/100 (130.0s) | loss=29.7349 (raw=27.7724) pos=1.1344 siz=-1.1595 ori=0.6048 vel=0.7920 nis=0.5732 ua=1.00 contrast=1.2864 | val=-5.1935 val_pos=-0.2255 | k_m=9.33 k_s=14.18 k_reg=0.0000 dp_reg=0.0003 | NaN=0
+01:20:28 [INFO]   [90/100] batch 50/646 loss=27.2650 lr=1.57e-05
+01:20:38 [INFO]   [90/100] batch 100/646 loss=27.1895 lr=1.57e-05
+01:20:48 [INFO]   [90/100] batch 150/646 loss=27.4347 lr=1.57e-05
+01:20:57 [INFO]   [90/100] batch 200/646 loss=27.6689 lr=1.57e-05
+01:21:07 [INFO]   [90/100] batch 250/646 loss=27.7796 lr=1.57e-05
+01:21:15 [INFO]   [90/100] batch 300/646 loss=27.7476 lr=1.57e-05
+01:21:25 [INFO]   [90/100] batch 350/646 loss=27.7887 lr=1.57e-05
+01:21:35 [INFO]   [90/100] batch 400/646 loss=27.9021 lr=1.57e-05
+01:21:45 [INFO]   [90/100] batch 450/646 loss=27.8127 lr=1.57e-05
+01:21:55 [INFO]   [90/100] batch 500/646 loss=27.9237 lr=1.57e-05
+01:22:05 [INFO]   [90/100] batch 550/646 loss=27.8326 lr=1.57e-05
+01:22:15 [INFO]   [90/100] batch 600/646 loss=27.8591 lr=1.57e-05
+01:23:14 [INFO] Epoch 90/100 (126.0s) | loss=29.8871 (raw=27.9282) pos=1.1431 siz=-1.1612 ori=0.5957 vel=0.8017 nis=0.5748 ua=1.00 contrast=1.3361 | val=-5.3570 val_pos=-0.2310 | k_m=9.30 k_s=13.97 k_reg=0.0000 dp_reg=0.0003 | NaN=0
+01:23:14 [INFO]   New best class 1 model -> checkpoints/mamba_dekf/best_class_1.pt (class_val_loss=-32.2681)
+01:23:14 [INFO]   New best class 6 model -> checkpoints/mamba_dekf/best_class_6.pt (class_val_loss=55.8479)
+01:23:15 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch90.pt
+01:23:15 [INFO]   New best model → checkpoints/mamba_dekf/best.pt (val_loss=-5.3570)
+01:23:25 [INFO]   [91/100] batch 50/646 loss=29.0157 lr=1.30e-05
+01:23:34 [INFO]   [91/100] batch 100/646 loss=28.5698 lr=1.30e-05
+01:23:44 [INFO]   [91/100] batch 150/646 loss=27.9098 lr=1.30e-05
+01:23:54 [INFO]   [91/100] batch 200/646 loss=27.8759 lr=1.30e-05
+01:24:04 [INFO]   [91/100] batch 250/646 loss=27.4358 lr=1.30e-05
+01:24:14 [INFO]   [91/100] batch 300/646 loss=27.6234 lr=1.30e-05
+01:24:24 [INFO]   [91/100] batch 350/646 loss=27.4126 lr=1.30e-05
+01:24:34 [INFO]   [91/100] batch 400/646 loss=27.3444 lr=1.30e-05
+01:24:44 [INFO]   [91/100] batch 450/646 loss=27.4157 lr=1.30e-05
+01:24:54 [INFO]   [91/100] batch 500/646 loss=27.4171 lr=1.30e-05
+01:25:03 [INFO]   [91/100] batch 550/646 loss=27.5706 lr=1.30e-05
+01:25:13 [INFO]   [91/100] batch 600/646 loss=27.5843 lr=1.30e-05
+01:26:12 [INFO] Epoch 91/100 (127.4s) | loss=29.4793 (raw=27.5057) pos=1.1291 siz=-1.1582 ori=0.5891 vel=0.7943 nis=0.5713 ua=1.00 contrast=1.2200 | val=-5.1871 val_pos=-0.2245 | k_m=9.15 k_s=13.77 k_reg=0.0000 dp_reg=0.0003 | NaN=0
+01:26:23 [INFO]   [92/100] batch 50/646 loss=28.2280 lr=1.05e-05
+01:26:33 [INFO]   [92/100] batch 100/646 loss=28.2077 lr=1.05e-05
+01:26:43 [INFO]   [92/100] batch 150/646 loss=27.6957 lr=1.05e-05
+01:26:53 [INFO]   [92/100] batch 200/646 loss=27.6874 lr=1.05e-05
+01:27:03 [INFO]   [92/100] batch 250/646 loss=27.6209 lr=1.05e-05
+01:27:13 [INFO]   [92/100] batch 300/646 loss=27.4577 lr=1.05e-05
+01:27:23 [INFO]   [92/100] batch 350/646 loss=27.6016 lr=1.05e-05
+01:27:32 [INFO]   [92/100] batch 400/646 loss=27.7376 lr=1.05e-05
+01:27:42 [INFO]   [92/100] batch 450/646 loss=27.7703 lr=1.05e-05
+01:27:51 [INFO]   [92/100] batch 500/646 loss=27.8436 lr=1.05e-05
+01:28:01 [INFO]   [92/100] batch 550/646 loss=27.9227 lr=1.05e-05
+01:28:11 [INFO]   [92/100] batch 600/646 loss=27.8800 lr=1.05e-05
+01:29:12 [INFO] Epoch 92/100 (127.4s) | loss=29.8410 (raw=27.8754) pos=1.1428 siz=-1.1652 ori=0.5951 vel=0.7963 nis=0.5745 ua=1.00 contrast=1.2722 | val=-5.3405 val_pos=-0.2300 | k_m=9.01 k_s=13.47 k_reg=0.0000 dp_reg=0.0003 | NaN=0
+01:29:23 [INFO]   [93/100] batch 50/646 loss=27.2005 lr=8.34e-06
+01:29:32 [INFO]   [93/100] batch 100/646 loss=27.8446 lr=8.34e-06
+01:29:42 [INFO]   [93/100] batch 150/646 loss=28.0965 lr=8.34e-06
+01:29:52 [INFO]   [93/100] batch 200/646 loss=27.6033 lr=8.34e-06
+01:30:01 [INFO]   [93/100] batch 250/646 loss=27.7159 lr=8.34e-06
+01:30:11 [INFO]   [93/100] batch 300/646 loss=27.6204 lr=8.34e-06
+01:30:21 [INFO]   [93/100] batch 350/646 loss=27.6812 lr=8.34e-06
+01:30:31 [INFO]   [93/100] batch 400/646 loss=27.8061 lr=8.34e-06
+01:30:41 [INFO]   [93/100] batch 450/646 loss=27.8421 lr=8.34e-06
+01:30:51 [INFO]   [93/100] batch 500/646 loss=27.8694 lr=8.34e-06
+01:31:01 [INFO]   [93/100] batch 550/646 loss=27.8843 lr=8.34e-06
+01:31:11 [INFO]   [93/100] batch 600/646 loss=27.8277 lr=8.34e-06
+01:32:10 [INFO] Epoch 93/100 (128.3s) | loss=29.7422 (raw=27.8021) pos=1.1381 siz=-1.1611 ori=0.5920 vel=0.7968 nis=0.5724 ua=1.00 contrast=1.4291 | val=-5.2636 val_pos=-0.2273 | k_m=9.17 k_s=13.77 k_reg=0.0000 dp_reg=0.0003 | NaN=0
+01:32:10 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-4.8943)
+01:32:20 [INFO]   [94/100] batch 50/646 loss=28.6416 lr=6.40e-06
+01:32:30 [INFO]   [94/100] batch 100/646 loss=28.2485 lr=6.40e-06
+01:32:39 [INFO]   [94/100] batch 150/646 loss=28.0815 lr=6.40e-06
+01:32:49 [INFO]   [94/100] batch 200/646 loss=27.6653 lr=6.40e-06
+01:32:59 [INFO]   [94/100] batch 250/646 loss=27.8514 lr=6.40e-06
+01:33:09 [INFO]   [94/100] batch 300/646 loss=27.9298 lr=6.40e-06
+01:33:18 [INFO]   [94/100] batch 350/646 loss=27.9184 lr=6.40e-06
+01:33:27 [INFO]   [94/100] batch 400/646 loss=27.8149 lr=6.40e-06
+01:33:37 [INFO]   [94/100] batch 450/646 loss=27.5954 lr=6.40e-06
+01:33:47 [INFO]   [94/100] batch 500/646 loss=27.5000 lr=6.40e-06
+01:33:56 [INFO]   [94/100] batch 550/646 loss=27.4807 lr=6.40e-06
+01:34:06 [INFO]   [94/100] batch 600/646 loss=27.6416 lr=6.40e-06
+01:35:06 [INFO] Epoch 94/100 (125.0s) | loss=29.7751 (raw=27.8170) pos=1.1384 siz=-1.1532 ori=0.5920 vel=0.7950 nis=0.5708 ua=1.00 contrast=1.3263 | val=-5.1748 val_pos=-0.2245 | k_m=9.19 k_s=13.88 k_reg=0.0000 dp_reg=0.0003 | NaN=0
+01:35:16 [INFO]   [95/100] batch 50/646 loss=30.4638 lr=4.71e-06
+01:35:26 [INFO]   [95/100] batch 100/646 loss=29.3798 lr=4.71e-06
+01:35:36 [INFO]   [95/100] batch 150/646 loss=29.0988 lr=4.71e-06
+01:35:46 [INFO]   [95/100] batch 200/646 loss=28.4064 lr=4.71e-06
+01:35:56 [INFO]   [95/100] batch 250/646 loss=27.8675 lr=4.71e-06
+01:36:05 [INFO]   [95/100] batch 300/646 loss=27.9680 lr=4.71e-06
+01:36:15 [INFO]   [95/100] batch 350/646 loss=28.1101 lr=4.71e-06
+01:36:25 [INFO]   [95/100] batch 400/646 loss=28.1355 lr=4.71e-06
+01:36:35 [INFO]   [95/100] batch 450/646 loss=28.1612 lr=4.71e-06
+01:36:44 [INFO]   [95/100] batch 500/646 loss=28.0626 lr=4.71e-06
+01:36:54 [INFO]   [95/100] batch 550/646 loss=27.9441 lr=4.71e-06
+01:37:04 [INFO]   [95/100] batch 600/646 loss=27.9899 lr=4.71e-06
+01:38:05 [INFO] Epoch 95/100 (127.2s) | loss=29.8241 (raw=27.8697) pos=1.1397 siz=-1.1633 ori=0.6007 vel=0.7984 nis=0.5732 ua=1.00 contrast=1.3380 | val=-5.2404 val_pos=-0.2265 | k_m=9.34 k_s=14.25 k_reg=0.0000 dp_reg=0.0003 | NaN=0
+01:38:16 [INFO]   [96/100] batch 50/646 loss=28.1573 lr=3.27e-06
+01:38:26 [INFO]   [96/100] batch 100/646 loss=27.9790 lr=3.27e-06
+01:38:35 [INFO]   [96/100] batch 150/646 loss=27.9588 lr=3.27e-06
+01:38:45 [INFO]   [96/100] batch 200/646 loss=28.1555 lr=3.27e-06
+01:38:54 [INFO]   [96/100] batch 250/646 loss=27.7153 lr=3.27e-06
+01:39:04 [INFO]   [96/100] batch 300/646 loss=27.8288 lr=3.27e-06
+01:39:14 [INFO]   [96/100] batch 350/646 loss=27.7455 lr=3.27e-06
+01:39:23 [INFO]   [96/100] batch 400/646 loss=27.7406 lr=3.27e-06
+01:39:33 [INFO]   [96/100] batch 450/646 loss=27.7948 lr=3.27e-06
+01:39:44 [INFO]   [96/100] batch 500/646 loss=27.6616 lr=3.27e-06
+01:39:54 [INFO]   [96/100] batch 550/646 loss=27.5503 lr=3.27e-06
+01:40:04 [INFO]   [96/100] batch 600/646 loss=27.6076 lr=3.27e-06
+01:41:02 [INFO] Epoch 96/100 (127.5s) | loss=29.6205 (raw=27.6694) pos=1.1333 siz=-1.1681 ori=0.5978 vel=0.7946 nis=0.5728 ua=1.00 contrast=1.3601 | val=-5.3289 val_pos=-0.2305 | k_m=9.28 k_s=14.17 k_reg=0.0000 dp_reg=0.0003 | NaN=0
+01:41:02 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-4.8994)
+01:41:02 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=-6.1569)
+01:41:13 [INFO]   [97/100] batch 50/646 loss=27.0967 lr=2.09e-06
+01:41:22 [INFO]   [97/100] batch 100/646 loss=27.4743 lr=2.09e-06
+01:41:32 [INFO]   [97/100] batch 150/646 loss=27.6558 lr=2.09e-06
+01:41:42 [INFO]   [97/100] batch 200/646 loss=27.8029 lr=2.09e-06
+01:41:52 [INFO]   [97/100] batch 250/646 loss=27.9409 lr=2.09e-06
+01:42:02 [INFO]   [97/100] batch 300/646 loss=28.1417 lr=2.09e-06
+01:42:11 [INFO]   [97/100] batch 350/646 loss=28.2056 lr=2.09e-06
+01:42:21 [INFO]   [97/100] batch 400/646 loss=28.3352 lr=2.09e-06
+01:42:32 [INFO]   [97/100] batch 450/646 loss=28.1699 lr=2.09e-06
+01:42:41 [INFO]   [97/100] batch 500/646 loss=27.9825 lr=2.09e-06
+01:42:51 [INFO]   [97/100] batch 550/646 loss=27.9541 lr=2.09e-06
+01:43:01 [INFO]   [97/100] batch 600/646 loss=28.0153 lr=2.09e-06
+01:44:01 [INFO] Epoch 97/100 (127.3s) | loss=29.8614 (raw=27.8959) pos=1.1404 siz=-1.1621 ori=0.6039 vel=0.7939 nis=0.5752 ua=1.00 contrast=1.2661 | val=-5.2790 val_pos=-0.2284 | k_m=9.20 k_s=13.87 k_reg=0.0000 dp_reg=0.0003 | NaN=0
+01:44:01 [INFO]   New best class 0 model -> checkpoints/mamba_dekf/best_class_0.pt (class_val_loss=-4.9139)
+01:44:12 [INFO]   [98/100] batch 50/646 loss=29.7773 lr=1.18e-06
+01:44:22 [INFO]   [98/100] batch 100/646 loss=27.8209 lr=1.18e-06
+01:44:32 [INFO]   [98/100] batch 150/646 loss=28.0995 lr=1.18e-06
+01:44:42 [INFO]   [98/100] batch 200/646 loss=27.7390 lr=1.18e-06
+01:44:51 [INFO]   [98/100] batch 250/646 loss=27.8686 lr=1.18e-06
+01:45:01 [INFO]   [98/100] batch 300/646 loss=27.8281 lr=1.18e-06
+01:45:10 [INFO]   [98/100] batch 350/646 loss=27.7538 lr=1.18e-06
+01:45:20 [INFO]   [98/100] batch 400/646 loss=27.8719 lr=1.18e-06
+01:45:29 [INFO]   [98/100] batch 450/646 loss=27.7421 lr=1.18e-06
+01:45:39 [INFO]   [98/100] batch 500/646 loss=27.8663 lr=1.18e-06
+01:45:49 [INFO]   [98/100] batch 550/646 loss=27.8197 lr=1.18e-06
+01:45:58 [INFO]   [98/100] batch 600/646 loss=27.8874 lr=1.18e-06
+01:47:00 [INFO] Epoch 98/100 (126.5s) | loss=29.8361 (raw=27.8817) pos=1.1414 siz=-1.1589 ori=0.5936 vel=0.7968 nis=0.5724 ua=1.00 contrast=1.3458 | val=-5.2761 val_pos=-0.2277 | k_m=9.22 k_s=13.98 k_reg=0.0000 dp_reg=0.0003 | NaN=0
+01:47:00 [INFO]   New best class 2 model -> checkpoints/mamba_dekf/best_class_2.pt (class_val_loss=-6.1869)
+01:47:10 [INFO]   [99/100] batch 50/646 loss=27.5445 lr=5.24e-07
+01:47:19 [INFO]   [99/100] batch 100/646 loss=27.6217 lr=5.24e-07
+01:47:29 [INFO]   [99/100] batch 150/646 loss=28.1147 lr=5.24e-07
+01:47:38 [INFO]   [99/100] batch 200/646 loss=28.2342 lr=5.24e-07
+01:47:48 [INFO]   [99/100] batch 250/646 loss=27.9922 lr=5.24e-07
+01:47:57 [INFO]   [99/100] batch 300/646 loss=27.8034 lr=5.24e-07
+01:48:07 [INFO]   [99/100] batch 350/646 loss=27.8288 lr=5.24e-07
+01:48:16 [INFO]   [99/100] batch 400/646 loss=28.0603 lr=5.24e-07
+01:48:27 [INFO]   [99/100] batch 450/646 loss=28.0884 lr=5.24e-07
+01:48:36 [INFO]   [99/100] batch 500/646 loss=28.0750 lr=5.24e-07
+01:48:46 [INFO]   [99/100] batch 550/646 loss=28.0963 lr=5.24e-07
+01:48:56 [INFO]   [99/100] batch 600/646 loss=28.0372 lr=5.24e-07
+01:49:56 [INFO] Epoch 99/100 (126.2s) | loss=29.9167 (raw=27.9615) pos=1.1429 siz=-1.1557 ori=0.5973 vel=0.7944 nis=0.5742 ua=1.00 contrast=1.3363 | val=-5.2619 val_pos=-0.2271 | k_m=9.20 k_s=13.90 k_reg=0.0000 dp_reg=0.0003 | NaN=0
+01:50:06 [INFO]   [100/100] batch 50/646 loss=27.6170 lr=1.31e-07
+01:50:16 [INFO]   [100/100] batch 100/646 loss=27.7799 lr=1.31e-07
+01:50:25 [INFO]   [100/100] batch 150/646 loss=28.5074 lr=1.31e-07
+01:50:35 [INFO]   [100/100] batch 200/646 loss=28.1244 lr=1.31e-07
+01:50:45 [INFO]   [100/100] batch 250/646 loss=28.0383 lr=1.31e-07
+01:50:55 [INFO]   [100/100] batch 300/646 loss=28.0830 lr=1.31e-07
+01:51:05 [INFO]   [100/100] batch 350/646 loss=28.0397 lr=1.31e-07
+01:51:15 [INFO]   [100/100] batch 400/646 loss=28.0085 lr=1.31e-07
+01:51:25 [INFO]   [100/100] batch 450/646 loss=27.9127 lr=1.31e-07
+01:51:35 [INFO]   [100/100] batch 500/646 loss=27.8389 lr=1.31e-07
+01:51:44 [INFO]   [100/100] batch 550/646 loss=27.6887 lr=1.31e-07
+01:51:54 [INFO]   [100/100] batch 600/646 loss=27.6819 lr=1.31e-07
+01:52:53 [INFO] Epoch 100/100 (126.9s) | loss=29.7693 (raw=27.8122) pos=1.1358 siz=-1.1580 ori=0.6029 vel=0.7982 nis=0.5735 ua=1.00 contrast=1.3309 | val=-5.1934 val_pos=-0.2256 | k_m=9.18 k_s=13.95 k_reg=0.0000 dp_reg=0.0003 | NaN=0
+01:52:53 [INFO]   Saved checkpoint → checkpoints/mamba_dekf/checkpoint_epoch100.pt
+01:52:53 [INFO] Training complete. Best val_loss=-5.3570

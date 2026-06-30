@@ -10,6 +10,7 @@ Kept lines:
     - Epoch summary:  "HH:MM:SS [INFO] Epoch N/M (Xs) | loss=... | val=..."
     - Checkpoint:     "HH:MM:SS [INFO]   Saved checkpoint → ..."
     - Best model:     "HH:MM:SS [INFO]   New best model → ..."
+    - Best class:     "HH:MM:SS [INFO]   New best class N model -> ..."
 """
 
 import argparse
@@ -29,8 +30,8 @@ def should_keep(line: str) -> bool:
     if "Saved checkpoint" in line:
         return True
 
-    # New best model lines
-    if "New best model" in line:
+    # New best model lines (includes per-class bests: "New best class N model")
+    if "New best" in line:
         return True
 
     return False
