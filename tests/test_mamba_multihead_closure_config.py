@@ -65,6 +65,29 @@ class MambaMultiheadClosureConfigTest(unittest.TestCase):
         self.assertEqual(closure_cfg["FORCE_PRIOR_STATES"], ["matched", "unmatched"])
         self.assertEqual(closure_cfg["ACTIVE_CLASS_STATES"], {})
 
+    def test_state_residual_is_disabled_by_default_in_train_and_eval_configs(self):
+        eval_cfg = yaml.safe_load(
+            (
+                REPO_ROOT
+                / "config"
+                / "nuscenes_single_stage_mctrack_exact_noise_hybrid_mamba_multihead_closure.yaml"
+            ).read_text(encoding="utf-8")
+        )
+        train_cfg = yaml.safe_load(
+            (REPO_ROOT / "config" / "train_nuscenes.yaml").read_text(encoding="utf-8")
+        )
+
+        eval_residual = eval_cfg["DEKF_BASE_NOISE"]["MAMBA_STATE_RESIDUAL"]
+        train_residual = train_cfg["BASE_NOISE"]["MAMBA_STATE_RESIDUAL"]
+        for residual_cfg in [eval_residual, train_residual]:
+            self.assertFalse(residual_cfg["ENABLED"])
+            self.assertEqual(residual_cfg["ACTIVE_CLASS_STATES"], {})
+            self.assertIn("DEFAULT_BOUNDS", residual_cfg)
+            self.assertIn(2, residual_cfg["CLASS_BOUNDS"])
+            self.assertIn(3, residual_cfg["CLASS_BOUNDS"])
+            self.assertIn(5, residual_cfg["CLASS_BOUNDS"])
+            self.assertIn(6, residual_cfg["CLASS_BOUNDS"])
+
     def test_audit_keeps_agile_unmatched_gate_for_future_retraining(self):
         cfg = yaml.safe_load(
             (

@@ -299,6 +299,23 @@ BASE_NOISE:
           r_pos: [0.85, 1.40]
           r_siz: [0.85, 1.55]
           r_ori: [0.85, 2.80]
+  MAMBA_STATE_RESIDUAL:
+    ENABLED: false
+    ACTIVE_CLASS_STATES: {}
+    DEFAULT_BOUNDS:
+      POS_XY: 0.30
+      POS_Z: 0.10
+      VEL_XY: 0.50
+      YAW: 0.08
+    CLASS_BOUNDS:
+      2:
+        unmatched: {POS_XY: 0.35, POS_Z: 0.08, VEL_XY: 0.60, YAW: 0.10}
+      3:
+        unmatched: {POS_XY: 0.40, POS_Z: 0.08, VEL_XY: 0.70, YAW: 0.12}
+      5:
+        unmatched: {POS_XY: 0.25, POS_Z: 0.08, VEL_XY: 0.35, YAW: 0.05}
+      6:
+        unmatched: {POS_XY: 0.30, POS_Z: 0.08, VEL_XY: 0.45, YAW: 0.06}
   DETECTION_UPDATE:
     ENABLED: true
     MISS_R_SCALE: 1000.0

@@ -39,6 +39,7 @@ from tracker.bbox import BBox
 from kalmanfilter.checkpoint_compat import adapt_num_class_state_dict
 from kalmanfilter.mamba_adaptive_kf import MambaDecoupledEKF, build_noise_audit_samples
 from kalmanfilter.bounded_residual import infer_state_bucket
+from kalmanfilter.state_residual import apply_bounded_state_residuals
 from kalmanfilter.noise_audit import NoiseAuditAccumulator
 from utils.debug_log import emit_debug_line
 from utils.utils import norm_realative_radian
@@ -1266,6 +1267,11 @@ class Base3DTracker:
                 state_buckets=state_buckets,
             )
 
+            px, sx, ox, state_residual_mask = self._apply_state_residual_to_prediction(
+                px, sx, ox, mamba_out, class_ids, state_buckets
+            )
+            mamba_out["state_residual_active_mask"] = state_residual_mask
+
         # ---- 5. Write predicted states back to per-track storage ----
         self._unbatch_kf_states(track_ids, px, pP, sx, sP, ox, oP)
 
@@ -1388,6 +1394,31 @@ class Base3DTracker:
 
         _run_subset(standard_pairs, exact_mode=False)
         _run_subset(exact_pairs, exact_mode=True)
+
+    def _state_residual_cfg(self) -> Dict:
+        return (
+            (self.cfg.get("DEKF_BASE_NOISE", {}) or {}).get("MAMBA_STATE_RESIDUAL", {})
+            or {}
+        )
+
+    def _apply_state_residual_to_prediction(
+        self,
+        pos_x: torch.Tensor,
+        siz_x: torch.Tensor,
+        ori_x: torch.Tensor,
+        mamba_out: Dict,
+        class_ids: torch.Tensor,
+        state_buckets: List[str],
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        return apply_bounded_state_residuals(
+            pos_x,
+            siz_x,
+            ori_x,
+            mamba_out.get("delta_pos"),
+            class_ids=class_ids,
+            state_buckets=state_buckets,
+            cfg=self._state_residual_cfg(),
+        )
 
     def _summarize_small_class_pending_reasons(self) -> Dict[str, Dict[str, int]]:
         summary: Dict[str, Dict[str, int]] = {}
