@@ -1,8 +1,13 @@
 import unittest
+from pathlib import Path
 
+import yaml
 import torch
 
 from tracker.mctrack_motion import MCTrackOriginalPoseMotion, original_mctrack_motion_enabled
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class _BBox:
@@ -71,6 +76,14 @@ class MCTrackOriginalMotionTest(unittest.TestCase):
         self.assertAlmostEqual(float(out[0, 4, 0]), 0.0)
         self.assertAlmostEqual(float(out[0, 2, 0]), 0.0)
         self.assertAlmostEqual(float(out[0, 5, 0]), 0.0)
+
+    def test_nuscenes_motion_configs_use_7_class_mamba_checkpoint_shape(self):
+        for name in [
+            "nuscenes_single_stage_mctrack_exact_noise_hybrid_dirty_suppressor_tuned.yaml",
+            "nuscenes_single_stage_mctrack_original_motion_ablation.yaml",
+        ]:
+            cfg = yaml.safe_load((REPO_ROOT / "config" / name).read_text(encoding="utf-8"))
+            self.assertEqual(cfg["MAMBA"]["NUM_CLASSES"], 7)
 
 
 if __name__ == "__main__":

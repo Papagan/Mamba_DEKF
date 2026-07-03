@@ -822,14 +822,37 @@ pedestr         0.834   0.334   0.872   0.817   25423   0.708   0.238   1291    
 trailer         0.533   0.928   0.612   0.721   2425    0.441   0.583   65      56      39.4    1483    414     941     1       7       0.64    1.09
 truck           0.717   0.544   0.771   0.751   9650    0.579   0.365   360     157     48.0    7439    1855    2209    2       19      0.27    0.42
 
+当配置为ACTIVE_CLASS_STATES: {3: ["unmatched"], 5: ["unmatched"]}
+Per-class results:
+                AMOTA   AMOTP   RECALL  MOTAR   GT      MOTA    MOTP    MT      ML      FAF     TP      FP      FN      IDS     FRAG    TID     LGD
+bicycle         0.579   0.587   0.611   0.850   1993    0.519   0.193   74      67      12.5    1217    183     776     0       2       0.63    0.73
+bus             0.877   0.513   0.841   0.922   2112    0.776   0.433   79      15      8.7     1776    138     336     0       13      0.32    0.65
+car             0.857   0.381   0.869   0.875   58317   0.758   0.248   2838    600     110.0   50547   6323    7646    124     136     0.23    0.36
+motorcy         0.772   0.467   0.789   0.882   1977    0.695   0.298   89      29      13.3    1558    184     417     2       3       0.57    0.77
+pedestr         0.834   0.334   0.872   0.818   25423   0.708   0.238   1291    309     90.0    22023   4013    3255    145     78      0.22    0.37
+trailer         0.536   0.934   0.612   0.724   2425    0.443   0.586   65      56      39.0    1485    410     940     0       7       0.64    1.09
+truck           0.717   0.544   0.771   0.752   9650    0.579   0.365   360     157     47.8    7439    1847    2209    2       19      0.27    0.42
 
-
+Aggregated results:
+AMOTA   0.739
 
 如果你觉得你分析的足够透彻，那么就按照你的意见来，同时还要考虑的事情是，我们已经在训练分类训练时发现不同类的损失函数会呈现显著的差异性，你之前也对这一点进行过分析，此外，你还要注意的是不要再犯之前的错误，导致主链路性能损失，当然在这次重构过程中我不希望MCTrack的字样出现，还有一些已经被证明固话到主链路中的东西就不要再去动它们了，除非你有充分的理由去修改它们，而一些无效或重复的东西可以进行精简
 
+配置MAMBA_STATE_RESIDUAL:ENABLED: true ACTIVE_CLASS_STATES: {3: ["unmatched"]}下的结果
+Per-class results:
+                AMOTA   AMOTP   RECALL  MOTAR   GT      MOTA    MOTP    MT      ML      FAF     TP      FP      FN      IDS     FRAG    TID     LGD
+bicycle         0.579   0.587   0.588   0.878   1993    0.516   0.193   68      72      9.9     1172    143     821     0       2       0.67    0.78
+bus             0.877   0.513   0.841   0.922   2112    0.776   0.433   79      15      8.7     1776    138     336     0       13      0.32    0.65
+car             0.857   0.381   0.869   0.875   58317   0.758   0.248   2838    600     110.0   50547   6323    7646    124     136     0.23    0.36
+motorcy         0.767   0.471   0.796   0.879   1977    0.698   0.303   91      27      13.7    1570    190     404     3       3       0.59    0.80
+pedestr         0.834   0.334   0.872   0.818   25423   0.708   0.238   1291    309     90.0    22023   4013    3255    145     78      0.22    0.37
+trailer         0.535   0.934   0.612   0.724   2425    0.443   0.586   65      56      39.0    1484    410     941     0       7       0.65    1.09
+truck           0.717   0.544   0.771   0.752   9650    0.579   0.365   360     157     47.8    7439    1847    2209    2       19      0.27    0.42
 
-当前模型已经训练好了，
+Aggregated results:
+AMOTA   0.738
 
+python main.py --dataset nuscenes --eval --config config/nuscenes_single_stage_mctrack_exact_noise_hybrid_mamba_multihead_closure.yaml -p 12
   python tools/merge_class_heads.py \
     --base checkpoints/mamba_dekf/best.pt \
     --class-head 0=checkpoints/mamba_dekf/best_class_0.pt \
@@ -840,7 +863,6 @@ truck           0.717   0.544   0.771   0.751   9650    0.579   0.365   360     
     --class-head 5=checkpoints/mamba_dekf/best_class_5.pt \
     --class-head 6=checkpoints/mamba_dekf/best_class_6.pt \
     --output checkpoints/mamba_dekf/best_merged_classes_3_5.pt
-
 
 python - <<'PY'
 import torch
