@@ -239,8 +239,8 @@ DEKF_BASE_NOISE:
           r_siz: [0.85, 1.55]
           r_ori: [0.85, 2.80]
   MAMBA_STATE_RESIDUAL:
-    ENABLED: false
-    ACTIVE_CLASS_STATES: {}
+    ENABLED: true
+    ACTIVE_CLASS_STATES: {3: ["unmatched"], 5: ["unmatched"]}
     DEFAULT_BOUNDS:
       POS_XY: 0.30
       POS_Z: 0.10
@@ -250,9 +250,9 @@ DEKF_BASE_NOISE:
       2:
         unmatched: {POS_XY: 0.35, POS_Z: 0.08, VEL_XY: 0.60, YAW: 0.10}
       3:
-        unmatched: {POS_XY: 0.40, POS_Z: 0.08, VEL_XY: 0.70, YAW: 0.12}
+        unmatched: {POS_XY: 0.08, POS_Z: 0.02, VEL_XY: 0.60, YAW: 0.01}
       5:
-        unmatched: {POS_XY: 0.25, POS_Z: 0.08, VEL_XY: 0.35, YAW: 0.05}
+        unmatched: {POS_XY: 0.08, POS_Z: 0.02, VEL_XY: 0.25, YAW: 0.01}
       6:
         unmatched: {POS_XY: 0.30, POS_Z: 0.08, VEL_XY: 0.45, YAW: 0.06}
 

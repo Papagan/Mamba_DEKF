@@ -824,13 +824,22 @@ truck           0.717   0.544   0.771   0.751   9650    0.579   0.365   360     
 
 
 
+
+如果你觉得你分析的足够透彻，那么就按照你的意见来，同时还要考虑的事情是，我们已经在训练分类训练时发现不同类的损失函数会呈现显著的差异性，你之前也对这一点进行过分析，此外，你还要注意的是不要再犯之前的错误，导致主链路性能损失，当然在这次重构过程中我不希望MCTrack的字样出现，还有一些已经被证明固话到主链路中的东西就不要再去动它们了，除非你有充分的理由去修改它们，而一些无效或重复的东西可以进行精简
+
+
+当前模型已经训练好了，
+
   python tools/merge_class_heads.py \
     --base checkpoints/mamba_dekf/best.pt \
     --class-head 0=checkpoints/mamba_dekf/best_class_0.pt \
     --class-head 1=checkpoints/mamba_dekf/best_class_1.pt \
     --class-head 2=checkpoints/mamba_dekf/best_class_2.pt \
-    --output checkpoints/mamba_dekf/best_merged_classes_0_1_2.pt
-
+    --class-head 3=checkpoints/mamba_dekf/best_class_3.pt \
+    --class-head 4=checkpoints/mamba_dekf/best_class_4.pt \
+    --class-head 5=checkpoints/mamba_dekf/best_class_5.pt \
+    --class-head 6=checkpoints/mamba_dekf/best_class_6.pt \
+    --output checkpoints/mamba_dekf/best_merged_classes_3_5.pt
 
 
 python - <<'PY'
