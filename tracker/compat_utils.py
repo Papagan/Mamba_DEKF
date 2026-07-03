@@ -1,3 +1,5 @@
+from typing import Optional
+
 import numpy as np
 
 
@@ -264,7 +266,7 @@ def classify_single_stage_birth(
     category: str,
     score: float,
     category_map: dict,
-    birth_gate_cfg: dict | None = None,
+    birth_gate_cfg: Optional[dict] = None,
 ) -> bool:
     birth_gate_cfg = birth_gate_cfg or {}
     cat_num = category_map.get(category, None)

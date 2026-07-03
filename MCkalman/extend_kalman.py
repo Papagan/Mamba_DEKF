@@ -9,7 +9,15 @@
 import numpy as np
 
 from MCkalman.base_kalman import KF_Base
-from utils.utils import norm_radian, norm_realative_radian
+
+try:
+    from utils.utils import norm_radian, norm_realative_radian
+except ModuleNotFoundError:
+    def norm_radian(radians):
+        return radians - 2 * np.pi * np.round(radians / (2 * np.pi))
+
+    def norm_realative_radian(radians_diff):
+        return radians_diff - 2 * np.pi * np.round(radians_diff / (2 * np.pi))
 
 
 class KF_YAW(KF_Base):

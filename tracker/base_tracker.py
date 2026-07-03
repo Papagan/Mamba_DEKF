@@ -34,6 +34,7 @@ from tracker.compat_utils import (
     use_mctrack_exact_unmatch_update,
 )
 from tracker.dirty_suppressor_audit import DirtySuppressorAuditAccumulator
+from tracker.mctrack_motion import MCTrackOriginalPoseMotion
 from tracker.trajectory import Trajectory
 from tracker.bbox import BBox
 from kalmanfilter.checkpoint_compat import adapt_num_class_state_dict
@@ -407,6 +408,17 @@ class Base3DTracker:
             cfg=cfg,
         )
         self._dirty_pos_trace_priors = self._build_dirty_pos_trace_priors()
+        self.original_motion = MCTrackOriginalPoseMotion(
+            cfg=cfg,
+            frame_rate=self.frame_rate,
+            filter_mode=self.filter_mode,
+        )
+        if self.original_motion.active():
+            print(
+                "[Base3DTracker] MCTRACK_ORIGINAL_MOTION enabled "
+                f"for FILTER_MODE={self.filter_mode}",
+                flush=True,
+            )
 
         # ---- Load trained weights if checkpoint path is provided ----
         if ckpt_path:
@@ -914,6 +926,7 @@ class Base3DTracker:
             "siz_x": siz_x, "siz_P": siz_P,
             "ori_x": ori_x, "ori_P": ori_P,
         }
+        self.original_motion.init_track(track_id, bbox, self.cfg["CATEGORY_MAP_TO_NUMBER"][bbox.category])
 
     def _batch_kf_states(
         self, track_ids: List[int],
@@ -1272,6 +1285,8 @@ class Base3DTracker:
             )
             mamba_out["state_residual_active_mask"] = state_residual_mask
 
+            px = self._apply_original_motion_predict_to_batch(track_ids, px, delta_t)
+
         # ---- 5. Write predicted states back to per-track storage ----
         self._unbatch_kf_states(track_ids, px, pP, sx, sP, ox, oP)
 
@@ -1294,6 +1309,79 @@ class Base3DTracker:
         )
 
         return mamba_out, trk_embeddings
+
+    def _apply_original_motion_predict_to_batch(
+        self,
+        track_ids: List[int],
+        pos_x: torch.Tensor,
+        delta_t: float,
+    ) -> torch.Tensor:
+        if not self.original_motion.active():
+            return pos_x
+
+        out = pos_x.clone()
+        for i, track_id in enumerate(track_ids):
+            state = self.original_motion.predict(track_id, delta_t)
+            if state is None:
+                continue
+            filt = self.original_motion.filters.get(int(track_id))
+            mode = self.original_motion._mode_from_filter(filt) if filt is not None else "CV"
+            out[i:i+1] = self.original_motion.apply_vector_to_pos_tensor(
+                state,
+                mode,
+                out[i:i+1],
+            )
+        return out
+
+    def _apply_original_motion_update_to_pos_batch(
+        self,
+        track_ids: List[int],
+        bboxes: List[BBox],
+        pos_x: torch.Tensor,
+    ) -> torch.Tensor:
+        if not self.original_motion.active():
+            return pos_x
+
+        out = pos_x.clone()
+        dt = getattr(self, "_cur_delta_t", 1.0 / self.frame_rate)
+        for i, (track_id, bbox) in enumerate(zip(track_ids, bboxes)):
+            state = self.original_motion.update(track_id, bbox, dt)
+            if state is None:
+                continue
+            filt = self.original_motion.filters.get(int(track_id))
+            mode = self.original_motion._mode_from_filter(filt) if filt is not None else "CV"
+            out[i:i+1] = self.original_motion.apply_vector_to_pos_tensor(
+                state,
+                mode,
+                out[i:i+1],
+            )
+        return out
+
+    def _apply_original_motion_fake_update(self, track_id: int) -> None:
+        if not self.original_motion.active() or track_id not in self.all_trajs:
+            return
+
+        dt = getattr(self, "_cur_delta_t", 1.0 / self.frame_rate)
+        state = self.original_motion.fake_update(track_id, dt)
+        if state is None:
+            return
+
+        traj = self.all_trajs[track_id]
+        bbox = traj.bboxes[-1]
+        pos_x = self.kf_states[track_id]["pos_x"]
+        filt = self.original_motion.filters.get(int(track_id))
+        mode = self.original_motion._mode_from_filter(filt) if filt is not None else "CV"
+        updated_pos = self.original_motion.apply_vector_to_pos_tensor(state, mode, pos_x)
+        self.kf_states[track_id]["pos_x"] = updated_pos
+
+        pred_state = list(getattr(bbox, "global_xyz_lwh_yaw_predict", bbox.global_xyz_lwh_yaw))
+        pred_state[0] = float(updated_pos[0, 0, 0])
+        pred_state[1] = float(updated_pos[0, 1, 0])
+        bbox.global_xyz_lwh_yaw_fake_update = pred_state
+        bbox.global_velocity_fake_update = [
+            float(updated_pos[0, 3, 0]),
+            float(updated_pos[0, 4, 0]),
+        ]
 
     # ==================================================================
     # Core: update matched tracks via DecoupledKF
@@ -1386,6 +1474,12 @@ class Base3DTracker:
                         z_pos, z_siz, z_ori,
                         R_pos=R_pos, R_siz=R_siz, R_ori=R_ori,
                     )
+
+            ux = self._apply_original_motion_update_to_pos_batch(
+                sub_track_ids,
+                sub_bboxes,
+                ux,
+            )
 
             self._unbatch_kf_states(sub_track_ids, ux, uP, usx, usP, uox, uoP)
 
@@ -1618,6 +1712,7 @@ class Base3DTracker:
                         mamba_out,
                         traj_index_map,
                     )
+                    self._apply_original_motion_fake_update(track_id)
                     self.all_trajs[track_id].unmatch_update(
                         frame_info.frame_id, timestamp=frame_info.timestamp
                     )
@@ -1663,6 +1758,7 @@ class Base3DTracker:
                         np.array(trk_bbox.global_xyz) - np.array(det_bbox.global_xyz)
                     )
                     if diff_rot > 90 or dist > 5:
+                        self._apply_original_motion_fake_update(track_id)
                         self.all_trajs[track_id].unmatch_update(
                             frame_info.frame_id, timestamp=frame_info.timestamp
                         )
@@ -1683,6 +1779,7 @@ class Base3DTracker:
                             f"status={self.all_trajs[track_id].status_flag}"
                         )
                 else:
+                    self._apply_original_motion_fake_update(track_id)
                     self.all_trajs[track_id].unmatch_update(
                         frame_info.frame_id, timestamp=frame_info.timestamp
                     )
@@ -1947,6 +2044,7 @@ class Base3DTracker:
             for i in range(trajs_cnt):
                 if i not in matched_traj_indices:
                     track_id = trajs[i].track_id
+                    self._apply_original_motion_fake_update(track_id)
                     self.all_trajs[track_id].unmatch_update(frame_info.frame_id, timestamp=frame_info.timestamp)
                     if _dbg_small and trajs[i].bboxes[-1].category in coast_counts:
                         coast_counts[trajs[i].bboxes[-1].category] += 1
@@ -2007,6 +2105,7 @@ class Base3DTracker:
                 self.all_dead_trajs[track_id] = self.all_trajs[track_id]
                 del self.all_trajs[track_id]
                 self.kf_states.pop(track_id, None)
+                self.original_motion.remove_track(track_id)
                 _n_dead += 1
 
         output_trajs = self.get_output_trajs(frame_info.frame_id)
