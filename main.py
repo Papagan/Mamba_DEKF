@@ -164,7 +164,16 @@ def _write_merged_dirty_suppressor_audit(cfg, scene_dirty_states):
         )
 
 
-def run(scene_id, scenes_data, cfg, args, tracking_results, scene_audit_states, scene_dirty_states):
+def run(
+    scene_id,
+    scenes_data,
+    cfg,
+    args,
+    tracking_results,
+    scene_audit_states,
+    scene_dirty_states,
+    scene_perf_stats,
+):
     """
     Info: This function tracks objects in a given scene, processes frame data, and stores tracking results.
     Parameters:
@@ -182,12 +191,15 @@ def run(scene_id, scenes_data, cfg, args, tracking_results, scene_audit_states, 
     dataset = BaseVersionTrackingDataset(scene_id, scene_data, cfg=cfg)
     tracker = Base3DTracker(cfg=cfg)
     all_trajs = {}
+    tracking_seconds = 0.0
 
     for index in tqdm(range(len(dataset)), desc=f"Processing {scene_id}"):
         frame_info = dataset[index]
         frame_id = frame_info.frame_id
         cur_sample_token = frame_info.cur_sample_token
+        frame_start = time.perf_counter()
         all_traj = tracker.track_single_frame(frame_info)
+        tracking_seconds += time.perf_counter() - frame_start
         result_info = {
             "frame_id": frame_id,
             "cur_sample_token": cur_sample_token,
@@ -227,6 +239,16 @@ def run(scene_id, scenes_data, cfg, args, tracking_results, scene_audit_states, 
 
     _collect_scene_inference_audit_state(scene_id, tracker, cfg, scene_audit_states)
     _collect_scene_dirty_suppressor_audit_state(scene_id, tracker, cfg, scene_dirty_states)
+    scene_perf_stats[scene_id] = {
+        "frames": len(dataset),
+        "tracking_seconds": tracking_seconds,
+        "tracking_fps": len(dataset) / tracking_seconds if tracking_seconds > 0 else 0.0,
+    }
+    print(
+        f"[PERF] scene={scene_id} frames={len(dataset)} "
+        f"tracking_time={tracking_seconds:.3f}s "
+        f"tracking_fps={scene_perf_stats[scene_id]['tracking_fps']:.2f}"
+    )
     tracking_results[scene_id] = all_trajs
 
 
@@ -300,6 +322,7 @@ if __name__ == "__main__":
     tracking_results = manager.dict()
     scene_audit_states = manager.dict()
     scene_dirty_states = manager.dict()
+    scene_perf_stats = manager.dict()
     if args.process > 1:
         pool = multiprocessing.Pool(args.process)
         func = partial(
@@ -310,16 +333,35 @@ if __name__ == "__main__":
             tracking_results=tracking_results,
             scene_audit_states=scene_audit_states,
             scene_dirty_states=scene_dirty_states,
+            scene_perf_stats=scene_perf_stats,
         )
         pool.map(func, scene_lists)
         pool.close()
         pool.join()
     else:
         for scene_id in tqdm(scene_lists, desc="Running scenes"):
-            run(scene_id, data, cfg, args, tracking_results, scene_audit_states, scene_dirty_states)
+            run(
+                scene_id,
+                data,
+                cfg,
+                args,
+                tracking_results,
+                scene_audit_states,
+                scene_dirty_states,
+                scene_perf_stats,
+            )
     tracking_results = dict(tracking_results)
     scene_audit_states = dict(scene_audit_states)
     scene_dirty_states = dict(scene_dirty_states)
+    scene_perf_stats = dict(scene_perf_stats)
+    total_tracking_frames = sum(int(item.get("frames", 0)) for item in scene_perf_stats.values())
+    total_tracking_seconds = sum(float(item.get("tracking_seconds", 0.0)) for item in scene_perf_stats.values())
+    if total_tracking_seconds > 0:
+        print(
+            f"[PERF] total_tracking_frames={total_tracking_frames} "
+            f"total_tracking_time={total_tracking_seconds:.3f}s "
+            f"tracking_fps={total_tracking_frames / total_tracking_seconds:.2f}"
+        )
     _write_merged_infer_noise_audit(cfg, scene_audit_states)
     _write_merged_dirty_suppressor_audit(cfg, scene_dirty_states)
 

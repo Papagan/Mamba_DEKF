@@ -72,6 +72,8 @@ THRESHOLD:
     IS_FILTER_PREDICT_BOX: {0: -1, 1: -1, 2: -1, 3: -1, 4: -1, 5: -1, 6: -1}
     CONFIRMED_MATCHED_SCORE:  {0: 0.3, 1: 0.3, 2: 0.3, 3: 0.3, 4: 0.3, 5: 0.3, 6: 0.3} 
 
+
+
 KALMAN_FILTER_POSE:
   MOTION_MODE: {0: "CV", 1: "CV", 2: "CV", 3: "CV", 4: "CV", 5: "CV", 6: "CV"} # CV, CA, CTRA
   CV:
@@ -251,3 +253,5 @@ KALMAN_FILTER_RVBOX:
         P: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
         Q: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
         R: [2.0, 2.0, 2.0, 2.0]
+
+

@@ -1,14 +1,7 @@
 # ------------------------------------------------------------------------
-# Frozen 0.739 nuScenes baseline for Mamba-DEKF.
-# Purpose:
-#   Preserve the best validated single-stage + dirty-suppressor setting
-#   while future work focuses on Mamba training/inference improvements
-#   instead of heuristic post-hoc tracking-score or ByteTrack branches.
-#
-# Reference metrics from local history:
-#   - protected target: AMOTA 0.739 with trailer AMOTA 0.533
-#   - nearby earlier variant: AMOTA 0.737 with trailer AMOTA 0.534
-# Do not use the 0.534 trailer variant as the 0.739 regression target.
+# Experimental Mamba multi-head closure branch for nuScenes single-stage eval.
+# This file preserves the frozen 0.739 baseline geometry / suppressor path and
+# only switches the uncertainty branch to prior-conditioned Mamba closure mode.
 # ------------------------------------------------------------------------
 
 DATASET: "nuscenes"
@@ -19,7 +12,7 @@ DATASET_ROOT: "/root/autodl-tmp/data/nuscenes/datasets/"
 DETECTIONS_ROOT: "/root/autodl-tmp/data/base_version/nuscenes/"
 SAVE_PATH: "/root/autodl-tmp/results/nuscenes/"
 TRACKING_MODE: 'ONLINE'
-FILTER_MODE: 'pure_dekf'
+FILTER_MODE: 'mamba_multihead_closure'
 TRACKER_COMPAT_MODE: 'mctrack'
 MCTRACK_EXACT_MATCHED_UPDATE: true
 MCTRACK_EXACT_MATCHED_UPDATE_CLASSES: [5, 6]
@@ -27,7 +20,7 @@ MCTRACK_EXACT_UNMATCH_UPDATE: true
 MCTRACK_EXACT_UNMATCH_UPDATE_CLASSES: [5, 6]
 MCTRACK_ORIGINAL_MOTION:
   ENABLED: true
-  APPLY_IN_FILTER_MODES: ["pure_dekf"]
+  APPLY_IN_FILTER_MODES: ["mamba_multihead_closure"]
   ACTIVE_CLASSES: [3]
   MOTION_MODE: {0: "CV", 1: "CV", 2: "CTRA", 3: "CV", 4: "CA", 5: "CV", 6: "CA"}
   CTRA_YAW_RATE_EPS: 0.001
@@ -95,6 +88,18 @@ MAMBA:
   MIN_DIAG_SIZ: 0.15
   MIN_KAPPA: 0.5
   NUM_CLASSES: 7
+
+RESIDUAL_HISTORY:
+  MIN_HISTORY_LEN: 4
+  MAX_HISTORY_LEN: 8
+  CLASS_WINDOW:
+    car:        {MIN_HISTORY_LEN: 4, MAX_HISTORY_LEN: 8}
+    pedestrian: {MIN_HISTORY_LEN: 4, MAX_HISTORY_LEN: 7}
+    bicycle:    {MIN_HISTORY_LEN: 3, MAX_HISTORY_LEN: 6}
+    motorcycle: {MIN_HISTORY_LEN: 3, MAX_HISTORY_LEN: 6}
+    bus:        {MIN_HISTORY_LEN: 4, MAX_HISTORY_LEN: 8}
+    trailer:    {MIN_HISTORY_LEN: 5, MAX_HISTORY_LEN: 8}
+    truck:      {MIN_HISTORY_LEN: 4, MAX_HISTORY_LEN: 8}
 
 MATCHING:
   BEV:
@@ -210,6 +215,88 @@ DEKF_BASE_NOISE:
     TARGETS: ["Q_pos", "R_pos", "R_siz", "R_ori"]
     MIN_STD_RATIO: 0.60
     MAX_STD_RATIO: 1.80
+  MAMBA_CLOSURE:
+    ENABLED: true
+    MODE: prior_conditioned_multihead
+    # Regression guard:
+    # pure-DEKF baseline uses static _get_base_noise(); closure conditional
+    # priors use history-dependent scaling and caused AMOTA 0.739 -> 0.729
+    # even when all ratios were forced to 1. Keep false for baseline
+    # equivalence tests; enable only in explicit Mamba ablations.
+    USE_CONDITIONAL_PRIOR: false
+    FORCE_COAST_PRIOR_ONLY: true
+    FORCE_PRIOR_STATES: ["matched", "unmatched"]
+    # Conservative rollout gate:
+    # first recover the 0.739 pure-DEKF baseline by forcing all closure ratios
+    # to prior. Re-open class/state pairs only after this equivalence passes.
+    ACTIVE_CLASS_STATES: {}
+
+    RATIO_ANCHOR_WEIGHT: 0.02
+    RATIO_BOUND_WEIGHT: 0.02
+    RATIO_BOUND_LOWER_WEIGHT: 0.25
+    RATIO_BOUND_UPPER_WEIGHT: 1.0
+    PROFILES:
+      stable_large:
+        matched:
+          q_pos: [0.70, 1.80]
+          r_pos: [0.70, 2.20]
+          r_siz: [0.70, 2.20]
+          r_ori: [0.70, 3.20]
+        unmatched:
+          q_pos: [0.80, 1.50]
+          r_pos: [0.80, 1.45]
+          r_siz: [0.80, 1.60]
+          r_ori: [0.80, 2.80]
+      agile_weak:
+        matched:
+          q_pos: [0.75, 1.65]
+          r_pos: [0.75, 1.90]
+          r_siz: [0.75, 1.90]
+          r_ori: [0.75, 3.00]
+        unmatched:
+          q_pos: [0.85, 1.40]
+          r_pos: [0.85, 1.35]
+          r_siz: [0.85, 1.50]
+          r_ori: [0.85, 2.60]
+      heavy_long:
+        matched:
+          q_pos: [0.70, 1.90]
+          r_pos: [0.70, 2.30]
+          r_siz: [0.70, 2.10]
+          r_ori: [0.70, 3.00]
+        unmatched:
+          q_pos: [0.80, 1.45]
+          r_pos: [0.80, 1.35]
+          r_siz: [0.80, 1.50]
+          r_ori: [0.80, 2.50]
+      human:
+        matched:
+          q_pos: [0.75, 1.75]
+          r_pos: [0.75, 2.00]
+          r_siz: [0.75, 2.00]
+          r_ori: [0.75, 3.20]
+        unmatched:
+          q_pos: [0.85, 1.45]
+          r_pos: [0.85, 1.40]
+          r_siz: [0.85, 1.55]
+          r_ori: [0.85, 2.80]
+  MAMBA_STATE_RESIDUAL:
+    ENABLED: true
+    ACTIVE_CLASS_STATES: {3: ["unmatched"], 5: ["unmatched"]}
+    DEFAULT_BOUNDS:
+      POS_XY: 0.30
+      POS_Z: 0.10
+      VEL_XY: 0.50
+      YAW: 0.08
+    CLASS_BOUNDS:
+      2:
+        unmatched: {POS_XY: 0.35, POS_Z: 0.08, VEL_XY: 0.60, YAW: 0.10}
+      3:
+        unmatched: {POS_XY: 0.08, POS_Z: 0.02, VEL_XY: 0.60, YAW: 0.01}
+      5:
+        unmatched: {POS_XY: 0.08, POS_Z: 0.02, VEL_XY: 0.25, YAW: 0.01}
+      6:
+        unmatched: {POS_XY: 0.30, POS_Z: 0.08, VEL_XY: 0.45, YAW: 0.06}
 
 DIRTY_TRACK_SUPPRESSOR:
   ENABLED: true

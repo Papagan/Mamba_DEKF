@@ -332,6 +332,25 @@ class RuntimeContractChecksTest(unittest.TestCase):
             )
         )
 
+    def test_main_reports_tracking_only_fps(self):
+        source = (REPO_ROOT / "main.py").read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(REPO_ROOT / "main.py"))
+
+        run_fn = None
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name == "run":
+                run_fn = node
+                break
+
+        self.assertIsNotNone(run_fn)
+        self.assertIn("scene_perf_stats", [arg.arg for arg in run_fn.args.args])
+        self.assertIn("time.perf_counter()", source)
+        self.assertIn("tracking_fps", source)
+        self.assertIn("[PERF] scene=", source)
+        self.assertIn("[PERF] total_tracking_frames=", source)
+        self.assertIn("scene_perf_stats = manager.dict()", source)
+        self.assertIn("scene_perf_stats=scene_perf_stats", source)
+
 
 if __name__ == "__main__":
     unittest.main()

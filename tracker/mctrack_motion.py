@@ -25,6 +25,12 @@ def _class_map(values) -> Dict[int, str]:
     return out
 
 
+def _class_set(values):
+    if values is None:
+        return None
+    return {int(value) for value in values}
+
+
 def _diag(values):
     return np.matrix(np.diag([float(value) for value in values]))
 
@@ -65,6 +71,7 @@ class MCTrackOriginalPoseMotion:
         self.motion_mode = dict(_DEFAULT_MOTION_MODE)
         self.motion_mode.update(_class_map(self.pose_cfg.get("MOTION_MODE")))
         self.motion_mode.update(_class_map(self.motion_cfg.get("MOTION_MODE")))
+        self.active_classes = _class_set(self.motion_cfg.get("ACTIVE_CLASSES"))
         self.ctra_eps = float(self.motion_cfg.get("CTRA_YAW_RATE_EPS", 1e-3))
         self.filters: Dict[int, object] = {}
 
@@ -76,6 +83,9 @@ class MCTrackOriginalPoseMotion:
 
     def init_track(self, track_id: int, bbox, class_id: int) -> None:
         if not self.active():
+            return
+        if not self.class_enabled(class_id):
+            self.remove_track(track_id)
             return
         mode = self.mode_for_class(class_id)
         spec = (self.pose_cfg.get(mode) or {})
@@ -104,6 +114,9 @@ class MCTrackOriginalPoseMotion:
         if mode not in {"CV", "CA", "CTRA"}:
             raise ValueError(f"Unsupported MCTrack motion mode: {mode}")
         return mode
+
+    def class_enabled(self, class_id: int) -> bool:
+        return self.active_classes is None or int(class_id) in self.active_classes
 
     def predict(self, track_id: int, delta_t: float):
         filt = self.filters.get(int(track_id))
