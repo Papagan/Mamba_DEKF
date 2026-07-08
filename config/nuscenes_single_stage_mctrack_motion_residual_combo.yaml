@@ -89,6 +89,28 @@ MAMBA:
   MIN_KAPPA: 0.5
   NUM_CLASSES: 7
 
+MAMBA_ASSOCIATION_PRIOR:
+  ENABLED: false
+  MAX_DELTA: 0.05
+  DET_SCORE_WEIGHT: 0.0
+  MIN_DET_SCORE: 0.0
+  ACTIVE_CLASS_STATES:
+    0: ["matched", "unmatched"]
+    1: ["matched", "unmatched"]
+    2: ["matched", "unmatched"]
+    3: ["matched", "unmatched"]
+    4: ["matched", "unmatched"]
+    5: ["matched", "unmatched"]
+    6: ["matched", "unmatched"]
+  ALPHA:
+    0: {matched: 0.03, unmatched: 0.05}
+    1: {matched: 0.03, unmatched: 0.05}
+    2: {matched: 0.05, unmatched: 0.08}
+    3: {matched: 0.05, unmatched: 0.08}
+    4: {matched: 0.03, unmatched: 0.04}
+    5: {matched: 0.04, unmatched: 0.06}
+    6: {matched: 0.03, unmatched: 0.05}
+
 RESIDUAL_HISTORY:
   MIN_HISTORY_LEN: 4
   MAX_HISTORY_LEN: 8

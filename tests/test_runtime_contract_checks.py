@@ -351,6 +351,22 @@ class RuntimeContractChecksTest(unittest.TestCase):
         self.assertIn("scene_perf_stats = manager.dict()", source)
         self.assertIn("scene_perf_stats=scene_perf_stats", source)
 
+    def test_mctrack_compat_path_threads_mamba_association_embeddings(self):
+        source = (REPO_ROOT / "tracker" / "base_tracker.py").read_text(encoding="utf-8")
+
+        self.assertIn("MAMBA_ASSOCIATION_PRIOR", source)
+        self.assertIn("trk_embeddings=trk_embeddings", source)
+        self.assertIn("det_embeddings=det_embeddings_all", source)
+        self.assertIn("mamba_multihead_closure", source)
+
+    def test_training_wires_optional_association_supervision(self):
+        source = (REPO_ROOT / "training" / "train.py").read_text(encoding="utf-8")
+
+        self.assertIn("association_ranking_loss", source)
+        self.assertIn("ASSOCIATION_SUPERVISION", source)
+        self.assertIn("loss_association", source)
+        self.assertIn("association_valid_anchors", source)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -102,6 +102,28 @@ MODEL:
   MIN_DIAG_SIZ: 0.15        # floor on size noise diagonal (prevents NLL→-∞ collapse)
   MIN_KAPPA: 0.5            # floor on kappa (prevents R_ori→∞, degenerate kappa→0)
 
+MAMBA_ASSOCIATION_PRIOR:
+  ENABLED: false
+  MAX_DELTA: 0.05
+  DET_SCORE_WEIGHT: 0.0
+  MIN_DET_SCORE: 0.0
+  ACTIVE_CLASS_STATES:
+    0: ["matched", "unmatched"]
+    1: ["matched", "unmatched"]
+    2: ["matched", "unmatched"]
+    3: ["matched", "unmatched"]
+    4: ["matched", "unmatched"]
+    5: ["matched", "unmatched"]
+    6: ["matched", "unmatched"]
+  ALPHA:
+    0: {matched: 0.03, unmatched: 0.05}
+    1: {matched: 0.03, unmatched: 0.05}
+    2: {matched: 0.05, unmatched: 0.08}
+    3: {matched: 0.05, unmatched: 0.08}
+    4: {matched: 0.03, unmatched: 0.04}
+    5: {matched: 0.04, unmatched: 0.06}
+    6: {matched: 0.03, unmatched: 0.05}
+
 # ---- Training ----
 TRAINING:
   BATCH_SIZE: 128
@@ -119,7 +141,7 @@ TRAINING:
   SAVE_DIR: checkpoints/mamba_dekf/
   REQUIRE_MAMBA_SSM: true        # fail fast if training would fall back to GRU
   AUTO_UNSEAL_EPOCH: 0           # disabled for bounded-residual closure training; avoid unrelated cost-mode mutations
-  INFERENCE_CONFIG: config/nuscenes_single_stage_mctrack_exact_noise_hybrid_mamba_multihead_closure.yaml
+  INFERENCE_CONFIG: config/nuscenes_single_stage_mctrack_motion_residual_combo.yaml
   ROLLOUT_STEPS: 4               # max rollout depth; adaptive training may sample shorter valid futures
   NOISE_MAP:                     # Category-specific noise injection (aligned to inference DEKF_BASE_NOISE.R)
     # Order: [Car, Pedestrian, Bicycle, Motorcycle, Bus, Trailer, Truck]
@@ -344,6 +366,11 @@ LOSS:
     W_POS_Z: 0.3
     W_VEL_XY: 0.5
     W_YAW: 0.5
+  ASSOCIATION_SUPERVISION:
+    ENABLED: false
+    WEIGHT: 0.05
+    MARGIN: 0.20
+    HARD_NEGATIVE_TOPK: 4
   # Class reweighting for hard/noisy categories:
   # [car, pedestrian, bicycle, motorcycle, bus, trailer, truck]
   CLASS_WEIGHTS: [1.0, 1.1, 2.5, 2.8, 1.2, 1.6, 1.2]

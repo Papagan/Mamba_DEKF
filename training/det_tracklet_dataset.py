@@ -255,6 +255,7 @@ class DetectionTrackletDataset(Dataset):
         obs_future_pos = np.zeros((K, 5), dtype=np.float32)
         obs_future_siz = np.zeros((K, 3), dtype=np.float32)
         obs_future_ori = np.zeros((K, 1), dtype=np.float32)
+        obs_future_score = np.zeros(K, dtype=np.float32)
         obs_future_match = np.zeros(K, dtype=np.bool_)
         future_mask = np.zeros(K, dtype=np.bool_)
         delta_ts_future = np.zeros(K, dtype=np.float32)
@@ -271,6 +272,7 @@ class DetectionTrackletDataset(Dataset):
                 ], dtype=np.float32)
                 obs_future_siz[k] = np.asarray(frm["det_lwh"], dtype=np.float32)
                 obs_future_ori[k, 0] = float(frm["det_yaw"])
+                obs_future_score[k] = float(frm.get("det_score", 0.0))
                 obs_future_match[k] = True
             future_mask[k] = True
             dt_k = float(frm["timestamp"] - prev_ts)
@@ -298,6 +300,7 @@ class DetectionTrackletDataset(Dataset):
             "obs_future_pos": torch.from_numpy(obs_future_pos),
             "obs_future_siz": torch.from_numpy(obs_future_siz),
             "obs_future_ori": torch.from_numpy(obs_future_ori),
+            "obs_future_score": torch.from_numpy(obs_future_score),
             "obs_future_match": torch.from_numpy(obs_future_match),
             "future_mask": torch.from_numpy(future_mask),
             "delta_ts_future": torch.from_numpy(delta_ts_future),

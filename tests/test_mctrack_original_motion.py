@@ -117,6 +117,20 @@ class MCTrackOriginalMotionTest(unittest.TestCase):
             {3: ["unmatched"], 5: ["unmatched"]},
         )
 
+    def test_motion_residual_combo_keeps_mamba_association_prior_disabled_by_default(self):
+        cfg = yaml.safe_load(
+            (REPO_ROOT / "config" / "nuscenes_single_stage_mctrack_motion_residual_combo.yaml")
+            .read_text(encoding="utf-8")
+        )
+        assoc_cfg = cfg["MAMBA_ASSOCIATION_PRIOR"]
+        self.assertFalse(assoc_cfg["ENABLED"])
+        self.assertEqual(sorted(int(k) for k in assoc_cfg["ACTIVE_CLASS_STATES"].keys()), list(range(7)))
+        for class_id in range(7):
+            self.assertEqual(
+                assoc_cfg["ACTIVE_CLASS_STATES"][class_id],
+                ["matched", "unmatched"],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

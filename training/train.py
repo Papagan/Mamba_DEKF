@@ -75,6 +75,8 @@ from training.class_state_metrics import (
     finalize_class_state_metric_accumulator,
     extract_class_validation_losses,
 )
+from training.association_loss import association_ranking_loss
+from training.association_tokens import build_future_detection_history
 
 logger = logging.getLogger("train")
 
@@ -596,6 +598,7 @@ def training_step(
     obs_future_pos = batch.get("obs_future_pos", None)
     obs_future_siz = batch.get("obs_future_siz", None)
     obs_future_ori = batch.get("obs_future_ori", None)
+    obs_future_score = batch.get("obs_future_score", None)
     obs_future_match = batch.get("obs_future_match", None)
     future_mask = batch.get("future_mask", None)
     if obs_future_pos is not None:
@@ -604,6 +607,8 @@ def training_step(
         obs_future_siz = obs_future_siz.to(device)
     if obs_future_ori is not None:
         obs_future_ori = obs_future_ori.to(device)
+    if obs_future_score is not None:
+        obs_future_score = obs_future_score.to(device)
     if obs_future_match is not None:
         obs_future_match = obs_future_match.to(device)
     if future_mask is not None:
@@ -731,6 +736,7 @@ def training_step(
     # When residual supervision is enabled, delta_pos is trained as a direct
     # bounded correction target and must not also perturb the KF initial state.
     residual_supervision_cfg = getattr(loss_fn, "residual_supervision", {}) or {}
+    association_supervision_cfg = getattr(loss_fn, "association_supervision", {}) or {}
     direct_residual_supervision = bool(residual_supervision_cfg.get("ENABLED", False))
     delta_pos = mamba_out["delta_pos"].unsqueeze(-1)                  # [B, 6, 1]
     if epoch < warmup_epochs:
@@ -876,6 +882,47 @@ def training_step(
         name: torch.zeros(B, device=device, dtype=history.dtype)
         for name in sample_component_sums.keys()
     }
+    association_loss_tensor = torch.zeros((), device=device, dtype=history.dtype)
+    association_detail = {"loss_association": 0.0, "association_valid_anchors": 0}
+
+    if (
+        bool(association_supervision_cfg.get("ENABLED", False))
+        and obs_future_pos is not None
+        and obs_future_siz is not None
+        and obs_future_ori is not None
+        and obs_future_match is not None
+        and K > 0
+    ):
+        future_det = build_future_detection_history(
+            obs_future_pos=obs_future_pos,
+            obs_future_siz=obs_future_siz,
+            obs_future_ori=obs_future_ori,
+            obs_future_score=obs_future_score,
+            obs_future_match=obs_future_match,
+            class_ids=class_ids,
+            history_len=history.shape[1],
+            step_index=0,
+        )
+        det_mamba_out = mamba(
+            future_det["history"],
+            class_ids=future_det["class_ids"],
+            current_range=future_det["current_range"],
+            detection_driven_mask=future_det["match_mask"],
+            history_mask=future_det["history_mask"],
+            history_match_mask=future_det["history_match_mask"],
+            state_buckets=["matched"] * B,
+            apply_force_prior=not bool(closure_cfg.get("TRAIN_MATCHED_HEAD", {}).get("ENABLED", False)),
+            mode=branch_name,
+        )
+        assoc_loss_raw, association_detail = association_ranking_loss(
+            mamba_out["embedding"],
+            det_mamba_out["embedding"],
+            class_ids,
+            future_det["match_mask"],
+            margin=float(association_supervision_cfg.get("MARGIN", 0.2)),
+            hard_negative_topk=int(association_supervision_cfg.get("HARD_NEGATIVE_TOPK", 4)),
+        )
+        association_loss_tensor = float(association_supervision_cfg.get("WEIGHT", 0.0)) * assoc_loss_raw
 
     # Accumulate loss tensors across rollout steps for proper gradient flow.
     for k in range(K):
@@ -1161,6 +1208,8 @@ def training_step(
         detail[key] = value.item()
     detail["loss_ratio_anchor"] = ratio_anchor_loss.item()
     detail["loss_ratio_bound"] = ratio_bound_loss.item()
+    detail["loss_association"] = association_detail["loss_association"]
+    detail["association_valid_anchors"] = association_detail["association_valid_anchors"]
     detail["ori_curriculum_alpha"] = ori_curriculum["alpha"] if use_closure_loss_path else 0.0
     detail["ori_state_weight"] = ori_curriculum["state_weight"] if use_closure_loss_path else 0.0
     detail["ori_wrapped_weight"] = ori_curriculum["wrapped_weight"] if use_closure_loss_path else 0.0
@@ -1192,6 +1241,7 @@ def training_step(
         + kappa_reg
         + ori_saturation_reg
         + delta_pos_reg
+        + association_loss_tensor
         + ratio_anchor_loss
         + ratio_bound_loss
     )
@@ -1509,6 +1559,7 @@ def main():
         hard_negative_topk=loss_cfg.get("HARD_NEGATIVE_TOPK", 0),
         class_weights=loss_cfg.get("CLASS_WEIGHTS", None),
         residual_supervision=loss_cfg.get("RESIDUAL_SUPERVISION", None),
+        association_supervision=loss_cfg.get("ASSOCIATION_SUPERVISION", None),
     ).to(device)
     vel_warmup_epochs = loss_cfg.get("VEL_WARMUP_EPOCHS", 3)
 

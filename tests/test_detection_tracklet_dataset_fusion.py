@@ -167,6 +167,8 @@ class DetectionTrackletDatasetFusionTest(unittest.TestCase):
             self.assertAlmostEqual(float(sample["obs_current_state_pos"][3].item()), 1.6, places=5)
             self.assertAlmostEqual(float(sample["obs_current_state_siz"][0].item()), 4.3, places=5)
             self.assertAlmostEqual(float(sample["obs_current_state_ori"][0].item()), 0.28, places=5)
+            self.assertIn("obs_future_score", sample)
+            self.assertAlmostEqual(float(sample["obs_future_score"][0].item()), 0.83, places=5)
         finally:
             os.unlink(pkl_path)
 

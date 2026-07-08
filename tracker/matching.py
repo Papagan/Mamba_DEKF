@@ -11,6 +11,105 @@ from utils.utils import mask_tras_dets
 from utils.debug_log import emit_debug_line
 
 
+def _lookup_mapping_value(values, key, default=None):
+    if not isinstance(values, dict):
+        return default
+    if key in values:
+        return values[key]
+    text_key = str(key)
+    if text_key in values:
+        return values[text_key]
+    return default
+
+
+def _normalize_state_set(values):
+    return {str(value).strip().lower() for value in (values or [])}
+
+
+def _association_state_bucket(traj):
+    return "unmatched" if int(getattr(traj, "unmatch_length", 0) or 0) > 0 else "matched"
+
+
+def _mamba_association_alpha(cfg, class_id, state_bucket):
+    assoc_cfg = (cfg.get("MAMBA_ASSOCIATION_PRIOR", {}) or {})
+    active_cfg = assoc_cfg.get("ACTIVE_CLASS_STATES", {}) or {}
+    active_states = _normalize_state_set(_lookup_mapping_value(active_cfg, int(class_id), []))
+    if str(state_bucket).strip().lower() not in active_states:
+        return 0.0
+
+    alpha_cfg = assoc_cfg.get("ALPHA", {}) or {}
+    class_alpha = _lookup_mapping_value(alpha_cfg, int(class_id), {})
+    if isinstance(class_alpha, dict):
+        return float(_lookup_mapping_value(class_alpha, str(state_bucket).strip().lower(), 0.0))
+    return float(class_alpha or 0.0)
+
+
+def apply_mamba_association_prior_to_cost_matrix(
+    cost_matrix,
+    trajs,
+    dets,
+    cfg,
+    *,
+    trk_embeddings=None,
+    det_embeddings=None,
+    state_buckets=None,
+):
+    """Apply a bounded Mamba association penalty without replacing geometry.
+
+    The correction is deliberately one-sided: low semantic/temporal similarity
+    can make a candidate less attractive, but Mamba cannot create a match that
+    the geometric cost did not already consider. This protects the frozen
+    baseline from the historical failure mode where learned branches overrode
+    the stable association path.
+    """
+    out = np.array(cost_matrix, copy=True)
+    assoc_cfg = (cfg.get("MAMBA_ASSOCIATION_PRIOR", {}) or {})
+    if (
+        not bool(assoc_cfg.get("ENABLED", False))
+        or trk_embeddings is None
+        or det_embeddings is None
+        or len(trajs) == 0
+        or len(dets) == 0
+    ):
+        return out
+
+    trk_embeddings = np.asarray(trk_embeddings, dtype=np.float32)
+    det_embeddings = np.asarray(det_embeddings, dtype=np.float32)
+    if trk_embeddings.shape[0] != len(trajs) or det_embeddings.shape[0] != len(dets):
+        return out
+
+    cos_sim_matrix = compute_cosine_similarity_matrix(trk_embeddings, det_embeddings)
+    category_map = cfg.get("CATEGORY_MAP_TO_NUMBER", {}) or {}
+    max_delta = float(assoc_cfg.get("MAX_DELTA", 0.05))
+    det_score_weight = float(assoc_cfg.get("DET_SCORE_WEIGHT", 0.0))
+    min_score = float(assoc_cfg.get("MIN_DET_SCORE", 0.0))
+
+    for t, traj in enumerate(trajs):
+        traj_category = traj.bboxes[-1].category
+        class_id = category_map.get(traj_category, None)
+        if class_id is None:
+            continue
+        state_bucket = (
+            str(state_buckets[t]).strip().lower()
+            if state_buckets is not None and t < len(state_buckets)
+            else _association_state_bucket(traj)
+        )
+        alpha = _mamba_association_alpha(cfg, int(class_id), state_bucket)
+        if alpha <= 0.0:
+            continue
+
+        for d, det in enumerate(dets):
+            if det.category != traj_category or not np.isfinite(out[t, d]):
+                continue
+            semantic_penalty = max(0.0, 1.0 - float(cos_sim_matrix[t, d]))
+            det_score = float(getattr(det, "det_score", 1.0))
+            score_penalty = max(0.0, min_score - det_score) * det_score_weight
+            delta = alpha * (semantic_penalty + score_penalty)
+            out[t, d] = out[t, d] + min(max_delta, max(0.0, delta))
+
+    return out
+
+
 def Greedy(cost_matrix, thresholds):
     """
     Refer: https://github.com/lixiaoyu2000/Poly-MOT/blob/main/utils/matching.py
@@ -117,7 +216,16 @@ def Hungarian(cost_matrix, thresholds):
     return m_det, m_tra, um_det, um_tra, np.array(costs)
 
 
-def match_trajs_and_dets(trajs, dets, cfg, transform_matrix=None, is_rv=False):
+def match_trajs_and_dets(
+    trajs,
+    dets,
+    cfg,
+    transform_matrix=None,
+    is_rv=False,
+    trk_embeddings=None,
+    det_embeddings=None,
+    state_buckets=None,
+):
     """
     Info: This function matches trajectories with detections using a cost matrix and a specified matching algorithm (Hungarian or Greedy).
     Parameters:
@@ -137,6 +245,16 @@ def match_trajs_and_dets(trajs, dets, cfg, transform_matrix=None, is_rv=False):
     cost_matrix, trajs_category, dets_category = cost_calculate_general(
         trajs, dets, cfg, transform_matrix, is_rv
     )
+    if not is_rv:
+        cost_matrix = apply_mamba_association_prior_to_cost_matrix(
+            cost_matrix,
+            trajs,
+            dets,
+            cfg,
+            trk_embeddings=trk_embeddings,
+            det_embeddings=det_embeddings,
+            state_buckets=state_buckets,
+        )
     match_type = "RV" if is_rv else "BEV"
 
     category_map = cfg["CATEGORY_MAP_TO_NUMBER"]

@@ -1495,6 +1495,9 @@ class Base3DTracker:
             or {}
         )
 
+    def _mamba_association_prior_enabled(self) -> bool:
+        return bool((self.cfg.get("MAMBA_ASSOCIATION_PRIOR", {}) or {}).get("ENABLED", False))
+
     def _apply_state_residual_to_prediction(
         self,
         pos_x: torch.Tensor,
@@ -1649,6 +1652,8 @@ class Base3DTracker:
         trajs: List[Trajectory],
         mamba_out: Optional[Dict],
         traj_index_map: Dict[int, int],
+        trk_embeddings: Optional[np.ndarray],
+        det_embeddings_all: Optional[np.ndarray],
         det_counts: Dict[str, int],
         matched_counts: Dict[str, int],
         birth_counts: Dict[str, int],
@@ -1663,7 +1668,11 @@ class Base3DTracker:
 
         if trajs_cnt > 0 and dets_cnt > 0:
             match_res, costs = match_trajs_and_dets(
-                trajs, frame_info.bboxes, self.cfg
+                trajs,
+                frame_info.bboxes,
+                self.cfg,
+                trk_embeddings=trk_embeddings,
+                det_embeddings=det_embeddings_all,
             )
         else:
             match_res = np.empty((0, 2), dtype=int)
@@ -1903,7 +1912,14 @@ class Base3DTracker:
 
         # ---- detection embeddings (shared by both paths) ----
         cost_mode = self.cfg.get("THRESHOLD", {}).get("BEV", {}).get("COST_MODE", "geometric")
-        if dets_cnt > 0 and cost_mode == "full" and self.filter_mode in ["mamba", "fusion"]:
+        use_mamba_assoc_prior = self._mamba_association_prior_enabled()
+        if (
+            dets_cnt > 0
+            and (
+                (cost_mode == "full" and self.filter_mode in ["mamba", "fusion"])
+                or (use_mamba_assoc_prior and self.filter_mode in ["mamba", "fusion", "mamba_multihead_closure"])
+            )
+        ):
             det_history = torch.zeros(dets_cnt, self.history_len, 12, device=self.device)
             cat_map = self.cfg["CATEGORY_MAP_TO_NUMBER"]
             det_class_ids = torch.tensor(
@@ -1950,6 +1966,8 @@ class Base3DTracker:
                 trajs=trajs,
                 mamba_out=mamba_out,
                 traj_index_map=traj_index_map,
+                trk_embeddings=trk_embeddings,
+                det_embeddings_all=det_embeddings_all,
                 det_counts=det_counts,
                 matched_counts=matched_counts,
                 birth_counts=birth_counts,
