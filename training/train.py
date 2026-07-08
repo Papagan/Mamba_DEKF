@@ -883,7 +883,11 @@ def training_step(
         for name in sample_component_sums.keys()
     }
     association_loss_tensor = torch.zeros((), device=device, dtype=history.dtype)
-    association_detail = {"loss_association": 0.0, "association_valid_anchors": 0}
+    association_detail = {
+        "loss_association_raw": 0.0,
+        "loss_association": 0.0,
+        "association_valid_anchors": 0,
+    }
 
     if (
         bool(association_supervision_cfg.get("ENABLED", False))
@@ -922,7 +926,13 @@ def training_step(
             margin=float(association_supervision_cfg.get("MARGIN", 0.2)),
             hard_negative_topk=int(association_supervision_cfg.get("HARD_NEGATIVE_TOPK", 4)),
         )
-        association_loss_tensor = float(association_supervision_cfg.get("WEIGHT", 0.0)) * assoc_loss_raw
+        association_weight = float(association_supervision_cfg.get("WEIGHT", 0.0))
+        association_loss_tensor = association_weight * assoc_loss_raw
+        association_detail = {
+            "loss_association_raw": float(assoc_loss_raw.detach().item()),
+            "loss_association": float(association_loss_tensor.detach().item()),
+            "association_valid_anchors": association_detail["association_valid_anchors"],
+        }
 
     # Accumulate loss tensors across rollout steps for proper gradient flow.
     for k in range(K):
@@ -1208,6 +1218,7 @@ def training_step(
         detail[key] = value.item()
     detail["loss_ratio_anchor"] = ratio_anchor_loss.item()
     detail["loss_ratio_bound"] = ratio_bound_loss.item()
+    detail["loss_association_raw"] = association_detail["loss_association_raw"]
     detail["loss_association"] = association_detail["loss_association"]
     detail["association_valid_anchors"] = association_detail["association_valid_anchors"]
     detail["ori_curriculum_alpha"] = ori_curriculum["alpha"] if use_closure_loss_path else 0.0

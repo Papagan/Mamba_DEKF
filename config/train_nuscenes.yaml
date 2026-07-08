@@ -322,8 +322,8 @@ BASE_NOISE:
           r_siz: [0.85, 1.55]
           r_ori: [0.85, 2.80]
   MAMBA_STATE_RESIDUAL:
-    ENABLED: false
-    ACTIVE_CLASS_STATES: {}
+    ENABLED: true
+    ACTIVE_CLASS_STATES: {3: ["unmatched"], 5: ["unmatched"]}
     DEFAULT_BOUNDS:
       POS_XY: 0.30
       POS_Z: 0.10
@@ -333,9 +333,9 @@ BASE_NOISE:
       2:
         unmatched: {POS_XY: 0.35, POS_Z: 0.08, VEL_XY: 0.60, YAW: 0.10}
       3:
-        unmatched: {POS_XY: 0.40, POS_Z: 0.08, VEL_XY: 0.70, YAW: 0.12}
+        unmatched: {POS_XY: 0.08, POS_Z: 0.02, VEL_XY: 0.60, YAW: 0.01}
       5:
-        unmatched: {POS_XY: 0.25, POS_Z: 0.08, VEL_XY: 0.35, YAW: 0.05}
+        unmatched: {POS_XY: 0.08, POS_Z: 0.02, VEL_XY: 0.25, YAW: 0.01}
       6:
         unmatched: {POS_XY: 0.30, POS_Z: 0.08, VEL_XY: 0.45, YAW: 0.06}
   DETECTION_UPDATE:
@@ -356,7 +356,7 @@ LOSS:
   W_VEL: 0.3            # velocity NLL weight (≤ W_POS; constant-vel GT is approximate)
   W_NIS: 0.1            # NIS calibration weight (innovation consistency)
   VEL_WARMUP_EPOCHS: 1  # delay vel NLL for first N epochs after uncertainty-unseal
-  LAMBDA_CONTRAST: 0.3
+  LAMBDA_CONTRAST: 0.15
   INFONCE_TEMPERATURE: 0.07
   HARD_NEGATIVE_TOPK: 32
   RESIDUAL_SUPERVISION:
@@ -367,11 +367,11 @@ LOSS:
     W_VEL_XY: 0.5
     W_YAW: 0.5
   ASSOCIATION_SUPERVISION:
-    ENABLED: false
-    WEIGHT: 0.05
+    ENABLED: true
+    WEIGHT: 0.02
     MARGIN: 0.20
     HARD_NEGATIVE_TOPK: 4
   # Class reweighting for hard/noisy categories:
   # [car, pedestrian, bicycle, motorcycle, bus, trailer, truck]
-  CLASS_WEIGHTS: [1.0, 1.1, 2.5, 2.8, 1.2, 1.6, 1.2]
+  CLASS_WEIGHTS: [1.0, 1.05, 2.0, 2.0, 1.1, 1.8, 1.2]
   PHYSICS_SCALE: 5.0    # reduced from 20: let pos gradient survive against siz
