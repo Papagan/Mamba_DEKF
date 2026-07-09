@@ -1618,8 +1618,8 @@ def main():
     )
 
     # ---- TensorBoard ----
-    tb_dir = os.path.join(log_dir, "tensorboard")
-    writer = SummaryWriter(tb_dir)
+    tb_dir = os.path.abspath(os.path.join(log_dir, "tensorboard"))
+    writer = SummaryWriter(tb_dir, flush_secs=10)
     logger.info(f"TensorBoard logs → {tb_dir}  (view: tensorboard --logdir {tb_dir})")
 
     grad_clip = train_cfg.get("GRAD_CLIP_NORM", 1.0)
@@ -1780,6 +1780,7 @@ def main():
                 lr = optimizer.param_groups[0]["lr"]
                 writer.add_scalar("train/loss_batch", avg, epoch * len(train_loader) + batch_idx)
                 writer.add_scalar("train/lr", lr, epoch * len(train_loader) + batch_idx)
+                writer.flush()
                 logger.info(
                     f"  [{epoch+1}/{epochs}] batch {batch_idx+1}/{len(train_loader)} "
                     f"loss={avg:.4f} lr={lr:.2e}"
@@ -1837,6 +1838,9 @@ def main():
         writer.add_scalar("train/loss_residual_vel", avg_train.get("loss_residual_vel", 0), step)
         writer.add_scalar("train/loss_residual_yaw", avg_train.get("loss_residual_yaw", 0), step)
         writer.add_scalar("train/loss_contrastive", avg_train.get("loss_contrastive", 0), step)
+        writer.add_scalar("train/loss_association_raw", avg_train.get("loss_association_raw", 0), step)
+        writer.add_scalar("train/loss_association", avg_train.get("loss_association", 0), step)
+        writer.add_scalar("train/association_valid_anchors", avg_train.get("association_valid_anchors", 0), step)
         writer.add_scalar("train/loss_kappa_reg", avg_train.get("loss_kappa_reg", 0), step)
         writer.add_scalar("train/loss_delta_pos_reg", avg_train.get("loss_delta_pos_reg", 0), step)
         writer.add_scalar("train/unfreeze_alpha", avg_train.get("unfreeze_alpha", 1.0), step)
@@ -1852,6 +1856,9 @@ def main():
         writer.add_scalar("val/loss_residual_vel", avg_val.get("loss_residual_vel", 0), step)
         writer.add_scalar("val/loss_residual_yaw", avg_val.get("loss_residual_yaw", 0), step)
         writer.add_scalar("val/loss_contrastive", avg_val.get("loss_contrastive", 0), step)
+        writer.add_scalar("val/loss_association_raw", avg_val.get("loss_association_raw", 0), step)
+        writer.add_scalar("val/loss_association", avg_val.get("loss_association", 0), step)
+        writer.add_scalar("val/association_valid_anchors", avg_val.get("association_valid_anchors", 0), step)
         writer.add_scalar("val/loss_kappa_reg", avg_val.get("loss_kappa_reg", 0), step)
         writer.add_scalar("val/loss_delta_pos_reg", avg_val.get("loss_delta_pos_reg", 0), step)
         for key, value in avg_val.items():
@@ -1877,6 +1884,7 @@ def main():
         )
         for class_id, class_loss in sorted(class_val_losses.items()):
             writer.add_scalar(f"val/class_{class_id}/selected_loss", float(class_loss), step)
+        writer.flush()
         for class_id, class_loss in sorted(class_val_losses.items()):
             prev = best_class_val_loss.get(class_id, float("inf"))
             if class_loss < prev:

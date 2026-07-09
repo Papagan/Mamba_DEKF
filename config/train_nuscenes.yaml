@@ -124,6 +124,20 @@ MAMBA_ASSOCIATION_PRIOR:
     5: {matched: 0.04, unmatched: 0.06}
     6: {matched: 0.03, unmatched: 0.05}
 
+ASSOCIATION_HEAD_TRAINING:
+  ENABLED: true
+  TRAIN_PAIRWISE_PKL: /root/autodl-tmp/data/training_cache/nuscenes/mini/train_pairwise_assoc.pkl
+  VAL_PAIRWISE_PKL: /root/autodl-tmp/data/training_cache/nuscenes/mini/val_pairwise_assoc.pkl
+  OUTPUT: checkpoints/mamba_dekf/best_assoc.pt
+  METRICS_OUTPUT: docs/pairwise_assoc_metrics.json
+  EPOCHS: 20
+  BATCH_SIZE: 256
+  LR: 1.0e-4
+  WEIGHT_DECAY: 1.0e-4
+  HIDDEN_DIMS: [256, 128]
+  DROPOUT: 0.1
+  HARD_NEGATIVE_WEIGHT: 2.0
+
 # ---- Training ----
 TRAINING:
   BATCH_SIZE: 128
@@ -136,7 +150,7 @@ TRAINING:
   WARMUP_UNCERTAINTY_EPOCHS: 8 # detach Q/R/kappa longer so state backbone stabilises before uncertainty learning
   WARMUP_TRANSITION_EPOCHS: 8  # slower smooth unfreeze (alpha ramp 0->1) after uncertainty warmup
   GRAD_CLIP_NORM: 1.0
-  LOG_EVERY: 50
+  LOG_EVERY: 10
   SAVE_EVERY: 10
   SAVE_DIR: checkpoints/mamba_dekf/
   REQUIRE_MAMBA_SSM: true        # fail fast if training would fall back to GRU
