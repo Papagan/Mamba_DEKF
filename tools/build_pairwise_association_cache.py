@@ -45,6 +45,10 @@ def _resolve_default_history_len(train_cfg: Dict[str, Any], fallback: int) -> in
     return int((train_cfg.get("MODEL", {}) or {}).get("HISTORY_LEN", fallback))
 
 
+def _resolve_default_history_source(train_cfg: Dict[str, Any], fallback: str) -> str:
+    return str((train_cfg.get("DATA", {}) or {}).get("HISTORY_SOURCE", fallback)).strip().lower()
+
+
 def _parse_class_float_map(raw: str | None) -> Dict[str, float]:
     if raw is None or str(raw).strip() == "":
         return {}
@@ -68,6 +72,12 @@ def main() -> int:
     parser.add_argument("--summary-output", default=None, help="Optional summary json")
     parser.add_argument("--train-config", default="config/train_nuscenes.yaml")
     parser.add_argument("--history-len", type=int, default=0)
+    parser.add_argument(
+        "--history-source",
+        default=None,
+        choices=["det", "fusion"],
+        help="Anchor history source. Defaults to DATA.HISTORY_SOURCE from --train-config.",
+    )
     parser.add_argument("--future-step", type=int, default=1)
     parser.add_argument("--hard-negative-distance", type=float, default=4.0)
     parser.add_argument(
@@ -92,6 +102,7 @@ def main() -> int:
 
     train_cfg = _load_yaml(args.train_config)
     history_len = int(args.history_len or _resolve_default_history_len(train_cfg, 8))
+    history_source = args.history_source or _resolve_default_history_source(train_cfg, "det")
 
     with open(args.input, "rb") as f:
         tracklets = pickle.load(f)
@@ -108,6 +119,7 @@ def main() -> int:
     samples, summary = build_pairwise_association_samples(
         tracklets,
         history_len=history_len,
+        history_source=history_source,
         future_step=int(args.future_step),
         hard_negative_distance=float(args.hard_negative_distance),
         hard_negative_distance_by_class=class_hard_dist,
@@ -128,6 +140,7 @@ def main() -> int:
         "output": str(output_path),
         "settings": {
             "history_len": history_len,
+            "history_source": history_source,
             "future_step": int(args.future_step),
             "hard_negative_distance": float(args.hard_negative_distance),
             "hard_negative_distance_by_class": class_hard_dist,

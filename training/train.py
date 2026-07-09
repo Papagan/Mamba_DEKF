@@ -31,7 +31,34 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
+try:
+    from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
+except ImportError:
+    from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR
+
+    class LinearLR(LambdaLR):
+        def __init__(self, optimizer, start_factor=0.01, total_iters=1):
+            total_iters = max(int(total_iters), 1)
+
+            def _lr_lambda(epoch):
+                progress = min(max(float(epoch), 0.0) / float(total_iters), 1.0)
+                return float(start_factor) + (1.0 - float(start_factor)) * progress
+
+            super().__init__(optimizer, lr_lambda=_lr_lambda)
+
+    class SequentialLR:
+        def __init__(self, optimizer, schedulers, milestones):
+            del optimizer
+            self.schedulers = list(schedulers)
+            self.milestones = list(milestones)
+            self.last_epoch = -1
+
+        def step(self):
+            self.last_epoch += 1
+            idx = 0
+            if self.milestones and self.last_epoch >= int(self.milestones[0]):
+                idx = min(1, len(self.schedulers) - 1)
+            self.schedulers[idx].step()
 
 # Project root
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -77,6 +104,7 @@ from training.class_state_metrics import (
 )
 from training.association_loss import association_ranking_loss
 from training.association_tokens import build_future_detection_history
+from training.association_stage import run_association_head_stage_if_requested
 
 logger = logging.getLogger("train")
 
@@ -1370,13 +1398,30 @@ def main():
         help="Load compatible non-backbone weights from a checkpoint and train from epoch 0",
     )
     parser.add_argument("--device", type=str, default=None, help="Override device (cuda/cpu)")
+    parser.add_argument(
+        "--train-association-head",
+        action="store_true",
+        help="Run Stage B pairwise association-head training after main Mamba training",
+    )
+    parser.add_argument(
+        "--skip-association-head",
+        action="store_true",
+        help="Skip Stage B association-head training even if enabled in config",
+    )
     args = parser.parse_args()
     if args.resume and args.resume_heads_only:
         parser.error("--resume and --resume-heads-only are mutually exclusive")
+    if args.train_association_head and args.skip_association_head:
+        parser.error("--train-association-head and --skip-association-head are mutually exclusive")
 
     # ---- Load config ----
     with open(args.config, "r") as f:
         cfg = yaml.safe_load(f)
+    assoc_cfg = cfg.setdefault("ASSOCIATION_HEAD_TRAINING", {})
+    if args.train_association_head:
+        assoc_cfg["RUN_AFTER_MAIN"] = True
+    if args.skip_association_head:
+        assoc_cfg["RUN_AFTER_MAIN"] = False
 
     # ---- Device ----
     if args.device:
@@ -1962,6 +2007,12 @@ def main():
 
     writer.close()
     logger.info(f"Training complete. Best val_loss={best_val_loss:.4f}")
+    run_association_head_stage_if_requested(
+        cfg,
+        config_path=args.config,
+        device=str(device),
+        logger_obj=logger,
+    )
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import unittest
+import json
 import pickle
 import subprocess
 import sys
@@ -11,7 +12,9 @@ from training.pairwise_association_cache import (
 )
 
 
-def _frame(sample_token, frame_id, x, y, *, matched=True, score=0.8):
+def _frame(sample_token, frame_id, x, y, *, matched=True, score=0.8, fusion_valid=False):
+    obs = [x, y, 0.0, 0.0, 0.0, 0.0, 4.0, 2.0, 1.5, 0.0, 0.0, score if matched else 0.0]
+    fusion = [x + 10.0, y + 10.0, 0.0, 0.0, 0.0, 0.0, 4.0, 2.0, 1.5, 0.0, 0.0, score if matched else 0.0]
     return {
         "sample_token": sample_token,
         "timestamp": float(frame_id),
@@ -19,7 +22,10 @@ def _frame(sample_token, frame_id, x, y, *, matched=True, score=0.8):
         "scene_id": "scene-a",
         "is_matched": matched,
         "det_score": score if matched else 0.0,
-        "obs_feature_12": [x, y, 0.0, 0.0, 0.0, 0.0, 4.0, 2.0, 1.5, 0.0, 0.0, score if matched else 0.0],
+        "obs_feature_12": obs,
+        "fusion_feature_12": fusion,
+        "fusion_valid": bool(fusion_valid),
+        "fusion_is_fake": False,
         "det_global_xyz": [x, y, 0.0] if matched else None,
         "det_lwh": [4.0, 2.0, 1.5] if matched else None,
         "det_yaw": 0.0 if matched else None,
@@ -119,6 +125,46 @@ class PairwiseAssociationCacheTest(unittest.TestCase):
         self.assertEqual([sample["negative_type"] for sample in bus_negatives], ["hard", "hard"])
         self.assertEqual(summary["per_class"]["bus"]["hard_negative_pairs"], 2)
 
+    def test_fusion_history_source_uses_only_valid_fusion_frames(self):
+        tracklets = [
+            {
+                "instance_token": "car-a",
+                "category": "car",
+                "frames": [
+                    _frame("s0", 0, 1.0, 0.0, fusion_valid=False),
+                    _frame("s1", 1, 2.0, 0.0, fusion_valid=True),
+                    _frame("s2", 2, 3.0, 0.0, fusion_valid=True),
+                ],
+            },
+            {
+                "instance_token": "car-b",
+                "category": "car",
+                "frames": [
+                    _frame("s0", 0, 5.0, 0.0, fusion_valid=True),
+                    _frame("s1", 1, 6.0, 0.0, fusion_valid=True),
+                    _frame("s2", 2, 7.0, 0.0, fusion_valid=True),
+                ],
+            },
+        ]
+
+        samples, _ = build_pairwise_association_samples(
+            tracklets,
+            history_len=2,
+            future_step=1,
+            history_source="fusion",
+            max_hard_negatives=0,
+            max_easy_negatives=0,
+        )
+
+        anchor = next(
+            sample for sample in samples
+            if sample["anchor_instance_token"] == "car-a"
+            and sample["current_sample_token"] == "s1"
+        )
+        self.assertEqual(anchor["anchor_history_12"][0], [0.0] * 12)
+        self.assertEqual(anchor["anchor_history_12"][1][0], 12.0)
+        self.assertEqual(anchor["history_source"], "fusion")
+
     def test_limits_pairs_per_class_when_requested(self):
         tracklets = [
             {
@@ -206,6 +252,8 @@ class PairwiseAssociationCacheTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(output_path.exists())
             self.assertTrue(summary_path.exists())
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(summary["settings"]["history_source"], "fusion")
 
 
 if __name__ == "__main__":

@@ -61,6 +61,11 @@ class TrainPairwiseAssociationCliTest(unittest.TestCase):
                     "2",
                     "--history-len",
                     "4",
+                    "--freeze-backbone",
+                    "--ranking-margin",
+                    "0.2",
+                    "--ranking-weight",
+                    "0.1",
                     "--dry-run",
                 ],
                 cwd=root,
@@ -73,6 +78,7 @@ class TrainPairwiseAssociationCliTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(metrics_path.exists())
             self.assertTrue(ckpt_path.exists())
+            self.assertIn("ranking", metrics_path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

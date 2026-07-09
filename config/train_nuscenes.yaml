@@ -126,17 +126,24 @@ MAMBA_ASSOCIATION_PRIOR:
 
 ASSOCIATION_HEAD_TRAINING:
   ENABLED: true
+  RUN_AFTER_MAIN: true
   TRAIN_PAIRWISE_PKL: /root/autodl-tmp/data/training_cache/nuscenes/mini/train_pairwise_assoc.pkl
   VAL_PAIRWISE_PKL: /root/autodl-tmp/data/training_cache/nuscenes/mini/val_pairwise_assoc.pkl
   OUTPUT: checkpoints/mamba_dekf/best_assoc.pt
   METRICS_OUTPUT: docs/pairwise_assoc_metrics.json
+  BACKBONE_CHECKPOINT: checkpoints/mamba_dekf/best.pt
+  FREEZE_BACKBONE: true
+  TENSORBOARD_DIR: checkpoints/mamba_dekf/assoc_tb
   EPOCHS: 20
   BATCH_SIZE: 256
+  NUM_WORKERS: 0
   LR: 1.0e-4
   WEIGHT_DECAY: 1.0e-4
   HIDDEN_DIMS: [256, 128]
   DROPOUT: 0.1
   HARD_NEGATIVE_WEIGHT: 2.0
+  RANKING_MARGIN: 0.2
+  RANKING_WEIGHT: 0.1
 
 # ---- Training ----
 TRAINING:

@@ -14,6 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import yaml
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -98,6 +99,62 @@ def _build_encoder(args, cfg: Dict[str, Any]) -> nn.Module:
     )
 
 
+def _load_backbone_checkpoint(model: PairwiseAssociationModel, checkpoint_path: str | None) -> Dict[str, Any]:
+    if not checkpoint_path:
+        return {"path": None, "loaded_keys": 0, "missing_keys": [], "unexpected_keys": []}
+    path = Path(checkpoint_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Backbone checkpoint not found: {checkpoint_path}")
+    ckpt = torch.load(path, map_location="cpu")
+    state = ckpt.get("model_state_dict", ckpt)
+    encoder_state = model.temporal_encoder.state_dict()
+    loadable = {}
+    for key, value in state.items():
+        stripped = key[len("temporal_encoder."):] if key.startswith("temporal_encoder.") else key
+        if stripped in encoder_state and tuple(encoder_state[stripped].shape) == tuple(value.shape):
+            loadable[stripped] = value
+    result = model.temporal_encoder.load_state_dict(loadable, strict=False)
+    return {
+        "path": str(path),
+        "loaded_keys": len(loadable),
+        "missing_keys": list(result.missing_keys),
+        "unexpected_keys": list(result.unexpected_keys),
+    }
+
+
+def _set_backbone_trainable(model: PairwiseAssociationModel, trainable: bool) -> None:
+    for param in model.temporal_encoder.parameters():
+        param.requires_grad = bool(trainable)
+
+
+def _association_ranking_loss_from_logits(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    anchor_keys: List[str],
+    *,
+    margin: float,
+) -> torch.Tensor:
+    losses = []
+    device = logits.device
+    for anchor_key in sorted(set(anchor_keys)):
+        indices = [idx for idx, key in enumerate(anchor_keys) if key == anchor_key]
+        if len(indices) < 2:
+            continue
+        idx_tensor = torch.tensor(indices, device=device, dtype=torch.long)
+        group_logits = logits[idx_tensor]
+        group_labels = labels[idx_tensor] > 0.5
+        if not bool(group_labels.any().item()) or not bool((~group_labels).any().item()):
+            continue
+        pos_logits = group_logits[group_labels]
+        neg_logits = group_logits[~group_labels]
+        hardest_pos = pos_logits.min()
+        hard_negatives = neg_logits
+        losses.append(F.relu(float(margin) - hardest_pos + hard_negatives).mean())
+    if not losses:
+        return torch.zeros((), device=device, dtype=logits.dtype)
+    return torch.stack(losses).mean()
+
+
 def _records_from_logits(batch: Dict[str, Any], logits: torch.Tensor) -> List[Dict[str, Any]]:
     scores = torch.sigmoid(logits).detach().cpu().tolist()
     labels = batch["label"].detach().cpu().tolist()
@@ -114,7 +171,17 @@ def _records_from_logits(batch: Dict[str, Any], logits: torch.Tensor) -> List[Di
     return records
 
 
-def _run_epoch(model, loader, optimizer, device, *, train: bool, hard_negative_weight: float) -> Dict[str, Any]:
+def _run_epoch(
+    model,
+    loader,
+    optimizer,
+    device,
+    *,
+    train: bool,
+    hard_negative_weight: float,
+    ranking_margin: float,
+    ranking_weight: float,
+) -> Dict[str, Any]:
     model.train(train)
     records: List[Dict[str, Any]] = []
     total_loss = 0.0
@@ -140,7 +207,14 @@ def _run_epoch(model, loader, optimizer, device, *, train: bool, hard_negative_w
                 dtype=torch.bool,
             )
             weights[hard_mask] = float(hard_negative_weight)
-        loss = F.binary_cross_entropy_with_logits(logits, labels, weight=weights)
+        bce_loss = F.binary_cross_entropy_with_logits(logits, labels, weight=weights)
+        ranking_loss = _association_ranking_loss_from_logits(
+            logits,
+            labels,
+            batch["anchor_keys"],
+            margin=float(ranking_margin),
+        )
+        loss = bce_loss + float(ranking_weight) * ranking_loss
         if train:
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -152,31 +226,15 @@ def _run_epoch(model, loader, optimizer, device, *, train: bool, hard_negative_w
         records.extend(_records_from_logits(batch, logits))
     metrics = compute_association_metrics(records)
     metrics["loss"] = float(total_loss / max(total_count, 1))
+    metrics["ranking"] = {
+        "margin": float(ranking_margin),
+        "weight": float(ranking_weight),
+    }
     return metrics
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Train class-conditioned pairwise association heads.")
-    parser.add_argument("--train-pkl", default=None)
-    parser.add_argument("--val-pkl", default=None)
-    parser.add_argument("--output", default=None)
-    parser.add_argument("--metrics-output", default=None)
-    parser.add_argument("--train-config", default="config/train_nuscenes.yaml")
-    parser.add_argument("--history-len", type=int, default=8)
-    parser.add_argument("--epochs", type=int, default=None)
-    parser.add_argument("--batch-size", type=int, default=None)
-    parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument("--lr", type=float, default=None)
-    parser.add_argument("--weight-decay", type=float, default=None)
-    parser.add_argument("--embed-dim", type=int, default=64)
-    parser.add_argument("--hidden-dims", default=None)
-    parser.add_argument("--dropout", type=float, default=None)
-    parser.add_argument("--hard-negative-weight", type=float, default=None)
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args()
-
-    cfg = _load_yaml(args.train_config)
+def train_pairwise_association(args, cfg: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    cfg = _load_yaml(args.train_config) if cfg is None else cfg
     assoc_cfg = cfg.get("ASSOCIATION_HEAD_TRAINING", {}) or {}
     args.train_pkl = args.train_pkl or assoc_cfg.get("TRAIN_PAIRWISE_PKL")
     args.val_pkl = args.val_pkl or assoc_cfg.get("VAL_PAIRWISE_PKL")
@@ -191,6 +249,21 @@ def main() -> int:
         args.hard_negative_weight
         if args.hard_negative_weight is not None
         else assoc_cfg.get("HARD_NEGATIVE_WEIGHT", 2.0)
+    )
+    explicit_backbone_checkpoint = args.backbone_checkpoint
+    args.backbone_checkpoint = args.backbone_checkpoint or assoc_cfg.get("BACKBONE_CHECKPOINT")
+    if bool(args.dry_run) and explicit_backbone_checkpoint is None:
+        args.backbone_checkpoint = None
+    args.freeze_backbone = bool(args.freeze_backbone or assoc_cfg.get("FREEZE_BACKBONE", False))
+    explicit_tensorboard_dir = args.tensorboard_dir
+    args.tensorboard_dir = args.tensorboard_dir or assoc_cfg.get("TENSORBOARD_DIR")
+    if bool(args.dry_run) and explicit_tensorboard_dir is None:
+        args.tensorboard_dir = None
+    args.ranking_margin = float(
+        args.ranking_margin if args.ranking_margin is not None else assoc_cfg.get("RANKING_MARGIN", 0.2)
+    )
+    args.ranking_weight = float(
+        args.ranking_weight if args.ranking_weight is not None else assoc_cfg.get("RANKING_WEIGHT", 0.0)
     )
     hidden_cfg = args.hidden_dims if args.hidden_dims is not None else assoc_cfg.get("HIDDEN_DIMS", [256, 128])
     if isinstance(hidden_cfg, (list, tuple)):
@@ -236,11 +309,15 @@ def main() -> int:
         dropout=float(args.dropout),
         encoder_mode=str(cfg.get("FILTER_MODE", "mamba_multihead_closure")),
     ).to(device)
+    backbone_load = _load_backbone_checkpoint(model, args.backbone_checkpoint)
+    if args.freeze_backbone:
+        _set_backbone_trainable(model, trainable=False)
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        [param for param in model.parameters() if param.requires_grad],
         lr=float(args.lr),
         weight_decay=float(args.weight_decay),
     )
+    writer = SummaryWriter(log_dir=args.tensorboard_dir) if args.tensorboard_dir else None
 
     best_val = float("inf")
     best_payload = None
@@ -252,6 +329,8 @@ def main() -> int:
             device,
             train=True,
             hard_negative_weight=float(args.hard_negative_weight),
+            ranking_margin=float(args.ranking_margin),
+            ranking_weight=float(args.ranking_weight),
         )
         with torch.no_grad():
             val_metrics = _run_epoch(
@@ -261,13 +340,24 @@ def main() -> int:
                 device,
                 train=False,
                 hard_negative_weight=float(args.hard_negative_weight),
+                ranking_margin=float(args.ranking_margin),
+                ranking_weight=float(args.ranking_weight),
             )
         payload = {
             "epoch": epoch,
             "train": train_metrics,
             "val": val_metrics,
+            "backbone_load": backbone_load,
         }
         print(json.dumps(payload, ensure_ascii=False))
+        if writer is not None:
+            writer.add_scalar("train/loss", train_metrics.get("loss", 0.0), epoch)
+            writer.add_scalar("val/loss", val_metrics.get("loss", 0.0), epoch)
+            writer.add_scalar("train/top1", train_metrics.get("overall", {}).get("top1", 0.0), epoch)
+            writer.add_scalar("val/top1", val_metrics.get("overall", {}).get("top1", 0.0), epoch)
+            writer.add_scalar("train/auc", train_metrics.get("overall", {}).get("auc", 0.0), epoch)
+            writer.add_scalar("val/auc", val_metrics.get("overall", {}).get("auc", 0.0), epoch)
+            writer.flush()
         if val_metrics["loss"] < best_val:
             best_val = val_metrics["loss"]
             best_payload = payload
@@ -278,11 +368,56 @@ def main() -> int:
                 "model_state_dict": model.state_dict(),
                 "settings": vars(args),
                 "metrics": payload,
+                "runtime_contract": {
+                    "filter_mode": str(cfg.get("FILTER_MODE", "mamba_multihead_closure")),
+                    "history_source": str((cfg.get("DATA", {}) or {}).get("HISTORY_SOURCE", "det")).strip().lower(),
+                    "init_state_source": str((cfg.get("DATA", {}) or {}).get("INIT_STATE_SOURCE", "det")).strip().lower(),
+                    "backbone_checkpoint": args.backbone_checkpoint,
+                    "freeze_backbone": bool(args.freeze_backbone),
+                    "association_head": "class_conditioned_pairwise",
+                },
+                "backbone_load": backbone_load,
             }, output_path)
 
     metrics_path = Path(args.metrics_output)
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_path.write_text(json.dumps(best_payload or {}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if writer is not None:
+        writer.close()
+    return {
+        "best_val": best_val,
+        "best_payload": best_payload,
+        "output": args.output,
+        "metrics_output": args.metrics_output,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Train class-conditioned pairwise association heads.")
+    parser.add_argument("--train-pkl", default=None)
+    parser.add_argument("--val-pkl", default=None)
+    parser.add_argument("--output", default=None)
+    parser.add_argument("--metrics-output", default=None)
+    parser.add_argument("--train-config", default="config/train_nuscenes.yaml")
+    parser.add_argument("--history-len", type=int, default=8)
+    parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--weight-decay", type=float, default=None)
+    parser.add_argument("--embed-dim", type=int, default=64)
+    parser.add_argument("--hidden-dims", default=None)
+    parser.add_argument("--dropout", type=float, default=None)
+    parser.add_argument("--hard-negative-weight", type=float, default=None)
+    parser.add_argument("--backbone-checkpoint", default=None)
+    parser.add_argument("--freeze-backbone", action="store_true")
+    parser.add_argument("--tensorboard-dir", default=None)
+    parser.add_argument("--ranking-margin", type=float, default=None)
+    parser.add_argument("--ranking-weight", type=float, default=None)
+    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+    train_pairwise_association(args)
     return 0
 
 

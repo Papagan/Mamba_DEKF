@@ -10,6 +10,8 @@
 #   Meta   : delta_t, instance_token (for contrastive pairing)
 # ------------------------------------------------------------------------
 
+from __future__ import annotations
+
 import os
 import pickle
 import random

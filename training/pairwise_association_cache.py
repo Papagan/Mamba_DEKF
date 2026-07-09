@@ -85,11 +85,28 @@ def _state_bucket_from_history(frames: List[Dict[str, Any]], current_index: int)
     return "matched" if bool(frames[current_index].get("is_matched", False)) else "unmatched"
 
 
-def _history_feature(frames: List[Dict[str, Any]], end_index: int, history_len: int) -> List[List[float]]:
+def _history_feature(
+    frames: List[Dict[str, Any]],
+    end_index: int,
+    history_len: int,
+    *,
+    history_source: str = "det",
+) -> List[List[float]]:
     start = max(0, end_index - history_len + 1)
     selected = frames[start : end_index + 1]
     pad = [[0.0] * 12 for _ in range(max(0, history_len - len(selected)))]
-    features = [_as_float_list(frame.get("obs_feature_12"), 12) for frame in selected]
+    source = str(history_source).strip().lower()
+    if source not in {"det", "fusion"}:
+        raise ValueError(f"Unsupported history_source={history_source!r}; expected 'det' or 'fusion'")
+    features = []
+    for frame in selected:
+        if source == "fusion":
+            if bool(frame.get("fusion_valid", False)):
+                features.append(_as_float_list(frame.get("fusion_feature_12"), 12))
+            else:
+                features.append([0.0] * 12)
+        else:
+            features.append(_as_float_list(frame.get("obs_feature_12"), 12))
     return pad + features
 
 
@@ -124,6 +141,7 @@ def _make_pair(
     candidate: Dict[str, Any],
     history_len: int,
     current_index: int,
+    history_source: str,
     label: int,
     negative_type: str,
 ) -> Dict[str, Any]:
@@ -142,7 +160,13 @@ def _make_pair(
         "scene_id": future_frame.get("scene_id"),
         "label": int(label),
         "negative_type": negative_type,
-        "anchor_history_12": _history_feature(anchor_tracklet.get("frames", []), current_index, history_len),
+        "history_source": str(history_source).strip().lower(),
+        "anchor_history_12": _history_feature(
+            anchor_tracklet.get("frames", []),
+            current_index,
+            history_len,
+            history_source=history_source,
+        ),
         "positive_obs_feature_12": _as_float_list(future_frame.get("obs_feature_12"), 12),
         "candidate_obs_feature_12": _as_float_list(candidate_frame.get("obs_feature_12"), 12),
         "center_distance": _center_distance_xy(future_frame, candidate_frame),
@@ -157,6 +181,7 @@ def build_pairwise_association_samples(
     tracklets: List[Dict[str, Any]],
     *,
     history_len: int = 8,
+    history_source: str = "det",
     future_step: int = 1,
     hard_negative_distance: float = 4.0,
     hard_negative_distance_by_class: Dict[str, float] | None = None,
@@ -172,6 +197,9 @@ def build_pairwise_association_samples(
     Positives are the anchor tracklet's matched future detection. Negatives are
     other matched detections from the same scene/sample/category.
     """
+    history_source = str(history_source).strip().lower()
+    if history_source not in {"det", "fusion"}:
+        raise ValueError(f"Unsupported history_source={history_source!r}; expected 'det' or 'fusion'")
     frame_index = _index_matched_frames(tracklets)
     samples: List[Dict[str, Any]] = []
     hard_distance_by_class = {
@@ -227,6 +255,7 @@ def build_pairwise_association_samples(
                 candidate=positive_candidates[0],
                 history_len=history_len,
                 current_index=current_index,
+                history_source=history_source,
                 label=1,
                 negative_type="positive",
             ))
@@ -258,6 +287,7 @@ def build_pairwise_association_samples(
                     candidate=candidate,
                     history_len=history_len,
                     current_index=current_index,
+                    history_source=history_source,
                     label=0,
                     negative_type="hard",
                 ))
@@ -269,6 +299,7 @@ def build_pairwise_association_samples(
                     candidate=candidate,
                     history_len=history_len,
                     current_index=current_index,
+                    history_source=history_source,
                     label=0,
                     negative_type="easy",
                 ))
