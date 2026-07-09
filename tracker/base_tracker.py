@@ -42,6 +42,7 @@ from kalmanfilter.mamba_adaptive_kf import MambaDecoupledEKF, build_noise_audit_
 from kalmanfilter.bounded_residual import infer_state_bucket
 from kalmanfilter.state_residual import apply_bounded_state_residuals
 from kalmanfilter.noise_audit import NoiseAuditAccumulator
+from training.association_model import ClassConditionedAssociationHeadBank
 from utils.debug_log import emit_debug_line
 from utils.utils import norm_realative_radian
 
@@ -402,6 +403,7 @@ class Base3DTracker:
             base_noise_cfg=cfg.get("DEKF_BASE_NOISE", None),
             force_gru=force_gru,
         ).to(self.device)
+        self.embed_dim: int = mamba_cfg["EMBED_DIM"]
         self.mamba_input_dim: int = int(getattr(self.mamba_ekf.mamba, "INPUT_DIM", 12))
         self.default_window_cfg, self.runtime_window_cfg = parse_residual_history_window_cfg(
             history_len=self.history_len,
@@ -491,8 +493,8 @@ class Base3DTracker:
                   "Running with RANDOM Mamba weights — set CHECKPOINT_PATH to load trained weights.")
 
         self.mamba_ekf.eval()
+        self.pairwise_association_head = self._load_pairwise_association_head()
 
-        self.embed_dim: int = mamba_cfg["EMBED_DIM"]
         print(
             f"[Base3DTracker] FILTER_MODE={self.filter_mode} "
             f"BEV_COST_MODE={self.cfg.get('THRESHOLD', {}).get('BEV', {}).get('COST_MODE', 'unknown')}",
@@ -702,6 +704,153 @@ class Base3DTracker:
         if self.dirty_suppressor_audit is None:
             return None
         return self.dirty_suppressor_audit.export_state()
+
+    def _pairwise_association_head_cfg(self) -> Dict:
+        return (self.cfg.get("MAMBA_ASSOCIATION_HEAD", {}) or {})
+
+    def _pairwise_association_head_enabled(self) -> bool:
+        return bool(self._pairwise_association_head_cfg().get("ENABLED", False))
+
+    @staticmethod
+    def _parse_hidden_dims(raw_value) -> Tuple[int, ...]:
+        if isinstance(raw_value, (list, tuple)):
+            return tuple(int(value) for value in raw_value)
+        if raw_value is None:
+            return (256, 128)
+        return tuple(int(value) for value in str(raw_value).split(",") if str(value).strip())
+
+    def _load_pairwise_association_head(self):
+        head_cfg = self._pairwise_association_head_cfg()
+        if not bool(head_cfg.get("ENABLED", False)):
+            return None
+        ckpt_path = head_cfg.get("CHECKPOINT_PATH", None)
+        if not ckpt_path:
+            print("[Base3DTracker] WARNING: MAMBA_ASSOCIATION_HEAD enabled but CHECKPOINT_PATH is empty.")
+            return None
+        if not os.path.exists(ckpt_path):
+            print(
+                "[Base3DTracker] WARNING: MAMBA_ASSOCIATION_HEAD checkpoint not found: "
+                f"{ckpt_path}. Association head disabled."
+            )
+            return None
+        try:
+            ckpt = torch.load(ckpt_path, map_location=self.device)
+            state = ckpt.get("model_state_dict", ckpt)
+            head_state = {
+                key[len("association_heads."):]: value
+                for key, value in state.items()
+                if str(key).startswith("association_heads.")
+            }
+            if not head_state:
+                print(
+                    "[Base3DTracker] WARNING: MAMBA_ASSOCIATION_HEAD checkpoint has no "
+                    "association_heads.* keys. Association head disabled."
+                )
+                return None
+            settings = ckpt.get("settings", {}) or {}
+            hidden_dims = self._parse_hidden_dims(
+                head_cfg.get("HIDDEN_DIMS", settings.get("hidden_dims", [256, 128]))
+            )
+            num_classes = int(head_cfg.get("NUM_CLASSES", self.cfg.get("MAMBA", {}).get("NUM_CLASSES", 7)))
+            input_dim = self.embed_dim * 4 + 7
+            head = ClassConditionedAssociationHeadBank(
+                input_dim=input_dim,
+                num_classes=num_classes,
+                hidden_dims=hidden_dims,
+                dropout=0.0,
+            ).to(self.device)
+            missing, unexpected = head.load_state_dict(head_state, strict=False)
+            if missing:
+                print(f"[Base3DTracker] WARNING: association head missing keys: {missing}")
+            if unexpected:
+                print(f"[Base3DTracker] WARNING: association head unexpected keys: {unexpected}")
+            head.eval()
+            print(
+                "[Base3DTracker] Loaded pairwise association head from "
+                f"{ckpt_path} (hidden_dims={hidden_dims})"
+            )
+            return head
+        except Exception as exc:
+            print(
+                "[Base3DTracker] WARNING: failed to load MAMBA_ASSOCIATION_HEAD "
+                f"from {ckpt_path}: {exc}. Association head disabled."
+            )
+            return None
+
+    @staticmethod
+    def _bbox_center_distance_xy(a, b) -> float:
+        return float(np.linalg.norm(np.asarray(a.global_xyz[:2]) - np.asarray(b.global_xyz[:2])))
+
+    @staticmethod
+    def _bbox_size_l1(a, b) -> float:
+        return float(np.sum(np.abs(np.asarray(a.lwh) - np.asarray(b.lwh))))
+
+    def _compute_pairwise_association_scores(
+        self,
+        trajs: List[Trajectory],
+        dets: List[BBox],
+        trk_embeddings: Optional[np.ndarray],
+        det_embeddings: Optional[np.ndarray],
+        state_buckets: List[str],
+    ) -> Optional[np.ndarray]:
+        if (
+            self.pairwise_association_head is None
+            or trk_embeddings is None
+            or det_embeddings is None
+            or len(trajs) == 0
+            or len(dets) == 0
+        ):
+            return None
+        trk_embeddings = np.asarray(trk_embeddings, dtype=np.float32)
+        det_embeddings = np.asarray(det_embeddings, dtype=np.float32)
+        if trk_embeddings.shape[0] != len(trajs) or det_embeddings.shape[0] != len(dets):
+            return None
+
+        category_map = self.cfg.get("CATEGORY_MAP_TO_NUMBER", {}) or {}
+        pair_rows = []
+        class_ids = []
+        pair_indices = []
+        for t, traj in enumerate(trajs):
+            trk_bbox = traj.bboxes[-1]
+            class_id = category_map.get(trk_bbox.category, None)
+            if class_id is None:
+                continue
+            state_bucket = state_buckets[t] if t < len(state_buckets) else infer_state_bucket(getattr(traj, "unmatch_length", 0))
+            state_id = 1.0 if str(state_bucket).strip().lower() == "unmatched" else 0.0
+            for d, det in enumerate(dets):
+                if det.category != trk_bbox.category:
+                    continue
+                pair_features = np.asarray([
+                    self._bbox_center_distance_xy(trk_bbox, det),
+                    abs(norm_realative_radian(trk_bbox.global_yaw - det.global_yaw)),
+                    self._bbox_size_l1(trk_bbox, det),
+                    float(getattr(trk_bbox, "det_score", 0.0)),
+                    float(getattr(det, "det_score", 0.0)),
+                    state_id,
+                    float(class_id),
+                ], dtype=np.float32)
+                pair_rows.append(np.concatenate([
+                    trk_embeddings[t],
+                    det_embeddings[d],
+                    np.abs(trk_embeddings[t] - det_embeddings[d]),
+                    trk_embeddings[t] * det_embeddings[d],
+                    pair_features,
+                ]))
+                class_ids.append(int(class_id))
+                pair_indices.append((t, d))
+        if not pair_rows:
+            return None
+
+        with torch.no_grad():
+            pair_tensor = torch.tensor(np.asarray(pair_rows, dtype=np.float32), device=self.device)
+            class_tensor = torch.tensor(class_ids, dtype=torch.long, device=self.device)
+            logits = self.pairwise_association_head(pair_tensor, class_tensor)
+            probs = torch.sigmoid(logits).detach().cpu().numpy()
+
+        score_matrix = np.full((len(trajs), len(dets)), np.nan, dtype=np.float32)
+        for (t, d), score in zip(pair_indices, probs):
+            score_matrix[t, d] = float(score)
+        return score_matrix
 
     # ==================================================================
     # History extraction: Trajectory bboxes → [B, T, 12] tensor
@@ -1654,6 +1803,7 @@ class Base3DTracker:
         traj_index_map: Dict[int, int],
         trk_embeddings: Optional[np.ndarray],
         det_embeddings_all: Optional[np.ndarray],
+        association_scores: Optional[np.ndarray],
         det_counts: Dict[str, int],
         matched_counts: Dict[str, int],
         birth_counts: Dict[str, int],
@@ -1673,6 +1823,7 @@ class Base3DTracker:
                 self.cfg,
                 trk_embeddings=trk_embeddings,
                 det_embeddings=det_embeddings_all,
+                association_scores=association_scores,
             )
         else:
             match_res = np.empty((0, 2), dtype=int)
@@ -1913,11 +2064,13 @@ class Base3DTracker:
         # ---- detection embeddings (shared by both paths) ----
         cost_mode = self.cfg.get("THRESHOLD", {}).get("BEV", {}).get("COST_MODE", "geometric")
         use_mamba_assoc_prior = self._mamba_association_prior_enabled()
+        use_pairwise_assoc_head = self._pairwise_association_head_enabled()
         if (
             dets_cnt > 0
             and (
                 (cost_mode == "full" and self.filter_mode in ["mamba", "fusion"])
                 or (use_mamba_assoc_prior and self.filter_mode in ["mamba", "fusion", "mamba_multihead_closure"])
+                or (use_pairwise_assoc_head and self.filter_mode in ["mamba", "fusion", "mamba_multihead_closure"])
             )
         ):
             det_history = torch.zeros(dets_cnt, self.history_len, 12, device=self.device)
@@ -1951,6 +2104,18 @@ class Base3DTracker:
         else:
             det_embeddings_all = np.zeros((dets_cnt, self.embed_dim), dtype=np.float32) if dets_cnt > 0 else None
 
+        state_buckets = [
+            infer_state_bucket(getattr(traj, "unmatch_length", 0))
+            for traj in trajs
+        ]
+        association_scores = self._compute_pairwise_association_scores(
+            trajs,
+            frame_info.bboxes,
+            trk_embeddings,
+            det_embeddings_all,
+            state_buckets,
+        )
+
         # ---- per-trajectory cal_flag from COST_STATE config (shared) ----
         if trajs_cnt > 0:
             cost_state_cfg = self.cfg["MATCHING"]["BEV"]["COST_STATE"]
@@ -1968,6 +2133,7 @@ class Base3DTracker:
                 traj_index_map=traj_index_map,
                 trk_embeddings=trk_embeddings,
                 det_embeddings_all=det_embeddings_all,
+                association_scores=association_scores,
                 det_counts=det_counts,
                 matched_counts=matched_counts,
                 birth_counts=birth_counts,
@@ -1994,6 +2160,7 @@ class Base3DTracker:
                     trk_pos_P=trk_pos_P,
                     trk_ori_P=trk_ori_P,
                     cal_flag=cal_flags,
+                    association_scores=association_scores,
                 )
             else:
                 match_res = np.empty((0, 2), dtype=int)

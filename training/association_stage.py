@@ -89,7 +89,12 @@ def run_association_head_stage_if_requested(
             args.output,
             args.freeze_backbone,
         )
-    runner(args, cfg)
+    if runner is None:
+        raise RuntimeError("Association head Stage B runner was not initialized")
+    if runner.__module__ == "tools.train_pairwise_association":
+        runner(args, cfg, logger_obj=logger_obj)
+    else:
+        runner(args, cfg)
     if logger_obj is not None:
         logger_obj.info("Association head Stage B complete.")
     return "ran"

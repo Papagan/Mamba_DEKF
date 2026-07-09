@@ -110,6 +110,67 @@ def apply_mamba_association_prior_to_cost_matrix(
     return out
 
 
+def apply_pairwise_association_head_to_cost_matrix(
+    cost_matrix,
+    trajs,
+    dets,
+    cfg,
+    *,
+    association_scores=None,
+    state_buckets=None,
+):
+    """Apply class-conditioned association-head penalties conservatively.
+
+    The learned head may only make a geometrically valid pair less attractive.
+    It never reduces cost, so it cannot create matches outside the existing
+    geometric gate.
+    """
+    out = np.array(cost_matrix, copy=True)
+    head_cfg = (cfg.get("MAMBA_ASSOCIATION_HEAD", {}) or {})
+    if (
+        not bool(head_cfg.get("ENABLED", False))
+        or association_scores is None
+        or len(trajs) == 0
+        or len(dets) == 0
+    ):
+        return out
+
+    scores = np.asarray(association_scores, dtype=np.float32)
+    if scores.shape != out.shape:
+        return out
+
+    category_map = cfg.get("CATEGORY_MAP_TO_NUMBER", {}) or {}
+    active_cfg = head_cfg.get("ACTIVE_CLASS_STATES", {}) or {}
+    min_score = float(head_cfg.get("MIN_SCORE", 0.5))
+    alpha = float(head_cfg.get("ALPHA", 0.05))
+    max_delta = float(head_cfg.get("MAX_DELTA", 0.03))
+
+    for t, traj in enumerate(trajs):
+        traj_category = traj.bboxes[-1].category
+        class_id = category_map.get(traj_category, None)
+        if class_id is None:
+            continue
+        state_bucket = (
+            str(state_buckets[t]).strip().lower()
+            if state_buckets is not None and t < len(state_buckets)
+            else _association_state_bucket(traj)
+        )
+        active_states = _normalize_state_set(_lookup_mapping_value(active_cfg, int(class_id), []))
+        if state_bucket not in active_states:
+            continue
+
+        for d, det in enumerate(dets):
+            if det.category != traj_category or not np.isfinite(out[t, d]):
+                continue
+            score = float(scores[t, d])
+            if not np.isfinite(score):
+                continue
+            delta = alpha * max(0.0, min_score - score)
+            out[t, d] = out[t, d] + min(max_delta, max(0.0, delta))
+
+    return out
+
+
 def Greedy(cost_matrix, thresholds):
     """
     Refer: https://github.com/lixiaoyu2000/Poly-MOT/blob/main/utils/matching.py
@@ -225,6 +286,7 @@ def match_trajs_and_dets(
     trk_embeddings=None,
     det_embeddings=None,
     state_buckets=None,
+    association_scores=None,
 ):
     """
     Info: This function matches trajectories with detections using a cost matrix and a specified matching algorithm (Hungarian or Greedy).
@@ -253,6 +315,14 @@ def match_trajs_and_dets(
             cfg,
             trk_embeddings=trk_embeddings,
             det_embeddings=det_embeddings,
+            state_buckets=state_buckets,
+        )
+        cost_matrix = apply_pairwise_association_head_to_cost_matrix(
+            cost_matrix,
+            trajs,
+            dets,
+            cfg,
+            association_scores=association_scores,
             state_buckets=state_buckets,
         )
     match_type = "RV" if is_rv else "BEV"
@@ -448,6 +518,7 @@ def match_trajs_and_dets_uncertainty_aware(
     trk_pos_P: list = None,
     trk_ori_P: list = None,
     cal_flag = "Predict",
+    association_scores=None,
 ) -> tuple:
     """
     Uncertainty-aware matching pipeline (Module C entry point).
@@ -478,18 +549,35 @@ def match_trajs_and_dets_uncertainty_aware(
     # uncertainty/embedding branches cannot suppress all matches.
     cost_mode = cfg.get("THRESHOLD", {}).get("BEV", {}).get("COST_MODE", "geometric")
     if cost_mode != "full":
-        return match_trajs_and_dets(trajs, dets, cfg)
+        return match_trajs_and_dets(
+            trajs,
+            dets,
+            cfg,
+            association_scores=association_scores,
+        )
 
     # fallback to original if no Mamba outputs available
     has_mamba = (trk_embeddings is not None and det_embeddings is not None)
     if not has_mamba:
-        return match_trajs_and_dets(trajs, dets, cfg)
+        return match_trajs_and_dets(
+            trajs,
+            dets,
+            cfg,
+            association_scores=association_scores,
+        )
 
     cost_matrix, trajs_category, dets_category = cost_calculate_uncertainty_aware(
         trajs, dets, cfg,
         trk_embeddings, det_embeddings,
         trk_pos_P, trk_ori_P,
         cal_flag=cal_flag,
+    )
+    cost_matrix = apply_pairwise_association_head_to_cost_matrix(
+        cost_matrix,
+        trajs,
+        dets,
+        cfg,
+        association_scores=association_scores,
     )
 
     category_map = cfg["CATEGORY_MAP_TO_NUMBER"]
@@ -583,7 +671,12 @@ def match_trajs_and_dets_uncertainty_aware(
                     f"[ASSOC] fallback=geometric reason={reason} "
                     f"min_cost={float(np.min(finite_vals)) if finite_vals.size else float('inf'):.4f}"
                 )
-            return match_trajs_and_dets(trajs, dets, cfg)
+            return match_trajs_and_dets(
+                trajs,
+                dets,
+                cfg,
+                association_scores=association_scores,
+            )
 
         if matching_mode == "Hungarian":
             m_det, m_tra, um_det, um_tra, costs = Hungarian(

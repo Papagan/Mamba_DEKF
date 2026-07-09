@@ -111,6 +111,23 @@ MAMBA_ASSOCIATION_PRIOR:
     5: {matched: 0.04, unmatched: 0.06}
     6: {matched: 0.03, unmatched: 0.05}
 
+MAMBA_ASSOCIATION_HEAD:
+  ENABLED: true
+  CHECKPOINT_PATH: "checkpoints/mamba_dekf/best_assoc.pt"
+  HIDDEN_DIMS: [256, 128]
+  NUM_CLASSES: 7
+  MIN_SCORE: 0.60
+  ALPHA: 0.05
+  MAX_DELTA: 0.03
+  ACTIVE_CLASS_STATES:
+    0: ["matched", "unmatched"]
+    1: ["matched", "unmatched"]
+    2: ["matched", "unmatched"]
+    3: ["matched", "unmatched"]
+    4: ["matched", "unmatched"]
+    5: ["matched", "unmatched"]
+    6: ["matched", "unmatched"]
+
 RESIDUAL_HISTORY:
   MIN_HISTORY_LEN: 4
   MAX_HISTORY_LEN: 8

@@ -24,7 +24,10 @@ if "pyquaternion" not in sys.modules:
     sys.modules["pyquaternion"] = pyquaternion_stub
 
 import tracker.matching as matching
-from tracker.matching import apply_mamba_association_prior_to_cost_matrix
+from tracker.matching import (
+    apply_mamba_association_prior_to_cost_matrix,
+    apply_pairwise_association_head_to_cost_matrix,
+)
 
 
 class _Box:
@@ -158,6 +161,98 @@ class MambaAssociationPriorTest(unittest.TestCase):
                 },
                 trk_embeddings=np.array([[1.0, 0.0]], dtype=np.float32),
                 det_embeddings=np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
+            )
+        finally:
+            matching.cost_calculate_general = original_cost
+            matching.Hungarian = original_hungarian
+
+        np.testing.assert_array_equal(matched, np.array([[0, 0]]))
+        self.assertAlmostEqual(float(seen["trans_cost_matrix"][0, 0, 0]), 1.0)
+        self.assertAlmostEqual(float(seen["trans_cost_matrix"][0, 1, 0]), 1.05, places=6)
+
+    def test_pairwise_head_disabled_leaves_cost_unchanged(self):
+        cost = np.array([[1.0, 1.5]], dtype=np.float32)
+        out = apply_pairwise_association_head_to_cost_matrix(
+            cost,
+            [_Traj("trailer", unmatch_length=1)],
+            [_Box("trailer"), _Box("trailer")],
+            {
+                "CATEGORY_MAP_TO_NUMBER": {"trailer": 5},
+                "MAMBA_ASSOCIATION_HEAD": {"ENABLED": False},
+            },
+            association_scores=np.array([[0.1, 0.9]], dtype=np.float32),
+        )
+
+        np.testing.assert_array_equal(out, cost)
+        self.assertIsNot(out, cost)
+
+    def test_pairwise_head_only_increases_low_score_active_pairs(self):
+        cost = np.ones((2, 2), dtype=np.float32)
+        scores = np.array([[0.9, 0.2], [0.1, 0.1]], dtype=np.float32)
+        out = apply_pairwise_association_head_to_cost_matrix(
+            cost,
+            [_Traj("motorcycle", unmatch_length=1), _Traj("trailer", unmatch_length=1)],
+            [_Box("motorcycle"), _Box("motorcycle")],
+            {
+                "CATEGORY_MAP_TO_NUMBER": {"motorcycle": 3, "trailer": 5},
+                "MAMBA_ASSOCIATION_HEAD": {
+                    "ENABLED": True,
+                    "MIN_SCORE": 0.6,
+                    "ALPHA": 0.2,
+                    "MAX_DELTA": 0.05,
+                    "ACTIVE_CLASS_STATES": {3: ["unmatched"]},
+                },
+            },
+            association_scores=scores,
+        )
+
+        self.assertAlmostEqual(float(out[0, 0]), 1.0)
+        self.assertAlmostEqual(float(out[0, 1]), 1.05, places=6)
+        self.assertAlmostEqual(float(out[1, 0]), 1.0)
+        self.assertAlmostEqual(float(out[1, 1]), 1.0)
+
+    def test_match_trajs_applies_pairwise_head_scores_before_assignment(self):
+        seen = {}
+        original_cost = matching.cost_calculate_general
+        original_hungarian = matching.Hungarian
+
+        def fake_cost_calculate_general(trajs, dets, cfg, transform_matrix, is_rv=False):
+            return (
+                np.array([[1.0, 1.0]], dtype=np.float32),
+                np.array(["trailer"]),
+                np.array(["trailer", "trailer"]),
+            )
+
+        def fake_hungarian(trans_cost_matrix, thresholds):
+            seen["trans_cost_matrix"] = np.array(trans_cost_matrix, copy=True)
+            return [0], [0], np.array([1]), np.array([], dtype=int), np.array([0.0])
+
+        matching.cost_calculate_general = fake_cost_calculate_general
+        matching.Hungarian = fake_hungarian
+        try:
+            matched, _ = matching.match_trajs_and_dets(
+                [_Traj("trailer", unmatch_length=1)],
+                [_Box("trailer"), _Box("trailer")],
+                {
+                    "CATEGORY_LIST": ["trailer"],
+                    "CATEGORY_MAP_TO_NUMBER": {"trailer": 0},
+                    "MATCHING": {
+                        "BEV": {"MATCHING_MODE": "Hungarian"},
+                        "RV": {"MATCHING_MODE": "Hungarian"},
+                    },
+                    "THRESHOLD": {
+                        "BEV": {"COST_THRE": {0: 2.0}},
+                        "RV": {"COST_THRE": {0: 2.0}},
+                    },
+                    "MAMBA_ASSOCIATION_HEAD": {
+                        "ENABLED": True,
+                        "MIN_SCORE": 0.6,
+                        "ALPHA": 0.2,
+                        "MAX_DELTA": 0.05,
+                        "ACTIVE_CLASS_STATES": {0: ["unmatched"]},
+                    },
+                },
+                association_scores=np.array([[0.9, 0.1]], dtype=np.float32),
             )
         finally:
             matching.cost_calculate_general = original_cost

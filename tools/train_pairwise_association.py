@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -29,6 +31,9 @@ from training.association_model import (  # noqa: E402
     ClassConditionedAssociationHeadBank,
     PairwiseAssociationModel,
 )
+
+
+LOGGER = logging.getLogger("train.association")
 
 
 class MeanHistoryEncoder(nn.Module):
@@ -181,12 +186,18 @@ def _run_epoch(
     hard_negative_weight: float,
     ranking_margin: float,
     ranking_weight: float,
+    epoch: int = 0,
+    epochs: int = 1,
+    log_every: int = 0,
+    logger_obj=None,
 ) -> Dict[str, Any]:
     model.train(train)
     records: List[Dict[str, Any]] = []
     total_loss = 0.0
     total_count = 0
-    for batch in loader:
+    phase = "train" if train else "val"
+    t0 = time.time()
+    for batch_idx, batch in enumerate(loader):
         anchor_history = batch["anchor_history"].to(device)
         candidate_history = batch["candidate_history"].to(device)
         pair_features = batch["pair_features"].to(device)
@@ -224,16 +235,55 @@ def _run_epoch(
         total_loss += float(loss.detach().item()) * count
         total_count += count
         records.extend(_records_from_logits(batch, logits))
+        if logger_obj is not None and train and log_every > 0 and (batch_idx + 1) % int(log_every) == 0:
+            lr = float(optimizer.param_groups[0]["lr"]) if optimizer.param_groups else 0.0
+            logger_obj.info(
+                "  [assoc %d/%d] batch %d/%d loss=%.4f bce=%.4f rank=%.4f lr=%.2e",
+                epoch + 1,
+                epochs,
+                batch_idx + 1,
+                len(loader),
+                float(total_loss / max(total_count, 1)),
+                float(bce_loss.detach().item()),
+                float(ranking_loss.detach().item()),
+                lr,
+            )
     metrics = compute_association_metrics(records)
     metrics["loss"] = float(total_loss / max(total_count, 1))
+    metrics["epoch_time"] = float(time.time() - t0)
     metrics["ranking"] = {
         "margin": float(ranking_margin),
         "weight": float(ranking_weight),
     }
+    if logger_obj is not None and not train:
+        overall = metrics.get("overall", {}) or {}
+        logger_obj.info(
+            "  [assoc %s] samples=%d loss=%.4f auc=%.4f top1=%.4f top3=%.4f hard_acc=%.4f time=%.1fs",
+            phase,
+            int(total_count),
+            float(metrics.get("loss", 0.0)),
+            float(overall.get("auc", 0.0) or 0.0),
+            float(overall.get("top1", 0.0) or 0.0),
+            float(overall.get("top3", 0.0) or 0.0),
+            float(overall.get("hard_negative_accuracy", 0.0) or 0.0),
+            float(metrics.get("epoch_time", 0.0)),
+        )
     return metrics
 
 
-def train_pairwise_association(args, cfg: Dict[str, Any] | None = None) -> Dict[str, Any]:
+def _get_logger(logger_obj=None):
+    if logger_obj is not None:
+        return logger_obj
+    if not LOGGER.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
+        LOGGER.addHandler(handler)
+    LOGGER.setLevel(logging.INFO)
+    return LOGGER
+
+
+def train_pairwise_association(args, cfg: Dict[str, Any] | None = None, logger_obj=None) -> Dict[str, Any]:
+    log = _get_logger(logger_obj)
     cfg = _load_yaml(args.train_config) if cfg is None else cfg
     assoc_cfg = cfg.get("ASSOCIATION_HEAD_TRAINING", {}) or {}
     args.train_pkl = args.train_pkl or assoc_cfg.get("TRAIN_PAIRWISE_PKL")
@@ -265,6 +315,7 @@ def train_pairwise_association(args, cfg: Dict[str, Any] | None = None) -> Dict[
     args.ranking_weight = float(
         args.ranking_weight if args.ranking_weight is not None else assoc_cfg.get("RANKING_WEIGHT", 0.0)
     )
+    args.log_every = int(getattr(args, "log_every", None) or assoc_cfg.get("LOG_EVERY", 50))
     hidden_cfg = args.hidden_dims if args.hidden_dims is not None else assoc_cfg.get("HIDDEN_DIMS", [256, 128])
     if isinstance(hidden_cfg, (list, tuple)):
         hidden_dims = tuple(int(v) for v in hidden_cfg)
@@ -284,6 +335,14 @@ def train_pairwise_association(args, cfg: Dict[str, Any] | None = None) -> Dict[
 
     train_ds = PairwiseAssociationDataset(args.train_pkl, history_len=int(args.history_len))
     val_ds = PairwiseAssociationDataset(args.val_pkl, history_len=int(args.history_len))
+    log.info(
+        "Association Stage B data: train=%d val=%d batch_size=%d num_workers=%d history_len=%d",
+        len(train_ds),
+        len(val_ds),
+        int(args.batch_size),
+        int(args.num_workers),
+        int(args.history_len),
+    )
     train_loader = DataLoader(
         train_ds,
         batch_size=int(args.batch_size),
@@ -312,6 +371,15 @@ def train_pairwise_association(args, cfg: Dict[str, Any] | None = None) -> Dict[
     backbone_load = _load_backbone_checkpoint(model, args.backbone_checkpoint)
     if args.freeze_backbone:
         _set_backbone_trainable(model, trainable=False)
+    trainable_params = sum(param.numel() for param in model.parameters() if param.requires_grad)
+    total_params = sum(param.numel() for param in model.parameters())
+    log.info(
+        "Association Stage B model: trainable=%d total=%d freeze_backbone=%s backbone_loaded_keys=%d",
+        trainable_params,
+        total_params,
+        bool(args.freeze_backbone),
+        int(backbone_load.get("loaded_keys", 0)),
+    )
     optimizer = torch.optim.AdamW(
         [param for param in model.parameters() if param.requires_grad],
         lr=float(args.lr),
@@ -322,6 +390,7 @@ def train_pairwise_association(args, cfg: Dict[str, Any] | None = None) -> Dict[
     best_val = float("inf")
     best_payload = None
     for epoch in range(int(args.epochs)):
+        t_epoch = time.time()
         train_metrics = _run_epoch(
             model,
             train_loader,
@@ -331,6 +400,10 @@ def train_pairwise_association(args, cfg: Dict[str, Any] | None = None) -> Dict[
             hard_negative_weight=float(args.hard_negative_weight),
             ranking_margin=float(args.ranking_margin),
             ranking_weight=float(args.ranking_weight),
+            epoch=epoch,
+            epochs=int(args.epochs),
+            log_every=int(args.log_every),
+            logger_obj=log,
         )
         with torch.no_grad():
             val_metrics = _run_epoch(
@@ -342,6 +415,10 @@ def train_pairwise_association(args, cfg: Dict[str, Any] | None = None) -> Dict[
                 hard_negative_weight=float(args.hard_negative_weight),
                 ranking_margin=float(args.ranking_margin),
                 ranking_weight=float(args.ranking_weight),
+                epoch=epoch,
+                epochs=int(args.epochs),
+                log_every=0,
+                logger_obj=log,
             )
         payload = {
             "epoch": epoch,
@@ -349,7 +426,23 @@ def train_pairwise_association(args, cfg: Dict[str, Any] | None = None) -> Dict[
             "val": val_metrics,
             "backbone_load": backbone_load,
         }
-        print(json.dumps(payload, ensure_ascii=False))
+        overall_train = train_metrics.get("overall", {}) or {}
+        overall_val = val_metrics.get("overall", {}) or {}
+        log.info(
+            "Assoc Epoch %d/%d (%.1fs) | loss=%.4f auc=%.4f top1=%.4f hard_acc=%.4f | "
+            "val=%.4f val_auc=%.4f val_top1=%.4f val_hard_acc=%.4f",
+            epoch + 1,
+            int(args.epochs),
+            float(time.time() - t_epoch),
+            float(train_metrics.get("loss", 0.0)),
+            float(overall_train.get("auc", 0.0) or 0.0),
+            float(overall_train.get("top1", 0.0) or 0.0),
+            float(overall_train.get("hard_negative_accuracy", 0.0) or 0.0),
+            float(val_metrics.get("loss", 0.0)),
+            float(overall_val.get("auc", 0.0) or 0.0),
+            float(overall_val.get("top1", 0.0) or 0.0),
+            float(overall_val.get("hard_negative_accuracy", 0.0) or 0.0),
+        )
         if writer is not None:
             writer.add_scalar("train/loss", train_metrics.get("loss", 0.0), epoch)
             writer.add_scalar("val/loss", val_metrics.get("loss", 0.0), epoch)
@@ -378,12 +471,14 @@ def train_pairwise_association(args, cfg: Dict[str, Any] | None = None) -> Dict[
                 },
                 "backbone_load": backbone_load,
             }, output_path)
+            log.info("  New best association head -> %s (val_loss=%.4f)", output_path, best_val)
 
     metrics_path = Path(args.metrics_output)
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_path.write_text(json.dumps(best_payload or {}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     if writer is not None:
         writer.close()
+    log.info("Association Stage B complete. Best val_loss=%.4f output=%s", best_val, args.output)
     return {
         "best_val": best_val,
         "best_payload": best_payload,
@@ -403,6 +498,7 @@ def main() -> int:
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--log-every", type=int, default=None)
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--weight-decay", type=float, default=None)
     parser.add_argument("--embed-dim", type=int, default=64)
