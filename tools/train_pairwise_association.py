@@ -195,6 +195,15 @@ def _run_epoch(
     records: List[Dict[str, Any]] = []
     total_loss = 0.0
     total_count = 0
+    grad_norm_total = 0.0
+    grad_norm_max = 0.0
+    grad_norm_count = 0
+    logit_min_seen = float("inf")
+    logit_max_seen = float("-inf")
+    pos_score_sum = 0.0
+    pos_score_count = 0
+    neg_score_sum = 0.0
+    neg_score_count = 0
     phase = "train" if train else "val"
     t0 = time.time()
     for batch_idx, batch in enumerate(loader):
@@ -226,10 +235,29 @@ def _run_epoch(
             margin=float(ranking_margin),
         )
         loss = bce_loss + float(ranking_weight) * ranking_loss
+        scores_detached = torch.sigmoid(logits.detach())
+        labels_detached = labels.detach() > 0.5
+        if logits.numel() > 0:
+            logit_min_seen = min(logit_min_seen, float(logits.detach().min().item()))
+            logit_max_seen = max(logit_max_seen, float(logits.detach().max().item()))
+        if bool(labels_detached.any().item()):
+            pos_scores = scores_detached[labels_detached]
+            pos_score_sum += float(pos_scores.sum().item())
+            pos_score_count += int(pos_scores.numel())
+        neg_mask = ~labels_detached
+        if bool(neg_mask.any().item()):
+            neg_scores = scores_detached[neg_mask]
+            neg_score_sum += float(neg_scores.sum().item())
+            neg_score_count += int(neg_scores.numel())
+        grad_norm_value = 0.0
         if train:
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+            grad_norm_value = float(grad_norm.detach().item() if torch.is_tensor(grad_norm) else grad_norm)
+            grad_norm_total += grad_norm_value
+            grad_norm_max = max(grad_norm_max, grad_norm_value)
+            grad_norm_count += 1
             optimizer.step()
         count = int(labels.shape[0])
         total_loss += float(loss.detach().item()) * count
@@ -238,7 +266,8 @@ def _run_epoch(
         if logger_obj is not None and train and log_every > 0 and (batch_idx + 1) % int(log_every) == 0:
             lr = float(optimizer.param_groups[0]["lr"]) if optimizer.param_groups else 0.0
             logger_obj.info(
-                "  [assoc %d/%d] batch %d/%d loss=%.4f bce=%.4f rank=%.4f lr=%.2e",
+                "  [assoc %d/%d] batch %d/%d loss=%.6g bce=%.6g rank=%.6g "
+                "grad=%.3e logit=[%.2f,%.2f] score_pos=%.4f score_neg=%.4f lr=%.2e",
                 epoch + 1,
                 epochs,
                 batch_idx + 1,
@@ -246,11 +275,22 @@ def _run_epoch(
                 float(total_loss / max(total_count, 1)),
                 float(bce_loss.detach().item()),
                 float(ranking_loss.detach().item()),
+                float(grad_norm_value),
+                float(logits.detach().min().item()) if logits.numel() > 0 else 0.0,
+                float(logits.detach().max().item()) if logits.numel() > 0 else 0.0,
+                float(scores_detached[labels_detached].mean().item()) if bool(labels_detached.any().item()) else 0.0,
+                float(scores_detached[neg_mask].mean().item()) if bool(neg_mask.any().item()) else 0.0,
                 lr,
             )
     metrics = compute_association_metrics(records)
     metrics["loss"] = float(total_loss / max(total_count, 1))
     metrics["epoch_time"] = float(time.time() - t0)
+    metrics["grad_norm_mean"] = float(grad_norm_total / max(grad_norm_count, 1))
+    metrics["grad_norm_max"] = float(grad_norm_max)
+    metrics["logit_min"] = float(logit_min_seen if logit_min_seen != float("inf") else 0.0)
+    metrics["logit_max"] = float(logit_max_seen if logit_max_seen != float("-inf") else 0.0)
+    metrics["score_pos_mean"] = float(pos_score_sum / max(pos_score_count, 1))
+    metrics["score_neg_mean"] = float(neg_score_sum / max(neg_score_count, 1))
     metrics["ranking"] = {
         "margin": float(ranking_margin),
         "weight": float(ranking_weight),
@@ -336,12 +376,23 @@ def train_pairwise_association(args, cfg: Dict[str, Any] | None = None, logger_o
     train_ds = PairwiseAssociationDataset(args.train_pkl, history_len=int(args.history_len))
     val_ds = PairwiseAssociationDataset(args.val_pkl, history_len=int(args.history_len))
     log.info(
-        "Association Stage B data: train=%d val=%d batch_size=%d num_workers=%d history_len=%d",
+        "Association Stage B data: train=%d val=%d epochs=%d batch_size=%d num_workers=%d history_len=%d",
         len(train_ds),
         len(val_ds),
+        int(args.epochs),
         int(args.batch_size),
         int(args.num_workers),
         int(args.history_len),
+    )
+    log.info(
+        "Association Stage B optim: lr=%.2e weight_decay=%.2e hard_negative_weight=%.2f "
+        "ranking_margin=%.2f ranking_weight=%.2f log_every=%d",
+        float(args.lr),
+        float(args.weight_decay),
+        float(args.hard_negative_weight),
+        float(args.ranking_margin),
+        float(args.ranking_weight),
+        int(args.log_every),
     )
     train_loader = DataLoader(
         train_ds,
@@ -430,7 +481,8 @@ def train_pairwise_association(args, cfg: Dict[str, Any] | None = None, logger_o
         overall_val = val_metrics.get("overall", {}) or {}
         log.info(
             "Assoc Epoch %d/%d (%.1fs) | loss=%.4f auc=%.4f top1=%.4f hard_acc=%.4f | "
-            "val=%.4f val_auc=%.4f val_top1=%.4f val_hard_acc=%.4f",
+            "val=%.4f val_auc=%.4f val_top1=%.4f val_hard_acc=%.4f | "
+            "grad=%.3e/%.3e score=%.4f/%.4f logits=[%.2f,%.2f]",
             epoch + 1,
             int(args.epochs),
             float(time.time() - t_epoch),
@@ -442,6 +494,12 @@ def train_pairwise_association(args, cfg: Dict[str, Any] | None = None, logger_o
             float(overall_val.get("auc", 0.0) or 0.0),
             float(overall_val.get("top1", 0.0) or 0.0),
             float(overall_val.get("hard_negative_accuracy", 0.0) or 0.0),
+            float(train_metrics.get("grad_norm_mean", 0.0)),
+            float(train_metrics.get("grad_norm_max", 0.0)),
+            float(train_metrics.get("score_pos_mean", 0.0)),
+            float(train_metrics.get("score_neg_mean", 0.0)),
+            float(train_metrics.get("logit_min", 0.0)),
+            float(train_metrics.get("logit_max", 0.0)),
         )
         if writer is not None:
             writer.add_scalar("train/loss", train_metrics.get("loss", 0.0), epoch)
@@ -450,6 +508,16 @@ def train_pairwise_association(args, cfg: Dict[str, Any] | None = None, logger_o
             writer.add_scalar("val/top1", val_metrics.get("overall", {}).get("top1", 0.0), epoch)
             writer.add_scalar("train/auc", train_metrics.get("overall", {}).get("auc", 0.0), epoch)
             writer.add_scalar("val/auc", val_metrics.get("overall", {}).get("auc", 0.0), epoch)
+            writer.add_scalar("train/grad_norm_mean", train_metrics.get("grad_norm_mean", 0.0), epoch)
+            writer.add_scalar("train/grad_norm_max", train_metrics.get("grad_norm_max", 0.0), epoch)
+            writer.add_scalar("train/score_pos_mean", train_metrics.get("score_pos_mean", 0.0), epoch)
+            writer.add_scalar("train/score_neg_mean", train_metrics.get("score_neg_mean", 0.0), epoch)
+            writer.add_scalar("train/logit_min", train_metrics.get("logit_min", 0.0), epoch)
+            writer.add_scalar("train/logit_max", train_metrics.get("logit_max", 0.0), epoch)
+            writer.add_scalar("val/score_pos_mean", val_metrics.get("score_pos_mean", 0.0), epoch)
+            writer.add_scalar("val/score_neg_mean", val_metrics.get("score_neg_mean", 0.0), epoch)
+            writer.add_scalar("val/logit_min", val_metrics.get("logit_min", 0.0), epoch)
+            writer.add_scalar("val/logit_max", val_metrics.get("logit_max", 0.0), epoch)
             writer.flush()
         if val_metrics["loss"] < best_val:
             best_val = val_metrics["loss"]

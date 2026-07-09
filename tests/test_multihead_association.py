@@ -72,6 +72,27 @@ class MultiHeadAssociationTest(unittest.TestCase):
 
         self.assertTrue(torch.allclose(logits, torch.tensor([2.0, -3.0, 2.0])))
 
+    def test_dropout_must_match_training_state_dict_keys(self):
+        trained_bank = ClassConditionedAssociationHeadBank(
+            input_dim=4,
+            num_classes=2,
+            hidden_dims=(8, 4),
+            dropout=0.1,
+        )
+        eval_bank = ClassConditionedAssociationHeadBank(
+            input_dim=4,
+            num_classes=2,
+            hidden_dims=(8, 4),
+            dropout=0.1,
+        )
+
+        missing, unexpected = eval_bank.load_state_dict(trained_bank.state_dict(), strict=False)
+
+        self.assertEqual(missing, [])
+        self.assertEqual(unexpected, [])
+        self.assertIsInstance(eval_bank.heads[0][3], torch.nn.Dropout)
+        self.assertIsInstance(eval_bank.heads[0][4], torch.nn.Linear)
+
     def test_metrics_compute_per_class_auc_and_topk(self):
         records = [
             {"class_id": 2, "anchor_key": "a", "label": 1, "score": 0.9, "negative_type": "positive"},

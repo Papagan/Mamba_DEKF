@@ -751,13 +751,16 @@ class Base3DTracker:
             hidden_dims = self._parse_hidden_dims(
                 head_cfg.get("HIDDEN_DIMS", settings.get("hidden_dims", [256, 128]))
             )
+            dropout = float(head_cfg.get("DROPOUT", settings.get("dropout", 0.1)))
             num_classes = int(head_cfg.get("NUM_CLASSES", self.cfg.get("MAMBA", {}).get("NUM_CLASSES", 7)))
             input_dim = self.embed_dim * 4 + 7
             head = ClassConditionedAssociationHeadBank(
                 input_dim=input_dim,
                 num_classes=num_classes,
                 hidden_dims=hidden_dims,
-                dropout=0.0,
+                # Keep the Sequential module indices identical to training.
+                # Dropout is disabled by eval(), but removing it changes state_dict keys.
+                dropout=dropout,
             ).to(self.device)
             missing, unexpected = head.load_state_dict(head_state, strict=False)
             if missing:
@@ -767,7 +770,7 @@ class Base3DTracker:
             head.eval()
             print(
                 "[Base3DTracker] Loaded pairwise association head from "
-                f"{ckpt_path} (hidden_dims={hidden_dims})"
+                f"{ckpt_path} (hidden_dims={hidden_dims}, dropout={dropout})"
             )
             return head
         except Exception as exc:
