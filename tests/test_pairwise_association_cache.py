@@ -88,6 +88,60 @@ class PairwiseAssociationCacheTest(unittest.TestCase):
         self.assertTrue(all(sample["label"] == 1 for sample in samples))
         self.assertEqual(summary["overall"]["negative_pairs"], 0)
 
+    def test_uses_class_specific_hard_negative_distance(self):
+        tracklets = [
+            {
+                "instance_token": "bus-a",
+                "category": "bus",
+                "frames": [_frame("s0", 0, 0.0, 0.0), _frame("s1", 1, 0.0, 0.0)],
+            },
+            {
+                "instance_token": "bus-b",
+                "category": "bus",
+                "frames": [_frame("s0", 0, 20.0, 0.0), _frame("s1", 1, 8.0, 0.0)],
+            },
+        ]
+
+        samples, summary = build_pairwise_association_samples(
+            tracklets,
+            history_len=2,
+            future_step=1,
+            hard_negative_distance=4.0,
+            hard_negative_distance_by_class={"bus": 10.0},
+            max_hard_negatives=2,
+            max_easy_negatives=0,
+        )
+
+        bus_negatives = [
+            sample for sample in samples
+            if sample["category"] == "bus" and sample["label"] == 0
+        ]
+        self.assertEqual([sample["negative_type"] for sample in bus_negatives], ["hard", "hard"])
+        self.assertEqual(summary["per_class"]["bus"]["hard_negative_pairs"], 2)
+
+    def test_limits_pairs_per_class_when_requested(self):
+        tracklets = [
+            {
+                "instance_token": f"car-{idx}",
+                "category": "car",
+                "frames": [_frame("s0", 0, float(idx), 0.0), _frame("s1", 1, float(idx), 0.0)],
+            }
+            for idx in range(4)
+        ]
+
+        samples, summary = build_pairwise_association_samples(
+            tracklets,
+            history_len=2,
+            future_step=1,
+            hard_negative_distance=10.0,
+            max_hard_negatives=1,
+            max_easy_negatives=0,
+            max_pairs_per_class={"car": 5},
+        )
+
+        self.assertEqual(len(samples), 5)
+        self.assertEqual(summary["per_class"]["car"]["pairs"], 5)
+
     def test_summary_reports_per_class_pair_counts(self):
         samples = [
             {"category": "bicycle", "label": 1, "negative_type": "positive"},

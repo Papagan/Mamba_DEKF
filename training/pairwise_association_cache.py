@@ -159,8 +159,10 @@ def build_pairwise_association_samples(
     history_len: int = 8,
     future_step: int = 1,
     hard_negative_distance: float = 4.0,
+    hard_negative_distance_by_class: Dict[str, float] | None = None,
     max_hard_negatives: int = 4,
     max_easy_negatives: int = 2,
+    max_pairs_per_class: Dict[str, int] | None = None,
     require_current_match: bool = True,
     require_future_match: bool = True,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -172,6 +174,25 @@ def build_pairwise_association_samples(
     """
     frame_index = _index_matched_frames(tracklets)
     samples: List[Dict[str, Any]] = []
+    hard_distance_by_class = {
+        str(key): float(value)
+        for key, value in (hard_negative_distance_by_class or {}).items()
+    }
+    pair_caps = {
+        str(key): int(value)
+        for key, value in (max_pairs_per_class or {}).items()
+        if int(value) > 0
+    }
+    pair_counts_by_class: Dict[str, int] = defaultdict(int)
+
+    def _append_sample(sample: Dict[str, Any]) -> bool:
+        category_name = str(sample.get("category", ""))
+        cap = pair_caps.get(category_name)
+        if cap is not None and pair_counts_by_class[category_name] >= cap:
+            return False
+        samples.append(sample)
+        pair_counts_by_class[category_name] += 1
+        return True
 
     for trk in tracklets:
         category = _tracking_category(trk.get("category", ""))
@@ -199,7 +220,7 @@ def build_pairwise_association_samples(
             if not positive_candidates:
                 continue
 
-            samples.append(_make_pair(
+            appended_positive = _append_sample(_make_pair(
                 anchor_tracklet=trk,
                 current_frame=current_frame,
                 future_frame=future_frame,
@@ -209,16 +230,19 @@ def build_pairwise_association_samples(
                 label=1,
                 negative_type="positive",
             ))
+            if not appended_positive:
+                continue
 
             negatives = [
                 candidate for candidate in candidates
                 if candidate.get("instance_token") != trk.get("instance_token")
             ]
             negatives.sort(key=lambda candidate: _center_distance_xy(future_frame, candidate["frame"]))
+            hard_distance = float(hard_distance_by_class.get(category, hard_negative_distance))
 
             hard = [
                 candidate for candidate in negatives
-                if _center_distance_xy(future_frame, candidate["frame"]) <= float(hard_negative_distance)
+                if _center_distance_xy(future_frame, candidate["frame"]) <= hard_distance
             ][: max(0, int(max_hard_negatives))]
             hard_ids = {candidate.get("instance_token") for candidate in hard}
             easy = [
@@ -227,7 +251,7 @@ def build_pairwise_association_samples(
             ][: max(0, int(max_easy_negatives))]
 
             for candidate in hard:
-                samples.append(_make_pair(
+                _append_sample(_make_pair(
                     anchor_tracklet=trk,
                     current_frame=current_frame,
                     future_frame=future_frame,
@@ -238,7 +262,7 @@ def build_pairwise_association_samples(
                     negative_type="hard",
                 ))
             for candidate in easy:
-                samples.append(_make_pair(
+                _append_sample(_make_pair(
                     anchor_tracklet=trk,
                     current_frame=current_frame,
                     future_frame=future_frame,

@@ -23,6 +23,17 @@ if str(PROJECT_ROOT) not in sys.path:
 from training.pairwise_association_cache import build_pairwise_association_samples
 
 
+DEFAULT_HARD_NEGATIVE_DISTANCE_BY_CLASS = {
+    "car": 6.0,
+    "pedestrian": 4.0,
+    "bicycle": 5.0,
+    "motorcycle": 5.0,
+    "bus": 12.0,
+    "trailer": 10.0,
+    "truck": 12.0,
+}
+
+
 def _load_yaml(path: str | None) -> Dict[str, Any]:
     if not path:
         return {}
@@ -34,6 +45,22 @@ def _resolve_default_history_len(train_cfg: Dict[str, Any], fallback: int) -> in
     return int((train_cfg.get("MODEL", {}) or {}).get("HISTORY_LEN", fallback))
 
 
+def _parse_class_float_map(raw: str | None) -> Dict[str, float]:
+    if raw is None or str(raw).strip() == "":
+        return {}
+    text = str(raw).strip()
+    if text.startswith("{"):
+        data = json.loads(text)
+        return {str(key): float(value) for key, value in data.items()}
+    out: Dict[str, float] = {}
+    for item in text.split(","):
+        if not item.strip():
+            continue
+        key, value = item.split("=", 1)
+        out[str(key).strip()] = float(value)
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build pairwise association cache.")
     parser.add_argument("--input", required=True, help="Detection/fusion tracklet pkl")
@@ -43,8 +70,22 @@ def main() -> int:
     parser.add_argument("--history-len", type=int, default=0)
     parser.add_argument("--future-step", type=int, default=1)
     parser.add_argument("--hard-negative-distance", type=float, default=4.0)
+    parser.add_argument(
+        "--hard-negative-distance-by-class",
+        default=None,
+        help=(
+            "Per-class hard-negative radius, e.g. "
+            "'car=6,pedestrian=4,bicycle=5,motorcycle=5,bus=12,trailer=10,truck=12'. "
+            "Defaults to class-aware radii tuned from pairwise audit."
+        ),
+    )
     parser.add_argument("--max-hard-negatives", type=int, default=4)
     parser.add_argument("--max-easy-negatives", type=int, default=2)
+    parser.add_argument(
+        "--max-pairs-per-class",
+        default=None,
+        help="Optional class caps, e.g. 'car=60000,pedestrian=50000'. Defaults to no cap.",
+    )
     parser.add_argument("--allow-current-miss", action="store_true")
     parser.add_argument("--allow-future-miss", action="store_true")
     args = parser.parse_args()
@@ -57,13 +98,22 @@ def main() -> int:
     if not isinstance(tracklets, list):
         raise TypeError(f"Expected list tracklets in {args.input}, got {type(tracklets).__name__}")
 
+    class_hard_dist = dict(DEFAULT_HARD_NEGATIVE_DISTANCE_BY_CLASS)
+    class_hard_dist.update(_parse_class_float_map(args.hard_negative_distance_by_class))
+    max_pairs_per_class = {
+        key: int(value)
+        for key, value in _parse_class_float_map(args.max_pairs_per_class).items()
+    }
+
     samples, summary = build_pairwise_association_samples(
         tracklets,
         history_len=history_len,
         future_step=int(args.future_step),
         hard_negative_distance=float(args.hard_negative_distance),
+        hard_negative_distance_by_class=class_hard_dist,
         max_hard_negatives=int(args.max_hard_negatives),
         max_easy_negatives=int(args.max_easy_negatives),
+        max_pairs_per_class=max_pairs_per_class,
         require_current_match=not bool(args.allow_current_miss),
         require_future_match=not bool(args.allow_future_miss),
     )
@@ -80,8 +130,10 @@ def main() -> int:
             "history_len": history_len,
             "future_step": int(args.future_step),
             "hard_negative_distance": float(args.hard_negative_distance),
+            "hard_negative_distance_by_class": class_hard_dist,
             "max_hard_negatives": int(args.max_hard_negatives),
             "max_easy_negatives": int(args.max_easy_negatives),
+            "max_pairs_per_class": max_pairs_per_class,
             "require_current_match": not bool(args.allow_current_miss),
             "require_future_match": not bool(args.allow_future_miss),
         },
