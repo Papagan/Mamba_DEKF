@@ -12,9 +12,9 @@ from training.pairwise_association_cache import (
 )
 
 
-def _frame(sample_token, frame_id, x, y, *, matched=True, score=0.8, fusion_valid=False):
-    obs = [x, y, 0.0, 0.0, 0.0, 0.0, 4.0, 2.0, 1.5, 0.0, 0.0, score if matched else 0.0]
-    fusion = [x + 10.0, y + 10.0, 0.0, 0.0, 0.0, 0.0, 4.0, 2.0, 1.5, 0.0, 0.0, score if matched else 0.0]
+def _frame(sample_token, frame_id, x, y, *, matched=True, score=0.8, fusion_valid=False, vx=0.0, vy=0.0):
+    obs = [x, y, 0.0, vx, vy, 0.0, 4.0, 2.0, 1.5, 0.0, 0.0, score if matched else 0.0]
+    fusion = [x + 10.0, y + 10.0, 0.0, vx, vy, 0.0, 4.0, 2.0, 1.5, 0.0, 0.0, score if matched else 0.0]
     return {
         "sample_token": sample_token,
         "timestamp": float(frame_id),
@@ -29,7 +29,7 @@ def _frame(sample_token, frame_id, x, y, *, matched=True, score=0.8, fusion_vali
         "det_global_xyz": [x, y, 0.0] if matched else None,
         "det_lwh": [4.0, 2.0, 1.5] if matched else None,
         "det_yaw": 0.0 if matched else None,
-        "det_velocity": [0.0, 0.0] if matched else None,
+        "det_velocity": [vx, vy] if matched else None,
     }
 
 
@@ -164,6 +164,107 @@ class PairwiseAssociationCacheTest(unittest.TestCase):
         self.assertEqual(anchor["anchor_history_12"][0], [0.0] * 12)
         self.assertEqual(anchor["anchor_history_12"][1][0], 12.0)
         self.assertEqual(anchor["history_source"], "fusion")
+
+    def test_track_candidate_pair_geometry_uses_current_anchor_state(self):
+        tracklets = [
+            {
+                "instance_token": "car-a",
+                "category": "car",
+                "frames": [_frame("s0", 0, 0.0, 0.0), _frame("s1", 1, 10.0, 0.0)],
+            },
+            {
+                "instance_token": "car-b",
+                "category": "car",
+                "frames": [_frame("s0", 0, 20.0, 0.0), _frame("s1", 1, 13.0, 0.0)],
+            },
+        ]
+
+        samples, _ = build_pairwise_association_samples(
+            tracklets,
+            history_len=2,
+            future_step=1,
+            pair_geometry_source="track_candidate",
+            hard_negative_distance=20.0,
+            max_hard_negatives=1,
+            max_easy_negatives=0,
+        )
+
+        positive = next(
+            sample for sample in samples
+            if sample["anchor_instance_token"] == "car-a" and sample["label"] == 1
+        )
+        negative = next(
+            sample for sample in samples
+            if sample["anchor_instance_token"] == "car-a" and sample["label"] == 0
+        )
+        self.assertAlmostEqual(positive["center_distance"], 10.0)
+        self.assertAlmostEqual(negative["center_distance"], 13.0)
+        self.assertEqual(positive["pair_geometry_source"], "track_candidate")
+
+    def test_predicted_track_candidate_geometry_uses_velocity_extrapolation(self):
+        tracklets = [
+            {
+                "instance_token": "car-a",
+                "category": "car",
+                "frames": [
+                    _frame("s0", 0, 0.0, 0.0, vx=10.0),
+                    _frame("s1", 1, 10.0, 0.0, vx=10.0),
+                ],
+            },
+            {
+                "instance_token": "car-b",
+                "category": "car",
+                "frames": [_frame("s0", 0, 20.0, 0.0), _frame("s1", 1, 13.0, 0.0)],
+            },
+        ]
+
+        samples, _ = build_pairwise_association_samples(
+            tracklets,
+            history_len=2,
+            future_step=1,
+            pair_geometry_source="predicted_track_candidate",
+            hard_negative_distance=20.0,
+            max_hard_negatives=1,
+            max_easy_negatives=0,
+        )
+
+        positive = next(
+            sample for sample in samples
+            if sample["anchor_instance_token"] == "car-a" and sample["label"] == 1
+        )
+        negative = next(
+            sample for sample in samples
+            if sample["anchor_instance_token"] == "car-a" and sample["label"] == 0
+        )
+        self.assertAlmostEqual(positive["center_distance"], 0.0)
+        self.assertAlmostEqual(negative["center_distance"], 3.0)
+        self.assertEqual(positive["pair_geometry_source"], "predicted_track_candidate")
+
+    def test_candidate_history_uses_inference_detection_token(self):
+        tracklets = [
+            {
+                "instance_token": "car-a",
+                "category": "car",
+                "frames": [_frame("s0", 0, 0.0, 0.0), _frame("s1", 1, 10.0, 5.0)],
+            }
+        ]
+
+        samples, _ = build_pairwise_association_samples(
+            tracklets,
+            history_len=3,
+            future_step=1,
+            max_hard_negatives=0,
+            max_easy_negatives=0,
+        )
+
+        positive = samples[0]
+        self.assertEqual(len(positive["candidate_history_12"]), 3)
+        self.assertEqual(positive["candidate_history_12"][0], [0.0] * 12)
+        self.assertEqual(positive["candidate_history_12"][1], [0.0] * 12)
+        self.assertEqual(positive["candidate_history_12"][2][0:2], [0.0, 0.0])
+        self.assertEqual(positive["candidate_history_12"][2][2], 0.0)
+        self.assertEqual(positive["candidate_history_12"][2][11], 0.8)
+        self.assertEqual(positive["candidate_obs_feature_12"][0:2], [10.0, 5.0])
 
     def test_limits_pairs_per_class_when_requested(self):
         tracklets = [

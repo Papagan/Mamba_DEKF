@@ -112,7 +112,7 @@ MAMBA_ASSOCIATION_PRIOR:
     6: {matched: 0.03, unmatched: 0.05}
 
 MAMBA_ASSOCIATION_HEAD:
-  ENABLED: true
+  ENABLED: false
   CHECKPOINT_PATH: "checkpoints/mamba_dekf/best_assoc.pt"
   HIDDEN_DIMS: [256, 128]
   NUM_CLASSES: 7
@@ -129,8 +129,8 @@ MAMBA_ASSOCIATION_HEAD:
     6: ["matched", "unmatched"]
 
 ASSOCIATION_HEAD_AUDIT:
-  ENABLED: true
-  INFER_OUTPUT_PATH: "docs/association_head_audit.json"
+  ENABLED: false
+  INFER_OUTPUT_PATH: "debug/association_head_audit.json"
   STRICT: false
 
 RESIDUAL_HISTORY:

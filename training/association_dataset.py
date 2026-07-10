@@ -22,6 +22,8 @@ def _float_array(values: Any, shape, fill: float = 0.0) -> np.ndarray:
 
 
 def _candidate_history(sample: Dict[str, Any], history_len: int) -> np.ndarray:
+    if sample.get("candidate_history_12") is not None:
+        return _float_array(sample.get("candidate_history_12"), (history_len, 12))
     history = np.zeros((history_len, 12), dtype=np.float32)
     history[-1] = _float_array(sample.get("candidate_obs_feature_12"), (12,))
     return history

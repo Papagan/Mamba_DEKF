@@ -69,6 +69,32 @@ def _det_score(frame: Dict[str, Any]) -> float:
     return float(obs[11]) if len(obs) > 11 else 0.0
 
 
+def _det_velocity_xy(frame: Dict[str, Any]) -> List[float]:
+    if frame.get("det_velocity") is not None:
+        return _as_float_list(frame.get("det_velocity"), 2)
+    obs = frame.get("obs_feature_12") or []
+    return _as_float_list(obs[3:5], 2)
+
+
+def _predict_anchor_frame(current_frame: Dict[str, Any], future_frame: Dict[str, Any]) -> Dict[str, Any]:
+    predicted = dict(current_frame)
+    xyz = _det_xyz(current_frame)
+    if xyz is None:
+        return predicted
+    velocity = _det_velocity_xy(current_frame)
+    dt = float(future_frame.get("timestamp", 0.0)) - float(current_frame.get("timestamp", 0.0))
+    if dt <= 0.0:
+        dt = 0.0
+    predicted_xyz = [float(xyz[0] + velocity[0] * dt), float(xyz[1] + velocity[1] * dt), float(xyz[2])]
+    predicted["det_global_xyz"] = predicted_xyz
+    obs = _as_float_list(current_frame.get("obs_feature_12"), 12)
+    obs[0] = predicted_xyz[0]
+    obs[1] = predicted_xyz[1]
+    obs[2] = predicted_xyz[2]
+    predicted["obs_feature_12"] = obs
+    return predicted
+
+
 def _center_distance_xy(a: Dict[str, Any], b: Dict[str, Any]) -> float:
     xyz_a = _det_xyz(a)
     xyz_b = _det_xyz(b)
@@ -110,6 +136,25 @@ def _history_feature(
     return pad + features
 
 
+def _inference_detection_history_feature(frame: Dict[str, Any], history_len: int) -> List[List[float]]:
+    obs = _as_float_list(frame.get("obs_feature_12"), 12)
+    token = [
+        0.0,
+        0.0,
+        float(obs[2]),
+        float(obs[3]),
+        float(obs[4]),
+        0.0,
+        float(obs[6]),
+        float(obs[7]),
+        float(obs[8]),
+        float(obs[9]),
+        0.0,
+        float(obs[11]),
+    ]
+    return [[0.0] * 12 for _ in range(max(0, history_len - 1))] + [token]
+
+
 def _index_matched_frames(tracklets: Iterable[Dict[str, Any]]) -> Dict[Tuple[str, str, str], List[Dict[str, Any]]]:
     index: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = defaultdict(list)
     for trk in tracklets:
@@ -142,12 +187,19 @@ def _make_pair(
     history_len: int,
     current_index: int,
     history_source: str,
+    pair_geometry_source: str,
     label: int,
     negative_type: str,
 ) -> Dict[str, Any]:
     candidate_frame = candidate["frame"]
     category = _tracking_category(anchor_tracklet.get("category", ""))
-    anchor_lwh = _det_lwh(future_frame)
+    if pair_geometry_source == "predicted_track_candidate":
+        geometry_anchor = _predict_anchor_frame(current_frame, future_frame)
+    elif pair_geometry_source == "track_candidate":
+        geometry_anchor = current_frame
+    else:
+        geometry_anchor = future_frame
+    anchor_lwh = _det_lwh(geometry_anchor)
     candidate_lwh = _det_lwh(candidate_frame)
     return {
         "category": category,
@@ -161,6 +213,7 @@ def _make_pair(
         "label": int(label),
         "negative_type": negative_type,
         "history_source": str(history_source).strip().lower(),
+        "pair_geometry_source": str(pair_geometry_source).strip().lower(),
         "anchor_history_12": _history_feature(
             anchor_tracklet.get("frames", []),
             current_index,
@@ -169,8 +222,9 @@ def _make_pair(
         ),
         "positive_obs_feature_12": _as_float_list(future_frame.get("obs_feature_12"), 12),
         "candidate_obs_feature_12": _as_float_list(candidate_frame.get("obs_feature_12"), 12),
-        "center_distance": _center_distance_xy(future_frame, candidate_frame),
-        "yaw_diff": abs(_wrap_to_pi(_det_yaw(future_frame) - _det_yaw(candidate_frame))),
+        "candidate_history_12": _inference_detection_history_feature(candidate_frame, history_len),
+        "center_distance": _center_distance_xy(geometry_anchor, candidate_frame),
+        "yaw_diff": abs(_wrap_to_pi(_det_yaw(geometry_anchor) - _det_yaw(candidate_frame))),
         "size_l1": float(sum(abs(a - b) for a, b in zip(anchor_lwh, candidate_lwh))),
         "anchor_det_score": _det_score(current_frame),
         "candidate_det_score": _det_score(candidate_frame),
@@ -182,6 +236,7 @@ def build_pairwise_association_samples(
     *,
     history_len: int = 8,
     history_source: str = "det",
+    pair_geometry_source: str = "predicted_track_candidate",
     future_step: int = 1,
     hard_negative_distance: float = 4.0,
     hard_negative_distance_by_class: Dict[str, float] | None = None,
@@ -200,6 +255,12 @@ def build_pairwise_association_samples(
     history_source = str(history_source).strip().lower()
     if history_source not in {"det", "fusion"}:
         raise ValueError(f"Unsupported history_source={history_source!r}; expected 'det' or 'fusion'")
+    pair_geometry_source = str(pair_geometry_source).strip().lower()
+    if pair_geometry_source not in {"predicted_track_candidate", "track_candidate", "future_candidate"}:
+        raise ValueError(
+            f"Unsupported pair_geometry_source={pair_geometry_source!r}; "
+            "expected 'predicted_track_candidate', 'track_candidate', or 'future_candidate'"
+        )
     frame_index = _index_matched_frames(tracklets)
     samples: List[Dict[str, Any]] = []
     hard_distance_by_class = {
@@ -256,6 +317,7 @@ def build_pairwise_association_samples(
                 history_len=history_len,
                 current_index=current_index,
                 history_source=history_source,
+                pair_geometry_source=pair_geometry_source,
                 label=1,
                 negative_type="positive",
             ))
@@ -288,6 +350,7 @@ def build_pairwise_association_samples(
                     history_len=history_len,
                     current_index=current_index,
                     history_source=history_source,
+                    pair_geometry_source=pair_geometry_source,
                     label=0,
                     negative_type="hard",
                 ))
@@ -300,6 +363,7 @@ def build_pairwise_association_samples(
                     history_len=history_len,
                     current_index=current_index,
                     history_source=history_source,
+                    pair_geometry_source=pair_geometry_source,
                     label=0,
                     negative_type="easy",
                 ))

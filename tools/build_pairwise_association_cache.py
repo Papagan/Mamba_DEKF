@@ -78,6 +78,16 @@ def main() -> int:
         choices=["det", "fusion"],
         help="Anchor history source. Defaults to DATA.HISTORY_SOURCE from --train-config.",
     )
+    parser.add_argument(
+        "--pair-geometry-source",
+        default="predicted_track_candidate",
+        choices=["predicted_track_candidate", "track_candidate", "future_candidate"],
+        help=(
+            "Geometry used for pair features. 'predicted_track_candidate' mirrors "
+            "the pre-association predicted track state; 'future_candidate' keeps "
+            "the old detection-detection behavior."
+        ),
+    )
     parser.add_argument("--future-step", type=int, default=1)
     parser.add_argument("--hard-negative-distance", type=float, default=4.0)
     parser.add_argument(
@@ -120,6 +130,7 @@ def main() -> int:
         tracklets,
         history_len=history_len,
         history_source=history_source,
+        pair_geometry_source=str(args.pair_geometry_source),
         future_step=int(args.future_step),
         hard_negative_distance=float(args.hard_negative_distance),
         hard_negative_distance_by_class=class_hard_dist,
@@ -141,6 +152,7 @@ def main() -> int:
         "settings": {
             "history_len": history_len,
             "history_source": history_source,
+            "pair_geometry_source": str(args.pair_geometry_source),
             "future_step": int(args.future_step),
             "hard_negative_distance": float(args.hard_negative_distance),
             "hard_negative_distance_by_class": class_hard_dist,
