@@ -133,6 +133,7 @@ ASSOCIATION_HEAD_TRAINING:
   METRICS_OUTPUT: docs/pairwise_assoc_metrics.json
   BACKBONE_CHECKPOINT: checkpoints/mamba_dekf/best.pt
   FREEZE_BACKBONE: true
+  PRECOMPUTE_EMBEDDINGS: true
   TENSORBOARD_DIR: checkpoints/mamba_dekf/assoc_tb
   EPOCHS: 20
   BATCH_SIZE: 256

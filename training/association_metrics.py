@@ -5,19 +5,29 @@ from typing import Any, Dict, Iterable, List, Sequence
 
 
 def _binary_auc(labels: List[int], scores: List[float]) -> float:
-    positives = [(score, idx) for idx, (label, score) in enumerate(zip(labels, scores)) if label == 1]
-    negatives = [(score, idx) for idx, (label, score) in enumerate(zip(labels, scores)) if label == 0]
-    if not positives or not negatives:
+    n_pos = sum(1 for label in labels if int(label) == 1)
+    n_neg = sum(1 for label in labels if int(label) == 0)
+    if n_pos == 0 or n_neg == 0:
         return 0.0
-    wins = 0.0
-    total = float(len(positives) * len(negatives))
-    for pos_score, _ in positives:
-        for neg_score, _ in negatives:
-            if pos_score > neg_score:
-                wins += 1.0
-            elif pos_score == neg_score:
-                wins += 0.5
-    return float(wins / total)
+
+    ranked = sorted(
+        ((float(score), int(label)) for label, score in zip(labels, scores)),
+        key=lambda item: item[0],
+    )
+    rank_sum_pos = 0.0
+    idx = 0
+    while idx < len(ranked):
+        end = idx + 1
+        while end < len(ranked) and ranked[end][0] == ranked[idx][0]:
+            end += 1
+        # Ranks are 1-based. Ties receive the average rank.
+        avg_rank = (idx + 1 + end) / 2.0
+        pos_in_tie = sum(1 for _, label in ranked[idx:end] if label == 1)
+        rank_sum_pos += avg_rank * pos_in_tie
+        idx = end
+
+    u_stat = rank_sum_pos - (n_pos * (n_pos + 1) / 2.0)
+    return float(u_stat / float(n_pos * n_neg))
 
 
 def _topk(records: List[Dict[str, Any]], k: int) -> float:

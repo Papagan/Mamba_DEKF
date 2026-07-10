@@ -4,9 +4,14 @@ from pathlib import Path
 
 import torch
 
-from training.association_dataset import PairwiseAssociationDataset, pairwise_association_collate_fn
+from training.association_dataset import (
+    PairwiseAssociationDataset,
+    PrecomputedPairwiseAssociationDataset,
+    pairwise_association_collate_fn,
+    precomputed_pairwise_association_collate_fn,
+)
 from training.association_model import ClassConditionedAssociationHeadBank
-from training.association_metrics import compute_association_metrics
+from training.association_metrics import _binary_auc, compute_association_metrics
 
 
 def _sample(anchor_id, class_id, label, logit_hint=0.0, negative_type="positive"):
@@ -72,6 +77,43 @@ class MultiHeadAssociationTest(unittest.TestCase):
 
         self.assertTrue(torch.allclose(logits, torch.tensor([2.0, -3.0, 2.0])))
 
+    def test_precomputed_pairwise_dataset_returns_pair_vectors(self):
+        samples = [
+            {
+                "pair_vector": [0.1, 0.2, 0.3, 0.4],
+                "class_id": 1,
+                "label": 1,
+                "anchor_key": "a::cur",
+                "negative_type": "positive",
+                "category": "car",
+            },
+            {
+                "pair_vector": [0.5, 0.6, 0.7, 0.8],
+                "class_id": 2,
+                "label": 0,
+                "anchor_key": "a::cur",
+                "negative_type": "hard",
+                "category": "bicycle",
+            },
+        ]
+
+        batch = precomputed_pairwise_association_collate_fn([
+            PrecomputedPairwiseAssociationDataset(samples)[0],
+            PrecomputedPairwiseAssociationDataset(samples)[1],
+        ])
+
+        self.assertEqual(tuple(batch["pair_vector"].shape), (2, 4))
+        self.assertEqual(batch["anchor_keys"], ["a::cur", "a::cur"])
+        self.assertEqual(batch["negative_types"], ["positive", "hard"])
+        head = ClassConditionedAssociationHeadBank(
+            input_dim=4,
+            num_classes=3,
+            hidden_dims=(8,),
+            dropout=0.0,
+        )
+        logits = head(batch["pair_vector"], batch["class_id"])
+        self.assertEqual(tuple(logits.shape), (2,))
+
     def test_dropout_must_match_training_state_dict_keys(self):
         trained_bank = ClassConditionedAssociationHeadBank(
             input_dim=4,
@@ -107,6 +149,14 @@ class MultiHeadAssociationTest(unittest.TestCase):
         self.assertAlmostEqual(metrics["overall"]["top3"], 1.0)
         self.assertAlmostEqual(metrics["per_class"]["2"]["hard_negative_accuracy"], 0.5)
         self.assertGreater(metrics["per_class"]["2"]["auc"], 0.0)
+
+    def test_binary_auc_handles_ties_with_rank_formula(self):
+        labels = [1, 1, 0, 0]
+        scores = [0.5, 0.8, 0.5, 0.2]
+
+        auc = _binary_auc(labels, scores)
+
+        self.assertAlmostEqual(auc, 0.875)
 
 
 if __name__ == "__main__":

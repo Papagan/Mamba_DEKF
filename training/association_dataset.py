@@ -89,3 +89,64 @@ def pairwise_association_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, An
     out["state_buckets"] = [item["state_bucket"] for item in batch]
     out["categories"] = [item["category"] for item in batch]
     return out
+
+
+class PrecomputedPairwiseAssociationDataset(Dataset):
+    """Dataset for precomputed pair vectors when the temporal backbone is frozen."""
+
+    def __init__(self, samples: List[Dict[str, Any]] | Dict[str, Any]) -> None:
+        if isinstance(samples, dict):
+            self.samples = None
+            self.pair_vectors = torch.as_tensor(samples["pair_vector"], dtype=torch.float32)
+            self.class_ids = torch.as_tensor(samples["class_id"], dtype=torch.long)
+            self.labels = torch.as_tensor(samples["label"], dtype=torch.float32)
+            self.anchor_keys = list(samples["anchor_keys"])
+            self.negative_types = list(samples["negative_types"])
+            self.categories = list(samples["categories"])
+        elif isinstance(samples, list):
+            self.samples = samples
+            self.pair_vectors = None
+            self.class_ids = None
+            self.labels = None
+            self.anchor_keys = None
+            self.negative_types = None
+            self.categories = None
+        else:
+            raise TypeError("PrecomputedPairwiseAssociationDataset expects a list or tensor dictionary")
+
+    def __len__(self) -> int:
+        if self.samples is not None:
+            return len(self.samples)
+        return int(self.pair_vectors.shape[0])
+
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        if self.samples is None:
+            return {
+                "pair_vector": self.pair_vectors[idx],
+                "class_id": self.class_ids[idx],
+                "label": self.labels[idx],
+                "anchor_key": self.anchor_keys[idx],
+                "negative_type": self.negative_types[idx],
+                "category": self.categories[idx],
+            }
+        sample = self.samples[idx]
+        return {
+            "pair_vector": torch.tensor(sample["pair_vector"], dtype=torch.float32),
+            "class_id": torch.tensor(int(sample.get("class_id", -1)), dtype=torch.long),
+            "label": torch.tensor(float(sample.get("label", 0)), dtype=torch.float32),
+            "anchor_key": str(sample.get("anchor_key", "")),
+            "negative_type": str(sample.get("negative_type", "")),
+            "category": str(sample.get("category", "")),
+        }
+
+
+def precomputed_pairwise_association_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
+    out = {
+        "pair_vector": torch.stack([item["pair_vector"] for item in batch], dim=0),
+        "class_id": torch.stack([item["class_id"] for item in batch], dim=0),
+        "label": torch.stack([item["label"] for item in batch], dim=0),
+    }
+    out["anchor_keys"] = [item["anchor_key"] for item in batch]
+    out["negative_types"] = [item["negative_type"] for item in batch]
+    out["categories"] = [item["category"] for item in batch]
+    return out

@@ -1,5 +1,4 @@
 
-
 python main.py --dataset nuscenes --eval --config config/nuscenes_single_stage_mctrack_exact_noise_hybrid_mamba_multihead_closure.yaml -p 12
   python tools/merge_class_heads.py \
     --base checkpoints/mamba_dekf/best.pt \
@@ -59,21 +58,11 @@ cp /root/autodl-tmp/data/training_cache/nuscenes/mini/train_fusion.pkl /root/aut
     --max-easy-negatives 2 \
     --max-pairs-per-class car=80000,pedestrian=70000
 
-  python tools/build_pairwise_association_cache.py \
-    --input /root/autodl-tmp/data/training_cache/nuscenes/mini/val_fusion.pkl \
-    --output /root/autodl-tmp/data/training_cache/nuscenes/mini/val_pairwise_assoc.pkl \
-    --summary-output docs/val_pairwise_assoc_summary.json \
-    --train-config config/train_nuscenes.yaml
 
   python tools/audit_pairwise_association_cache.py \
     --input /root/autodl-tmp/data/training_cache/nuscenes/mini/train_pairwise_assoc.pkl \
     --output docs/train_pairwise_assoc_audit.json
 
-  python tools/build_pairwise_association_cache.py \
-    --input /root/autodl-tmp/data/training_cache/nuscenes/mini/train_fusion.pkl \
-    --output /root/autodl-tmp/data/training_cache/nuscenes/mini/train_pairwise_assoc.pkl \
-    --summary-output docs/train_pairwise_assoc_summary.json \
-    --train-config config/train_nuscenes.yaml
 
 
   python tools/train_pairwise_association.py --train-config config/train_nuscenes.yaml
@@ -215,3 +204,47 @@ python main.py --dataset nuscenes --eval  --config config/nuscenes_single_stage_
 
 
 当前我们要的是构建一个TBD范式的mamba网络与滤波架构深度耦合的算法Mamba-DEKF，该算法利用检测算法输入的先验检测信息输入到多层Mamba主干网络提取时空间信息，然后分别学习到状态残差信息和数据关联信息，由于场景中的不同类别的目标在运动特性上存在显著差异，因此我们为每个类别设计了独立的状态残差学习模块和数据关联模块，此外我们还在轨迹管理阶段引入了一个基于类别的状态管理器，能够根据不同类别的运动特性和数据关联特性进行更精细的轨迹管理，从而提高多目标跟踪的准确性和鲁棒性。
+
+
+
+• 是的，当前 association head 需要重新审计，问题不只是参数没调好，而是训练目标、网络输入、推理介入三者没有闭环一致。
+
+  已确认的问题
+
+  1. 类别 ID 映射是一致的，不是类别路由错误：
+     car=0, pedestrian=1, bicycle=2, motorcycle=3, bus=4, trailer=5, truck=6。
+
+  2. 训练和推理的 pair 几何特征不一致：
+     训练时 center_distance/yaw_diff/size_l1 是 future positive det vs candidate det。
+     推理时是 当前轨迹 bbox/预测 bbox vs candidate det。
+     这意味着训练学的是 detection-detection 区分，评估却用在 track-detection 匹配上，score 标定会偏。
+
+  3. 训练和推理的 history/embedding 输入不一致：
+     训练 anchor_history 来自 cache 的 det/fusion feature。
+     推理 trk_embeddings 来自主链路的 residual-token 或相对坐标 history。
+     训练 candidate_history 是原始 obs feature，推理 detection history 是 [0,0,z,...] 这种相对形式。
+     所以 best_assoc.pt 的 loss 可以很低，但评估时 embedding 分布已经变了。
+
+  4. 当前介入方式过于粗糙：
+     它只根据 score < MIN_SCORE 加 cost penalty，但这个 score 没有经过推理分布标定。结果就是它会惩罚一部分真实匹配，尤其 car/trailer 这类本来靠几何已经稳定的类，导致 AMOTA 从 0.740 掉到 0.738。
+
+  我建议的重构方向
+  推荐走“审计先行 + 轻量闭环重训”：
+
+  1. 先增加 association score audit：
+     统计每类 matched pair 的 score 分布、被 MIN_SCORE 惩罚的真匹配比例、惩罚后 Hungarian 选择是否改变。
+
+  2. 重新构造训练样本：
+     不再用 future_det vs candidate_det 作为 pair 几何，而是复刻推理阶段：
+     track_state_after_predict/current track bbox vs candidate det。
+
+  3. 统一 embedding 输入：
+     pairwise association 训练必须调用和推理一致的 history 构造逻辑，尤其是 mamba_multihead_closure 下的 residual-token history，否则训练出来的 head 没有意义。
+
+  4. 改介入方式：
+     不直接全类加 penalty。先只作为“tie-breaker / margin reranker”或只在几何 cost 接近时介入。例如只对同类候选里 cost 差距小于 epsilon 的 pair 使用 association score，避免破坏明显正确的几何匹配。
+
+  5. 评估开启策略：
+     默认继续关闭 MAMBA_ASSOCIATION_HEAD，保住 0.740。只有 audit 显示某类真匹配惩罚率足够低，再按类开启。
+
+  我建议下一步先实现 tools/audit_pairwise_association_inference.py，直接在评估结果或跟踪过程中导出每类 association score 的真实影响。没有这个审计，继续调 MIN_SCORE/ALPHA/MAX_DELTA 基本是在盲调。

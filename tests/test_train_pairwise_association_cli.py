@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import torch
+
 
 def _sample(anchor_id, class_id, label, value, negative_type="positive"):
     return {
@@ -62,6 +64,7 @@ class TrainPairwiseAssociationCliTest(unittest.TestCase):
                     "--history-len",
                     "4",
                     "--freeze-backbone",
+                    "--precompute-embeddings",
                     "--ranking-margin",
                     "0.2",
                     "--ranking-weight",
@@ -79,6 +82,8 @@ class TrainPairwiseAssociationCliTest(unittest.TestCase):
             self.assertTrue(metrics_path.exists())
             self.assertTrue(ckpt_path.exists())
             self.assertIn("ranking", metrics_path.read_text(encoding="utf-8"))
+            ckpt = torch.load(ckpt_path, map_location="cpu")
+            self.assertTrue(ckpt["runtime_contract"]["precompute_embeddings"])
 
 
 if __name__ == "__main__":
