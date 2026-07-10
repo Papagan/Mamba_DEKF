@@ -128,6 +128,11 @@ MAMBA_ASSOCIATION_HEAD:
     5: ["matched", "unmatched"]
     6: ["matched", "unmatched"]
 
+ASSOCIATION_HEAD_AUDIT:
+  ENABLED: true
+  INFER_OUTPUT_PATH: "docs/association_head_audit.json"
+  STRICT: false
+
 RESIDUAL_HISTORY:
   MIN_HISTORY_LEN: 4
   MAX_HISTORY_LEN: 8

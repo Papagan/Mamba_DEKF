@@ -16,6 +16,7 @@ from functools import partial
 from kalmanfilter.noise_audit import NoiseAuditAccumulator
 from tracker.base_tracker import Base3DTracker
 from tracker.dirty_suppressor_audit import DirtySuppressorAuditAccumulator
+from tracker.association_head_audit import AssociationHeadAuditAccumulator
 from dataset.baseversion_dataset import BaseVersionTrackingDataset
 from evaluation.static_evaluation.kitti.evaluation_HOTA.scripts.run_kitti import (
     eval_kitti,
@@ -164,6 +165,43 @@ def _write_merged_dirty_suppressor_audit(cfg, scene_dirty_states):
         )
 
 
+def _build_association_head_audit_cfg(cfg):
+    return (((cfg or {}).get("ASSOCIATION_HEAD_AUDIT") or {}))
+
+
+def _collect_scene_association_head_audit_state(scene_id, tracker, cfg, scene_assoc_states):
+    audit_cfg = _build_association_head_audit_cfg(cfg)
+    if not audit_cfg.get("ENABLED", False):
+        return
+    state = tracker.export_association_head_audit_state()
+    if state is not None:
+        scene_assoc_states[scene_id] = state
+
+
+def _write_merged_association_head_audit(cfg, scene_assoc_states):
+    audit_cfg = _build_association_head_audit_cfg(cfg)
+    if not audit_cfg.get("ENABLED", False):
+        return
+
+    merged = AssociationHeadAuditAccumulator()
+    for scene_id in sorted(scene_assoc_states.keys()):
+        merged.merge_state(scene_assoc_states[scene_id])
+
+    output_path = audit_cfg.get(
+        "INFER_OUTPUT_PATH",
+        "debug/association_head_audit.json",
+    )
+    try:
+        merged.write_json(output_path)
+    except Exception as exc:
+        if audit_cfg.get("STRICT", False):
+            raise
+        print(
+            "[main] WARNING: failed to write merged association head audit "
+            f"to {output_path}: {exc}"
+        )
+
+
 def run(
     scene_id,
     scenes_data,
@@ -172,6 +210,7 @@ def run(
     tracking_results,
     scene_audit_states,
     scene_dirty_states,
+    scene_assoc_states,
     scene_perf_stats,
 ):
     """
@@ -239,6 +278,7 @@ def run(
 
     _collect_scene_inference_audit_state(scene_id, tracker, cfg, scene_audit_states)
     _collect_scene_dirty_suppressor_audit_state(scene_id, tracker, cfg, scene_dirty_states)
+    _collect_scene_association_head_audit_state(scene_id, tracker, cfg, scene_assoc_states)
     scene_perf_stats[scene_id] = {
         "frames": len(dataset),
         "tracking_seconds": tracking_seconds,
@@ -322,6 +362,7 @@ if __name__ == "__main__":
     tracking_results = manager.dict()
     scene_audit_states = manager.dict()
     scene_dirty_states = manager.dict()
+    scene_assoc_states = manager.dict()
     scene_perf_stats = manager.dict()
     if args.process > 1:
         pool = multiprocessing.Pool(args.process)
@@ -333,6 +374,7 @@ if __name__ == "__main__":
             tracking_results=tracking_results,
             scene_audit_states=scene_audit_states,
             scene_dirty_states=scene_dirty_states,
+            scene_assoc_states=scene_assoc_states,
             scene_perf_stats=scene_perf_stats,
         )
         pool.map(func, scene_lists)
@@ -348,11 +390,13 @@ if __name__ == "__main__":
                 tracking_results,
                 scene_audit_states,
                 scene_dirty_states,
+                scene_assoc_states,
                 scene_perf_stats,
             )
     tracking_results = dict(tracking_results)
     scene_audit_states = dict(scene_audit_states)
     scene_dirty_states = dict(scene_dirty_states)
+    scene_assoc_states = dict(scene_assoc_states)
     scene_perf_stats = dict(scene_perf_stats)
     total_tracking_frames = sum(int(item.get("frames", 0)) for item in scene_perf_stats.values())
     total_tracking_seconds = sum(float(item.get("tracking_seconds", 0.0)) for item in scene_perf_stats.values())
@@ -364,6 +408,7 @@ if __name__ == "__main__":
         )
     _write_merged_infer_noise_audit(cfg, scene_audit_states)
     _write_merged_dirty_suppressor_audit(cfg, scene_dirty_states)
+    _write_merged_association_head_audit(cfg, scene_assoc_states)
 
     if args.dataset == "kitti":
         save_results_kitti(tracking_results, cfg)

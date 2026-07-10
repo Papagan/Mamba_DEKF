@@ -34,6 +34,7 @@ from tracker.compat_utils import (
     use_mctrack_exact_unmatch_update,
 )
 from tracker.dirty_suppressor_audit import DirtySuppressorAuditAccumulator
+from tracker.association_head_audit import AssociationHeadAuditAccumulator
 from tracker.mctrack_motion import MCTrackOriginalPoseMotion
 from tracker.trajectory import Trajectory
 from tracker.bbox import BBox
@@ -518,6 +519,14 @@ class Base3DTracker:
             if bool(self.dirty_suppressor_audit_cfg.get("ENABLED", False))
             else None
         )
+        self.association_head_audit_cfg = (
+            (self.cfg.get("ASSOCIATION_HEAD_AUDIT", {}) or {})
+        )
+        self.association_head_audit = (
+            AssociationHeadAuditAccumulator()
+            if bool(self.association_head_audit_cfg.get("ENABLED", False))
+            else None
+        )
 
     def _normalize_delta_t(self, dt_raw: float) -> float:
         """
@@ -704,6 +713,26 @@ class Base3DTracker:
         if self.dirty_suppressor_audit is None:
             return None
         return self.dirty_suppressor_audit.export_state()
+
+    def _record_association_head_audit(self, record: Dict) -> None:
+        if self.association_head_audit is None:
+            return
+        self.association_head_audit.add_pair(
+            class_id=int(record.get("class_id", -1)),
+            class_name=str(record.get("class_name", "")),
+            state_bucket=str(record.get("state_bucket", "")),
+            score=float(record.get("score", 0.0)),
+            delta=float(record.get("delta", 0.0)),
+            cost_before=float(record.get("cost_before", 0.0)),
+            cost_after=float(record.get("cost_after", 0.0)),
+            active=bool(record.get("active", False)),
+            finite=bool(record.get("finite", False)),
+        )
+
+    def export_association_head_audit_state(self) -> Optional[Dict]:
+        if self.association_head_audit is None:
+            return None
+        return self.association_head_audit.export_state()
 
     def _pairwise_association_head_cfg(self) -> Dict:
         return (self.cfg.get("MAMBA_ASSOCIATION_HEAD", {}) or {})
@@ -1827,6 +1856,7 @@ class Base3DTracker:
                 trk_embeddings=trk_embeddings,
                 det_embeddings=det_embeddings_all,
                 association_scores=association_scores,
+                association_audit_callback=self._record_association_head_audit,
             )
         else:
             match_res = np.empty((0, 2), dtype=int)
@@ -2164,6 +2194,7 @@ class Base3DTracker:
                     trk_ori_P=trk_ori_P,
                     cal_flag=cal_flags,
                     association_scores=association_scores,
+                    association_audit_callback=self._record_association_head_audit,
                 )
             else:
                 match_res = np.empty((0, 2), dtype=int)

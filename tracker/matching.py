@@ -118,6 +118,7 @@ def apply_pairwise_association_head_to_cost_matrix(
     *,
     association_scores=None,
     state_buckets=None,
+    audit_callback=None,
 ):
     """Apply class-conditioned association-head penalties conservatively.
 
@@ -166,7 +167,21 @@ def apply_pairwise_association_head_to_cost_matrix(
             if not np.isfinite(score):
                 continue
             delta = alpha * max(0.0, min_score - score)
-            out[t, d] = out[t, d] + min(max_delta, max(0.0, delta))
+            delta = min(max_delta, max(0.0, delta))
+            cost_before = float(out[t, d])
+            out[t, d] = out[t, d] + delta
+            if audit_callback is not None:
+                audit_callback({
+                    "class_id": int(class_id),
+                    "class_name": str(traj_category),
+                    "state_bucket": state_bucket,
+                    "score": float(score),
+                    "delta": float(delta),
+                    "cost_before": cost_before,
+                    "cost_after": float(out[t, d]),
+                    "active": True,
+                    "finite": True,
+                })
 
     return out
 
@@ -287,6 +302,7 @@ def match_trajs_and_dets(
     det_embeddings=None,
     state_buckets=None,
     association_scores=None,
+    association_audit_callback=None,
 ):
     """
     Info: This function matches trajectories with detections using a cost matrix and a specified matching algorithm (Hungarian or Greedy).
@@ -324,6 +340,7 @@ def match_trajs_and_dets(
             cfg,
             association_scores=association_scores,
             state_buckets=state_buckets,
+            audit_callback=association_audit_callback,
         )
     match_type = "RV" if is_rv else "BEV"
 
@@ -519,6 +536,7 @@ def match_trajs_and_dets_uncertainty_aware(
     trk_ori_P: list = None,
     cal_flag = "Predict",
     association_scores=None,
+    association_audit_callback=None,
 ) -> tuple:
     """
     Uncertainty-aware matching pipeline (Module C entry point).
@@ -554,6 +572,7 @@ def match_trajs_and_dets_uncertainty_aware(
             dets,
             cfg,
             association_scores=association_scores,
+            association_audit_callback=association_audit_callback,
         )
 
     # fallback to original if no Mamba outputs available
@@ -564,6 +583,7 @@ def match_trajs_and_dets_uncertainty_aware(
             dets,
             cfg,
             association_scores=association_scores,
+            association_audit_callback=association_audit_callback,
         )
 
     cost_matrix, trajs_category, dets_category = cost_calculate_uncertainty_aware(
@@ -578,6 +598,7 @@ def match_trajs_and_dets_uncertainty_aware(
         dets,
         cfg,
         association_scores=association_scores,
+        audit_callback=association_audit_callback,
     )
 
     category_map = cfg["CATEGORY_MAP_TO_NUMBER"]
@@ -676,6 +697,7 @@ def match_trajs_and_dets_uncertainty_aware(
                 dets,
                 cfg,
                 association_scores=association_scores,
+                association_audit_callback=association_audit_callback,
             )
 
         if matching_mode == "Hungarian":

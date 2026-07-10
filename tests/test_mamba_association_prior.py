@@ -211,6 +211,38 @@ class MambaAssociationPriorTest(unittest.TestCase):
         self.assertAlmostEqual(float(out[1, 0]), 1.0)
         self.assertAlmostEqual(float(out[1, 1]), 1.0)
 
+    def test_pairwise_head_reports_audit_records(self):
+        records = []
+        cost = np.ones((1, 2), dtype=np.float32)
+
+        out = apply_pairwise_association_head_to_cost_matrix(
+            cost,
+            [_Traj("trailer", unmatch_length=1)],
+            [_Box("trailer"), _Box("trailer")],
+            {
+                "CATEGORY_MAP_TO_NUMBER": {"trailer": 5},
+                "MAMBA_ASSOCIATION_HEAD": {
+                    "ENABLED": True,
+                    "MIN_SCORE": 0.6,
+                    "ALPHA": 0.2,
+                    "MAX_DELTA": 0.05,
+                    "ACTIVE_CLASS_STATES": {5: ["unmatched"]},
+                },
+            },
+            association_scores=np.array([[0.9, 0.1]], dtype=np.float32),
+            audit_callback=records.append,
+        )
+
+        self.assertAlmostEqual(float(out[0, 0]), 1.0)
+        self.assertAlmostEqual(float(out[0, 1]), 1.05, places=6)
+        self.assertEqual(len(records), 2)
+        self.assertEqual(records[0]["class_name"], "trailer")
+        self.assertEqual(records[0]["state_bucket"], "unmatched")
+        self.assertAlmostEqual(records[0]["score"], 0.9, places=6)
+        self.assertAlmostEqual(records[0]["delta"], 0.0, places=6)
+        self.assertAlmostEqual(records[1]["score"], 0.1, places=6)
+        self.assertAlmostEqual(records[1]["delta"], 0.05, places=6)
+
     def test_match_trajs_applies_pairwise_head_scores_before_assignment(self):
         seen = {}
         original_cost = matching.cost_calculate_general
