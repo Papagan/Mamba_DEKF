@@ -142,6 +142,8 @@ def apply_pairwise_association_head_to_cost_matrix(
 
     category_map = cfg.get("CATEGORY_MAP_TO_NUMBER", {}) or {}
     active_cfg = head_cfg.get("ACTIVE_CLASS_STATES", {}) or {}
+    apply_mode = str(head_cfg.get("APPLY_MODE", "penalty")).strip().lower()
+    cost_margin_eps = float(head_cfg.get("COST_MARGIN_EPS", 0.05))
     min_score = float(head_cfg.get("MIN_SCORE", 0.5))
     alpha = float(head_cfg.get("ALPHA", 0.05))
     max_delta = float(head_cfg.get("MAX_DELTA", 0.03))
@@ -160,16 +162,32 @@ def apply_pairwise_association_head_to_cost_matrix(
         if state_bucket not in active_states:
             continue
 
+        row_cost = out[t]
+        same_class_finite = [
+            float(row_cost[d])
+            for d, det in enumerate(dets)
+            if det.category == traj_category and np.isfinite(row_cost[d])
+        ]
+        best_cost = min(same_class_finite) if same_class_finite else None
+
         for d, det in enumerate(dets):
             if det.category != traj_category or not np.isfinite(out[t, d]):
                 continue
             score = float(scores[t, d])
             if not np.isfinite(score):
                 continue
-            delta = alpha * max(0.0, min_score - score)
-            delta = min(max_delta, max(0.0, delta))
             cost_before = float(out[t, d])
-            out[t, d] = out[t, d] + delta
+
+            mode_active = True
+            if apply_mode in {"margin_tiebreak", "margin", "tiebreak", "tie_break"}:
+                if best_cost is None or cost_before > best_cost + cost_margin_eps:
+                    mode_active = False
+
+            delta = 0.0
+            if mode_active:
+                delta = alpha * max(0.0, min_score - score)
+                delta = min(max_delta, max(0.0, delta))
+                out[t, d] = out[t, d] + delta
             if audit_callback is not None:
                 audit_callback({
                     "class_id": int(class_id),
@@ -179,7 +197,7 @@ def apply_pairwise_association_head_to_cost_matrix(
                     "delta": float(delta),
                     "cost_before": cost_before,
                     "cost_after": float(out[t, d]),
-                    "active": True,
+                    "active": bool(mode_active),
                     "finite": True,
                 })
 

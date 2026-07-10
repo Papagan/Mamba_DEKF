@@ -116,6 +116,8 @@ MAMBA_ASSOCIATION_HEAD:
   CHECKPOINT_PATH: "checkpoints/mamba_dekf/best_assoc.pt"
   HIDDEN_DIMS: [256, 128]
   NUM_CLASSES: 7
+  APPLY_MODE: "margin_tiebreak"
+  COST_MARGIN_EPS: 0.05
   MIN_SCORE: 0.60
   ALPHA: 0.05
   MAX_DELTA: 0.03
