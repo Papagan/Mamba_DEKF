@@ -523,7 +523,9 @@ class Base3DTracker:
             (self.cfg.get("ASSOCIATION_HEAD_AUDIT", {}) or {})
         )
         self.association_head_audit = (
-            AssociationHeadAuditAccumulator()
+            AssociationHeadAuditAccumulator(
+                max_samples_per_bucket=int(self.association_head_audit_cfg.get("MAX_SAMPLES_PER_BUCKET", 0))
+            )
             if bool(self.association_head_audit_cfg.get("ENABLED", False))
             else None
         )
@@ -727,6 +729,7 @@ class Base3DTracker:
             cost_after=float(record.get("cost_after", 0.0)),
             active=bool(record.get("active", False)),
             finite=bool(record.get("finite", False)),
+            sample=record.get("sample", None),
         )
 
     def export_association_head_audit_state(self) -> Optional[Dict]:

@@ -169,6 +169,7 @@ def apply_pairwise_association_head_to_cost_matrix(
             if det.category == traj_category and np.isfinite(row_cost[d])
         ]
         best_cost = min(same_class_finite) if same_class_finite else None
+        sorted_same_class_costs = sorted(same_class_finite)
 
         for d, det in enumerate(dets):
             if det.category != traj_category or not np.isfinite(out[t, d]):
@@ -182,6 +183,11 @@ def apply_pairwise_association_head_to_cost_matrix(
             if apply_mode in {"margin_tiebreak", "margin", "tiebreak", "tie_break"}:
                 if best_cost is None or cost_before > best_cost + cost_margin_eps:
                     mode_active = False
+            cost_rank = 1
+            for rank, value in enumerate(sorted_same_class_costs, start=1):
+                if abs(float(value) - cost_before) <= 1e-7:
+                    cost_rank = rank
+                    break
 
             delta = 0.0
             if mode_active:
@@ -199,6 +205,14 @@ def apply_pairwise_association_head_to_cost_matrix(
                     "cost_after": float(out[t, d]),
                     "active": bool(mode_active),
                     "finite": True,
+                    "sample": {
+                        "track_index": int(t),
+                        "det_index": int(d),
+                        "cost_rank": int(cost_rank),
+                        "best_cost": float(best_cost) if best_cost is not None else None,
+                        "cost_margin_eps": float(cost_margin_eps),
+                        "margin_gap": float(cost_before - best_cost) if best_cost is not None else None,
+                    },
                 })
 
     return out

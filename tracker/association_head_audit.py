@@ -1,6 +1,8 @@
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+import numpy as np
 
 
 @dataclass
@@ -16,6 +18,11 @@ class _Bucket:
     delta_sum: float = 0.0
     cost_before_sum: float = 0.0
     cost_after_sum: float = 0.0
+    scores: list = field(default_factory=list)
+    deltas: list = field(default_factory=list)
+    cost_befores: list = field(default_factory=list)
+    cost_afters: list = field(default_factory=list)
+    samples: list = field(default_factory=list)
 
     def add(
         self,
@@ -26,6 +33,8 @@ class _Bucket:
         cost_after: float,
         active: bool,
         finite: bool,
+        sample=None,
+        max_samples: int = 0,
     ) -> None:
         self.pair_count += 1
         if finite:
@@ -38,6 +47,25 @@ class _Bucket:
         self.delta_sum += float(delta)
         self.cost_before_sum += float(cost_before)
         self.cost_after_sum += float(cost_after)
+        self.scores.append(float(score))
+        self.deltas.append(float(delta))
+        self.cost_befores.append(float(cost_before))
+        self.cost_afters.append(float(cost_after))
+        if sample is not None and len(self.samples) < int(max_samples):
+            self.samples.append(dict(sample))
+
+    @staticmethod
+    def _quantiles(values):
+        if not values:
+            return {"min": 0.0, "p10": 0.0, "p50": 0.0, "p90": 0.0, "max": 0.0}
+        arr = np.asarray(values, dtype=np.float64)
+        return {
+            "min": float(np.min(arr)),
+            "p10": float(np.quantile(arr, 0.10)),
+            "p50": float(np.quantile(arr, 0.50)),
+            "p90": float(np.quantile(arr, 0.90)),
+            "max": float(np.max(arr)),
+        }
 
     def to_summary(self):
         pair_count = max(int(self.pair_count), 1)
@@ -56,12 +84,19 @@ class _Bucket:
             "avg_delta": float(self.delta_sum / pair_count),
             "avg_cost_before": float(self.cost_before_sum / pair_count),
             "avg_cost_after": float(self.cost_after_sum / pair_count),
+            "score_quantiles": self._quantiles(self.scores),
+            "delta_quantiles": self._quantiles(self.deltas),
+            "cost_before_quantiles": self._quantiles(self.cost_befores),
+            "cost_after_quantiles": self._quantiles(self.cost_afters),
+            "sample_count": int(len(self.samples)),
+            "samples": list(self.samples),
         }
 
 
 class AssociationHeadAuditAccumulator:
-    def __init__(self):
+    def __init__(self, *, max_samples_per_bucket: int = 0):
         self._buckets = {}
+        self.max_samples_per_bucket = int(max_samples_per_bucket)
 
     def add_pair(
         self,
@@ -75,6 +110,7 @@ class AssociationHeadAuditAccumulator:
         cost_after: float,
         active: bool,
         finite: bool,
+        sample=None,
     ) -> None:
         key = (int(class_id), str(class_name), str(state_bucket))
         bucket = self._buckets.get(key)
@@ -92,6 +128,8 @@ class AssociationHeadAuditAccumulator:
             cost_after=float(cost_after),
             active=bool(active),
             finite=bool(finite),
+            sample=sample,
+            max_samples=self.max_samples_per_bucket,
         )
 
     def to_summary(self):
@@ -132,6 +170,28 @@ class AssociationHeadAuditAccumulator:
             bucket.delta_sum += float(item.get("avg_delta", 0.0)) * pair_count
             bucket.cost_before_sum += float(item.get("avg_cost_before", 0.0)) * pair_count
             bucket.cost_after_sum += float(item.get("avg_cost_after", 0.0)) * pair_count
+            # Scene-level states are already summarized; keep bounded proxy
+            # points for merged quantiles instead of expanding millions of
+            # pairs back into memory.
+            for attr, field_name, avg_name in (
+                ("scores", "score_quantiles", "avg_score"),
+                ("deltas", "delta_quantiles", "avg_delta"),
+                ("cost_befores", "cost_before_quantiles", "avg_cost_before"),
+                ("cost_afters", "cost_after_quantiles", "avg_cost_after"),
+            ):
+                quantiles = item.get(field_name, {}) or {}
+                values = [
+                    quantiles.get("min", item.get(avg_name, 0.0)),
+                    quantiles.get("p10", item.get(avg_name, 0.0)),
+                    quantiles.get("p50", item.get(avg_name, 0.0)),
+                    quantiles.get("p90", item.get(avg_name, 0.0)),
+                    quantiles.get("max", item.get(avg_name, 0.0)),
+                ]
+                getattr(bucket, attr).extend(float(value) for value in values)
+            for sample in item.get("samples", []):
+                if len(bucket.samples) >= self.max_samples_per_bucket:
+                    break
+                bucket.samples.append(dict(sample))
 
     def write_json(self, path):
         path = Path(path)

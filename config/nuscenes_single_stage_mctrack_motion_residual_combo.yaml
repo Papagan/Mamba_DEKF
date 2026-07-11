@@ -112,7 +112,7 @@ MAMBA_ASSOCIATION_PRIOR:
     6: {matched: 0.03, unmatched: 0.05}
 
 MAMBA_ASSOCIATION_HEAD:
-  ENABLED: false
+  ENABLED: true
   CHECKPOINT_PATH: "checkpoints/mamba_dekf/best_assoc.pt"
   HIDDEN_DIMS: [256, 128]
   NUM_CLASSES: 7
@@ -121,18 +121,22 @@ MAMBA_ASSOCIATION_HEAD:
   MIN_SCORE: 0.60
   ALPHA: 0.05
   MAX_DELTA: 0.03
-  ACTIVE_CLASS_STATES:
-    0: ["matched", "unmatched"]
-    1: ["matched", "unmatched"]
-    2: ["matched", "unmatched"]
-    3: ["matched", "unmatched"]
-    4: ["matched", "unmatched"]
-    5: ["matched", "unmatched"]
-    6: ["matched", "unmatched"]
+  ACTIVE_CLASS_STATES: {4: ["matched"], 5: ["matched"]}
+
+
+  # ACTIVE_CLASS_STATES:
+  #   0: ["matched", "unmatched"]
+  #   1: ["matched", "unmatched"]
+  #   2: ["matched", "unmatched"]
+  #   3: ["matched", "unmatched"]
+  #   4: ["matched", "unmatched"]
+  #   5: ["matched", "unmatched"]
+  #   6: ["matched", "unmatched"]
 
 ASSOCIATION_HEAD_AUDIT:
-  ENABLED: false
+  ENABLED: true
   INFER_OUTPUT_PATH: "debug/association_head_audit.json"
+  MAX_SAMPLES_PER_BUCKET: 32
   STRICT: false
 
 RESIDUAL_HISTORY:
