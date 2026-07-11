@@ -102,6 +102,22 @@ def main() -> int:
     parser.add_argument("--max-hard-negatives", type=int, default=4)
     parser.add_argument("--max-easy-negatives", type=int, default=2)
     parser.add_argument(
+        "--negative-mining-mode",
+        default="legacy",
+        choices=["legacy", "inference_margin"],
+        help=(
+            "Negative mining strategy. 'inference_margin' keeps only same-class "
+            "candidates within best predicted-track distance + --cost-margin-eps, "
+            "matching the margin_tiebreak inference intervention set."
+        ),
+    )
+    parser.add_argument(
+        "--cost-margin-eps",
+        type=float,
+        default=0.05,
+        help="Margin used by --negative-mining-mode inference_margin.",
+    )
+    parser.add_argument(
         "--max-pairs-per-class",
         default=None,
         help="Optional class caps, e.g. 'car=60000,pedestrian=50000'. Defaults to no cap.",
@@ -136,6 +152,8 @@ def main() -> int:
         hard_negative_distance_by_class=class_hard_dist,
         max_hard_negatives=int(args.max_hard_negatives),
         max_easy_negatives=int(args.max_easy_negatives),
+        negative_mining_mode=str(args.negative_mining_mode),
+        cost_margin_eps=float(args.cost_margin_eps),
         max_pairs_per_class=max_pairs_per_class,
         require_current_match=not bool(args.allow_current_miss),
         require_future_match=not bool(args.allow_future_miss),
@@ -158,6 +176,8 @@ def main() -> int:
             "hard_negative_distance_by_class": class_hard_dist,
             "max_hard_negatives": int(args.max_hard_negatives),
             "max_easy_negatives": int(args.max_easy_negatives),
+            "negative_mining_mode": str(args.negative_mining_mode),
+            "cost_margin_eps": float(args.cost_margin_eps),
             "max_pairs_per_class": max_pairs_per_class,
             "require_current_match": not bool(args.allow_current_miss),
             "require_future_match": not bool(args.allow_future_miss),

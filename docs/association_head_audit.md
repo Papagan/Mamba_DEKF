@@ -63,6 +63,10 @@ python tools/build_pairwise_association_cache.py \
   --summary-output docs/train_pairwise_assoc_train_summary.json \
   --train-config config/train_nuscenes.yaml \
   --pair-geometry-source predicted_track_candidate \
+  --negative-mining-mode inference_margin \
+  --cost-margin-eps 0.05 \
+  --max-hard-negatives 8 \
+  --max-easy-negatives 0 \
   --max-pairs-per-class car=80000,pedestrian=70000
 
 python tools/build_pairwise_association_cache.py \
@@ -71,6 +75,10 @@ python tools/build_pairwise_association_cache.py \
   --summary-output docs/train_pairwise_assoc_val_summary.json \
   --train-config config/train_nuscenes.yaml \
   --pair-geometry-source predicted_track_candidate \
+  --negative-mining-mode inference_margin \
+  --cost-margin-eps 0.05 \
+  --max-hard-negatives 8 \
+  --max-easy-negatives 0 \
   --max-pairs-per-class car=80000,pedestrian=70000
 ```
 
@@ -78,3 +86,7 @@ This mode changes the training pair features from the old
 future-detection/candidate-detection geometry to predicted-track/candidate
 geometry. It also stores `candidate_history_12` in the same detection-token
 format used by inference (`x=y=0` for the one-frame detection token).
+The `inference_margin` negative miner further restricts negatives to the same
+near-best candidate set used by `MAMBA_ASSOCIATION_HEAD.APPLY_MODE:
+margin_tiebreak`, avoiding the previous easy-negative shortcut where negatives
+were meters away from the positive candidate.

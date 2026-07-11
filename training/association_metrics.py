@@ -4,6 +4,10 @@ from collections import defaultdict
 from typing import Any, Dict, Iterable, List, Sequence
 
 
+def _is_hard_negative_type(value: Any) -> bool:
+    return str(value).strip().lower() in {"hard", "inference_margin"}
+
+
 def _binary_auc(labels: List[int], scores: List[float]) -> float:
     n_pos = sum(1 for label in labels if int(label) == 1)
     n_neg = sum(1 for label in labels if int(label) == 0)
@@ -54,7 +58,10 @@ def _hard_negative_accuracy(records: List[Dict[str, Any]]) -> float:
     correct = 0
     for items in grouped.values():
         positives = [item for item in items if int(item["label"]) == 1]
-        hard_negs = [item for item in items if int(item["label"]) == 0 and item.get("negative_type") == "hard"]
+        hard_negs = [
+            item for item in items
+            if int(item["label"]) == 0 and _is_hard_negative_type(item.get("negative_type"))
+        ]
         if not positives or not hard_negs:
             continue
         valid += len(hard_negs)

@@ -38,6 +38,10 @@ from training.association_model import (  # noqa: E402
 LOGGER = logging.getLogger("train.association")
 
 
+def _is_hard_negative_type(value: Any) -> bool:
+    return str(value).strip().lower() in {"hard", "inference_margin"}
+
+
 class MeanHistoryEncoder(nn.Module):
     """Small deterministic encoder for smoke tests and CPU dry-runs."""
 
@@ -224,7 +228,7 @@ def _run_epoch(
         weights = torch.ones_like(labels)
         if hard_negative_weight != 1.0:
             hard_mask = torch.tensor(
-                [item == "hard" for item in batch["negative_types"]],
+                [_is_hard_negative_type(item) for item in batch["negative_types"]],
                 device=device,
                 dtype=torch.bool,
             )
@@ -424,7 +428,7 @@ def _run_precomputed_epoch(
         weights = torch.ones_like(labels)
         if hard_negative_weight != 1.0:
             hard_mask = torch.tensor(
-                [item == "hard" for item in batch["negative_types"]],
+                [_is_hard_negative_type(item) for item in batch["negative_types"]],
                 device=device,
                 dtype=torch.bool,
             )

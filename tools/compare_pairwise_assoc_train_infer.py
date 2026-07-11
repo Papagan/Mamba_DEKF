@@ -39,6 +39,10 @@ def _class_key(class_id: int, class_name: str) -> str:
     return f"{int(class_id)}:{class_name}"
 
 
+def _is_hard_negative_type(value: Any) -> bool:
+    return str(value).strip().lower() in {"hard", "inference_margin"}
+
+
 def _summarize_train(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
     grouped = defaultdict(list)
     for sample in samples:
@@ -50,7 +54,7 @@ def _summarize_train(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
     for key, items in sorted(grouped.items()):
         labels = [int(item.get("label", 0)) for item in items]
         negatives = [item for item in items if int(item.get("label", 0)) == 0]
-        hard_negatives = [item for item in negatives if str(item.get("negative_type", "")).lower() == "hard"]
+        hard_negatives = [item for item in negatives if _is_hard_negative_type(item.get("negative_type", ""))]
         center_distances = [float(item.get("center_distance", 0.0)) for item in items]
         pos_center_distances = [
             float(item.get("center_distance", 0.0))

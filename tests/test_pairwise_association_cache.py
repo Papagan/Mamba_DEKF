@@ -266,6 +266,62 @@ class PairwiseAssociationCacheTest(unittest.TestCase):
         self.assertEqual(positive["candidate_history_12"][2][11], 0.8)
         self.assertEqual(positive["candidate_obs_feature_12"][0:2], [10.0, 5.0])
 
+    def test_inference_margin_negative_mining_keeps_only_near_best_predicted_candidates(self):
+        tracklets = [
+            {
+                "instance_token": "car-a",
+                "category": "car",
+                "frames": [
+                    _frame("s0", 0, 0.0, 0.0, vx=10.0),
+                    _frame("s1", 1, 10.0, 0.0, vx=10.0),
+                ],
+            },
+            {
+                "instance_token": "car-close",
+                "category": "car",
+                "frames": [
+                    _frame("s0", 0, 20.0, 0.0),
+                    _frame("s1", 1, 10.03, 0.0),
+                ],
+            },
+            {
+                "instance_token": "car-far",
+                "category": "car",
+                "frames": [
+                    _frame("s0", 0, 20.0, 0.0),
+                    _frame("s1", 1, 12.0, 0.0),
+                ],
+            },
+        ]
+
+        samples, _ = build_pairwise_association_samples(
+            tracklets,
+            history_len=2,
+            future_step=1,
+            pair_geometry_source="predicted_track_candidate",
+            negative_mining_mode="inference_margin",
+            cost_margin_eps=0.05,
+            max_hard_negatives=4,
+            max_easy_negatives=4,
+        )
+
+        car_a_samples = [
+            sample for sample in samples
+            if sample["anchor_instance_token"] == "car-a"
+        ]
+        candidate_ids = {sample["candidate_instance_token"] for sample in car_a_samples}
+        negative_ids = {
+            sample["candidate_instance_token"]
+            for sample in car_a_samples
+            if sample["label"] == 0
+        }
+        self.assertIn("car-a", candidate_ids)
+        self.assertEqual(negative_ids, {"car-close"})
+        close = next(sample for sample in car_a_samples if sample["candidate_instance_token"] == "car-close")
+        self.assertEqual(close["negative_type"], "inference_margin")
+        self.assertAlmostEqual(close["center_distance"], 0.03, places=6)
+        self.assertEqual(close["negative_mining_mode"], "inference_margin")
+
     def test_limits_pairs_per_class_when_requested(self):
         tracklets = [
             {

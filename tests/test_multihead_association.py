@@ -150,6 +150,16 @@ class MultiHeadAssociationTest(unittest.TestCase):
         self.assertAlmostEqual(metrics["per_class"]["2"]["hard_negative_accuracy"], 0.5)
         self.assertGreater(metrics["per_class"]["2"]["auc"], 0.0)
 
+    def test_inference_margin_negatives_count_as_hard_negative_accuracy(self):
+        records = [
+            {"class_id": 2, "anchor_key": "a", "label": 1, "score": 0.9, "negative_type": "positive"},
+            {"class_id": 2, "anchor_key": "a", "label": 0, "score": 0.1, "negative_type": "inference_margin"},
+        ]
+
+        metrics = compute_association_metrics(records)
+
+        self.assertAlmostEqual(metrics["overall"]["hard_negative_accuracy"], 1.0)
+
     def test_binary_auc_handles_ties_with_rank_formula(self):
         labels = [1, 1, 0, 0]
         scores = [0.5, 0.8, 0.5, 0.2]
