@@ -69,6 +69,8 @@ cp /root/autodl-tmp/data/training_cache/nuscenes/mini/train_fusion.pkl /root/aut
 
 
 
+
+
 python main.py --dataset nuscenes --eval  --config config/nuscenes_single_stage_mctrack_motion_residual_combo.yaml     -p 12
 
 
@@ -230,7 +232,7 @@ python main.py --dataset nuscenes --eval  --config config/nuscenes_single_stage_
 
   我建议的重构方向
   推荐走“审计先行 + 轻量闭环重训”：
-
+当前已经重新训练完成，下一步该执行下面哪一步了？
   1. 先增加 association score audit：
      统计每类 matched pair 的 score 分布、被 MIN_SCORE 惩罚的真匹配比例、惩罚后 Hungarian 选择是否改变。
 
@@ -248,3 +250,56 @@ python main.py --dataset nuscenes --eval  --config config/nuscenes_single_stage_
      默认继续关闭 MAMBA_ASSOCIATION_HEAD，保住 0.740。只有 audit 显示某类真匹配惩罚率足够低，再按类开启。
 
   我建议下一步先实现 tools/audit_pairwise_association_inference.py，直接在评估结果或跟踪过程中导出每类 association score 的真实影响。没有这个审计，继续调 MIN_SCORE/ALPHA/MAX_DELTA 基本是在盲调。
+
+
+
+
+  更具体一点：
+
+  - score_pos_mean：正样本 sigmoid 后的平均分，应该从接近 0.5 逐步升高，理想状态到 0.8-0.95。如果很快到 0.999+，要警惕过拟合或任务太简单。
+  - score_neg_mean：负样本平均分应该下降，理想到 0.05-0.2。重点是正负分数要拉开，而不是正样本单独升高。
+  - top1：同一个 anchor 下，正样本是否排第一。应该逐步上升，越接近 1.0 越好。但 train top1 高、val top1 不高，就是过拟合。
+  - hard_acc：正样本分数是否高于 hard negative。这个比普通 top1 更关键，应该持续上升。
+  - logit_max：会随着正样本置信度升高而上升。合理范围通常是几到十几，例如 3-8 已经对应 sigmoid 0.95-0.9997。如果 logit_max > 20，基本说明分类器过度饱和。
+  - logit_min：负样本越低越好，但如果低到 < -20，同样说明过度饱和。
+
+  需要重点看 val，不要只看 train：
+
+  健康：
+  train score_pos ↑, score_neg ↓, top1 ↑
+  val   score_pos ↑, score_neg ↓, top1 ↑
+
+  过拟合：
+  train top1 接近 1.0
+  val top1 停滞或下降
+
+  饱和：
+  logit_max 很快 > 20
+  logit_min 很快 < -20
+  loss 接近 0
+  val AMOTA/audit 没改善
+
+
+
+
+    下一步最有效的不是调 ALPHA，而是做一个 train-vs-infer pair replay audit：
+
+  1. 从一次推理中导出真实进入 matching 的 pair：
+      - class
+      - state bucket
+      - cost_before
+      - association score
+      - 是否被 Hungarian 选中
+      - track history embedding 输入摘要
+      - det history embedding 输入摘要
+      - pair geometry feature
+
+  2. 从训练 cache 中抽同 scene/token/class 的 pair，比较：
+      - pair geometry 是否一致
+      - track history 是否一致
+      - candidate history 是否一致
+      - 正样本 score 是否显著高于推理中的 matched pair
+
+  3. 如果训练内正样本 score 高、推理真匹配 score 低，就是输入分布错位。
+  4. 如果训练内正样本 score 也低，那是训练/损失/模型本身失败。
+  5. 如果训练和推理都能区分，但 AMOTA 不涨，才是介入方式或 ALPHA/MAX_DELTA 不足。

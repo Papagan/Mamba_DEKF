@@ -100,6 +100,15 @@ def main() -> int:
         ),
     )
     parser.add_argument("--max-hard-negatives", type=int, default=4)
+    parser.add_argument(
+        "--min-hard-negatives",
+        type=int,
+        default=0,
+        help=(
+            "Minimum nearest same-class negatives per anchor. Useful with "
+            "--negative-mining-mode inference_margin to avoid all-positive caches."
+        ),
+    )
     parser.add_argument("--max-easy-negatives", type=int, default=2)
     parser.add_argument(
         "--negative-mining-mode",
@@ -151,6 +160,7 @@ def main() -> int:
         hard_negative_distance=float(args.hard_negative_distance),
         hard_negative_distance_by_class=class_hard_dist,
         max_hard_negatives=int(args.max_hard_negatives),
+        min_hard_negatives=int(args.min_hard_negatives),
         max_easy_negatives=int(args.max_easy_negatives),
         negative_mining_mode=str(args.negative_mining_mode),
         cost_margin_eps=float(args.cost_margin_eps),
@@ -175,6 +185,7 @@ def main() -> int:
             "hard_negative_distance": float(args.hard_negative_distance),
             "hard_negative_distance_by_class": class_hard_dist,
             "max_hard_negatives": int(args.max_hard_negatives),
+            "min_hard_negatives": int(args.min_hard_negatives),
             "max_easy_negatives": int(args.max_easy_negatives),
             "negative_mining_mode": str(args.negative_mining_mode),
             "cost_margin_eps": float(args.cost_margin_eps),

@@ -5,7 +5,7 @@ from typing import Any, Dict, Iterable, List, Sequence
 
 
 def _is_hard_negative_type(value: Any) -> bool:
-    return str(value).strip().lower() in {"hard", "inference_margin"}
+    return str(value).strip().lower() in {"hard", "inference_margin", "inference_topk"}
 
 
 def _binary_auc(labels: List[int], scores: List[float]) -> float:

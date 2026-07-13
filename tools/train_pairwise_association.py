@@ -39,7 +39,7 @@ LOGGER = logging.getLogger("train.association")
 
 
 def _is_hard_negative_type(value: Any) -> bool:
-    return str(value).strip().lower() in {"hard", "inference_margin"}
+    return str(value).strip().lower() in {"hard", "inference_margin", "inference_topk"}
 
 
 class MeanHistoryEncoder(nn.Module):

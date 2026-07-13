@@ -121,17 +121,12 @@ MAMBA_ASSOCIATION_HEAD:
   MIN_SCORE: 0.60
   ALPHA: 0.05
   MAX_DELTA: 0.03
-  ACTIVE_CLASS_STATES: {4: ["matched"], 5: ["matched"]}
-
-
-  # ACTIVE_CLASS_STATES:
-  #   0: ["matched", "unmatched"]
-  #   1: ["matched", "unmatched"]
-  #   2: ["matched", "unmatched"]
-  #   3: ["matched", "unmatched"]
-  #   4: ["matched", "unmatched"]
-  #   5: ["matched", "unmatched"]
-  #   6: ["matched", "unmatched"]
+  ACTIVE_CLASS_STATES:
+    1: ["matched", "unmatched"]
+    2: ["matched", "unmatched"]
+    4: ["matched", "unmatched"]
+    5: ["matched", "unmatched"]
+    6: ["matched", "unmatched"]
 
 ASSOCIATION_HEAD_AUDIT:
   ENABLED: true

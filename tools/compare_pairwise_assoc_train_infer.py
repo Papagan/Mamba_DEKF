@@ -40,7 +40,7 @@ def _class_key(class_id: int, class_name: str) -> str:
 
 
 def _is_hard_negative_type(value: Any) -> bool:
-    return str(value).strip().lower() in {"hard", "inference_margin"}
+    return str(value).strip().lower() in {"hard", "inference_margin", "inference_topk"}
 
 
 def _summarize_train(samples: List[Dict[str, Any]]) -> Dict[str, Any]:

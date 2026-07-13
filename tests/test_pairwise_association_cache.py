@@ -322,6 +322,55 @@ class PairwiseAssociationCacheTest(unittest.TestCase):
         self.assertAlmostEqual(close["center_distance"], 0.03, places=6)
         self.assertEqual(close["negative_mining_mode"], "inference_margin")
 
+    def test_inference_margin_negative_mining_falls_back_to_nearest_topk_when_margin_empty(self):
+        tracklets = [
+            {
+                "instance_token": "bus-a",
+                "category": "bus",
+                "frames": [
+                    _frame("s0", 0, 0.0, 0.0, vx=0.0),
+                    _frame("s1", 1, 0.0, 0.0, vx=0.0),
+                ],
+            },
+            {
+                "instance_token": "bus-near",
+                "category": "bus",
+                "frames": [
+                    _frame("s0", 0, 20.0, 0.0),
+                    _frame("s1", 1, 3.0, 0.0),
+                ],
+            },
+            {
+                "instance_token": "bus-far",
+                "category": "bus",
+                "frames": [
+                    _frame("s0", 0, 20.0, 0.0),
+                    _frame("s1", 1, 8.0, 0.0),
+                ],
+            },
+        ]
+
+        samples, _ = build_pairwise_association_samples(
+            tracklets,
+            history_len=2,
+            future_step=1,
+            pair_geometry_source="predicted_track_candidate",
+            negative_mining_mode="inference_margin",
+            cost_margin_eps=0.05,
+            min_hard_negatives=1,
+            max_hard_negatives=2,
+            max_easy_negatives=0,
+        )
+
+        bus_a_negatives = [
+            sample for sample in samples
+            if sample["anchor_instance_token"] == "bus-a" and sample["label"] == 0
+        ]
+        self.assertEqual(len(bus_a_negatives), 1)
+        self.assertEqual(bus_a_negatives[0]["candidate_instance_token"], "bus-near")
+        self.assertEqual(bus_a_negatives[0]["negative_type"], "inference_topk")
+        self.assertAlmostEqual(bus_a_negatives[0]["center_distance"], 3.0)
+
     def test_limits_pairs_per_class_when_requested(self):
         tracklets = [
             {

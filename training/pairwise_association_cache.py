@@ -108,7 +108,7 @@ def _wrap_to_pi(value: float) -> float:
 
 
 def _is_hard_negative_type(value: Any) -> bool:
-    return str(value).strip().lower() in {"hard", "inference_margin"}
+    return str(value).strip().lower() in {"hard", "inference_margin", "inference_topk"}
 
 
 def _state_bucket_from_history(frames: List[Dict[str, Any]], current_index: int) -> str:
@@ -261,6 +261,7 @@ def build_pairwise_association_samples(
     hard_negative_distance: float = 4.0,
     hard_negative_distance_by_class: Dict[str, float] | None = None,
     max_hard_negatives: int = 4,
+    min_hard_negatives: int = 0,
     max_easy_negatives: int = 2,
     negative_mining_mode: str = "legacy",
     cost_margin_eps: float = 0.05,
@@ -396,6 +397,15 @@ def build_pairwise_association_samples(
                         if candidate_distance.get(candidate.get("instance_token"), float("inf"))
                         <= best_candidate_distance + float(cost_margin_eps)
                     ][: max(0, int(max_hard_negatives))]
+                hard_ids = {candidate.get("instance_token") for candidate in hard}
+                inference_topk_ids = set()
+                if len(hard) < int(min_hard_negatives):
+                    fallback = [
+                        candidate for candidate in negatives
+                        if candidate.get("instance_token") not in hard_ids
+                    ][: max(0, min(int(min_hard_negatives) - len(hard), int(max_hard_negatives) - len(hard)))]
+                    inference_topk_ids = {candidate.get("instance_token") for candidate in fallback}
+                    hard.extend(fallback)
                 easy = []
             else:
                 negatives.sort(key=lambda candidate: _center_distance_xy(future_frame, candidate["frame"]))
@@ -406,6 +416,7 @@ def build_pairwise_association_samples(
                     if _center_distance_xy(future_frame, candidate["frame"]) <= hard_distance
                 ][: max(0, int(max_hard_negatives))]
                 hard_ids = {candidate.get("instance_token") for candidate in hard}
+                inference_topk_ids = set()
                 easy = [
                     candidate for candidate in negatives
                     if candidate.get("instance_token") not in hard_ids
@@ -422,7 +433,12 @@ def build_pairwise_association_samples(
                     history_source=history_source,
                     pair_geometry_source=pair_geometry_source,
                     label=0,
-                    negative_type="inference_margin" if negative_mining_mode == "inference_margin" else "hard",
+                    negative_type=(
+                        "inference_topk"
+                        if negative_mining_mode == "inference_margin"
+                        and candidate.get("instance_token") in inference_topk_ids
+                        else ("inference_margin" if negative_mining_mode == "inference_margin" else "hard")
+                    ),
                     negative_mining_mode=negative_mining_mode,
                     candidate_rank=candidate_rank.get(candidate.get("instance_token")),
                     best_candidate_distance=best_candidate_distance,

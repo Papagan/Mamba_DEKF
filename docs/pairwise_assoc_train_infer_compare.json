@@ -2,250 +2,202 @@
   "classes": {
     "0:car": {
       "diagnosis": [
-        "likely_distribution_mismatch"
+        "hard_negative_ratio_too_low"
       ],
-      "infer": {
-        "matched": {
-          "active_pair_count": 93294,
-          "active_ratio": 0.05092611799024863,
-          "avg_delta": 0.0013912170935673571,
-          "avg_score": 0.003325061043366769,
-          "delta_quantiles": {
-            "max": 0.02999996346262492,
-            "min": 0.0,
-            "p10": 0.0,
-            "p50": 0.0,
-            "p90": 0.029999952863838646
-          },
-          "pair_count": 1831948,
-          "penalized_pair_count": 88943,
-          "penalized_ratio": 0.9533624884772869,
-          "sample_count": 0,
-          "samples": [],
-          "score_quantiles": {
-            "max": 0.9999533891677856,
-            "min": 6.528856033582997e-07,
-            "p10": 7.53982362766692e-07,
-            "p50": 3.653541057246912e-06,
-            "p90": 0.9746141731739044
-          }
-        },
-        "unmatched": {
-          "active_pair_count": 432559,
-          "active_ratio": 0.11078802699734452,
-          "avg_delta": 0.003319422273320965,
-          "avg_score": 0.00010477464208608047,
-          "delta_quantiles": {
-            "max": 0.02999996353760423,
-            "min": 0.0,
-            "p10": 0.0,
-            "p50": 0.0,
-            "p90": 0.02999994827892067
-          },
-          "pair_count": 3904384,
-          "penalized_pair_count": 432317,
-          "penalized_ratio": 0.9994405387473154,
-          "sample_count": 0,
-          "samples": [],
-          "score_quantiles": {
-            "max": 0.999901533126831,
-            "min": 7.226012144201377e-07,
-            "p10": 9.746246746544785e-07,
-            "p50": 4.612632210410084e-06,
-            "p90": 0.6356197834014893
-          }
-        }
-      },
+      "infer": {},
       "train": {
         "center_distance_quantiles": {
-          "max": 109.27854459345775,
-          "min": 0.0005790931439446077,
-          "p10": 0.10492848320340964,
-          "p50": 6.3697529193612255,
-          "p90": 20.255801487266666
+          "max": 11.359279804854264,
+          "min": 0.00015609252513719158,
+          "p10": 0.0261167825722526,
+          "p50": 0.1564383510951324,
+          "p90": 0.7166540594216078
         },
         "hard_center_distance_quantiles": {
-          "max": 14.094092379463246,
-          "min": 0.1719311846675297,
-          "p10": 2.5460011769072346,
-          "p50": 4.691179290576494,
-          "p90": 5.788891234084216
+          "max": 6.42030274869479,
+          "min": 0.07674793572749017,
+          "p10": 0.7335271858954877,
+          "p50": 1.8710183806493947,
+          "p90": 4.372063204197868
         },
-        "hard_negative_count": 15908,
-        "hard_negative_ratio": 0.19885,
-        "negative_count": 58404,
+        "hard_negative_count": 64,
+        "hard_negative_ratio": 0.0013080712081263925,
+        "negative_count": 64,
         "positive_center_distance_quantiles": {
-          "max": 9.974264809256788,
-          "min": 0.0005790931439446077,
-          "p10": 0.026790648611094176,
-          "p50": 0.1571036757099822,
-          "p90": 0.7141514937861921
+          "max": 11.359279804854264,
+          "min": 0.00015609252513719158,
+          "p10": 0.026091457881500368,
+          "p50": 0.15614687571785063,
+          "p90": 0.7109638912004016
         },
-        "positive_count": 21596,
-        "positive_ratio": 0.26995,
-        "sample_count": 80000
+        "positive_count": 48863,
+        "positive_ratio": 0.9986919287918736,
+        "sample_count": 48927
       }
     },
     "1:pedestrian": {
       "diagnosis": [
-        "likely_distribution_mismatch"
+        "hard_negative_ratio_too_low",
+        "weak_matched_unmatched_separation",
+        "candidate_for_safe_activation"
       ],
       "infer": {
         "matched": {
-          "active_pair_count": 101765,
-          "active_ratio": 0.07739089302390664,
-          "avg_delta": 0.001834524843159248,
-          "avg_score": 0.01216446564276765,
+          "active_pair_count": 101767,
+          "active_ratio": 0.0773924139965991,
+          "avg_delta": 0.0,
+          "avg_score": 0.8555016337768799,
           "delta_quantiles": {
-            "max": 0.02999768855959701,
+            "max": 0.0,
             "min": 0.0,
             "p10": 0.0,
             "p50": 0.0,
-            "p90": 0.029997194431252868
+            "p90": 0.0
           },
           "pair_count": 1314948,
-          "penalized_pair_count": 89142,
-          "penalized_ratio": 0.8759593180366531,
+          "penalized_pair_count": 0,
+          "penalized_ratio": 0.0,
           "sample_count": 0,
           "samples": [],
           "score_quantiles": {
-            "max": 0.9934872388839722,
-            "min": 4.2126721382373944e-05,
-            "p10": 5.1600643928395584e-05,
-            "p50": 6.844240851933137e-05,
-            "p90": 0.9758749186992646
+            "max": 0.9987817406654358,
+            "min": 0.6797898411750793,
+            "p10": 0.7882736682891845,
+            "p50": 0.8482047021389008,
+            "p90": 0.9979300260543823
           }
         },
         "unmatched": {
-          "active_pair_count": 413765,
-          "active_ratio": 0.24280971860914247,
-          "avg_delta": 0.007195990025071862,
-          "avg_score": 0.0022917058824736968,
+          "active_pair_count": 413138,
+          "active_ratio": 0.2429974814342532,
+          "avg_delta": 0.0,
+          "avg_score": 0.8468361880046886,
           "delta_quantiles": {
-            "max": 0.029997554059336837,
+            "max": 0.0,
             "min": 0.0,
             "p10": 0.0,
             "p50": 0.0,
-            "p90": 0.02999729838256826
+            "p90": 0.0
           },
-          "pair_count": 1704071,
-          "penalized_pair_count": 411042,
-          "penalized_ratio": 0.9934189697050257,
+          "pair_count": 1700174,
+          "penalized_pair_count": 0,
+          "penalized_ratio": 0.0,
           "sample_count": 0,
           "samples": [],
           "score_quantiles": {
-            "max": 0.9925218224525452,
-            "min": 4.755159898195416e-05,
-            "p10": 5.339019662642386e-05,
-            "p50": 6.879265129100531e-05,
-            "p90": 0.940748107433319
+            "max": 0.9980681538581848,
+            "min": 0.6582071781158447,
+            "p10": 0.7559600055217743,
+            "p50": 0.8468635678291321,
+            "p90": 0.9948536038398743
           }
         }
       },
       "train": {
         "center_distance_quantiles": {
-          "max": 106.79201379825409,
-          "min": 0.0010276780926548761,
-          "p10": 0.1278888756603576,
-          "p50": 2.0195872875897214,
-          "p90": 23.0852849239094
+          "max": 3.159626912448153,
+          "min": 0.0004105394043099015,
+          "p10": 0.04310785542596762,
+          "p50": 0.1555857398148466,
+          "p90": 0.5108418026365029
         },
         "hard_center_distance_quantiles": {
-          "max": 5.938635112948911,
+          "max": 2.2818237053171604,
           "min": 0.0038439655704624845,
-          "p10": 0.6539286580826544,
-          "p50": 1.3634672272180643,
-          "p90": 3.027577579052876
+          "p10": 0.11324566799780908,
+          "p50": 0.3661245525480833,
+          "p90": 0.7955667762913552
         },
-        "hard_negative_count": 23983,
-        "hard_negative_ratio": 0.3426142857142857,
-        "negative_count": 53789,
+        "hard_negative_count": 1280,
+        "hard_negative_ratio": 0.04736881059877137,
+        "negative_count": 1280,
         "positive_center_distance_quantiles": {
           "max": 3.159626912448153,
-          "min": 0.0010276780926548761,
-          "p10": 0.04039425292856018,
-          "p50": 0.15090858261732867,
-          "p90": 0.4909470774555986
+          "min": 0.0004105394043099015,
+          "p10": 0.0418326435027653,
+          "p50": 0.1503722853121123,
+          "p90": 0.4787644355079803
         },
-        "positive_count": 16211,
-        "positive_ratio": 0.23158571428571428,
-        "sample_count": 70000
+        "positive_count": 25742,
+        "positive_ratio": 0.9526311894012286,
+        "sample_count": 27022
       }
     },
     "2:bicycle": {
       "diagnosis": [
-        "likely_distribution_mismatch"
+        "hard_negative_ratio_too_low",
+        "weak_matched_unmatched_separation"
       ],
       "infer": {
         "matched": {
           "active_pair_count": 20050,
           "active_ratio": 0.4121952222359278,
-          "avg_delta": 0.009609819569408921,
-          "avg_score": 0.10501539004392627,
+          "avg_delta": 0.006165348205446293,
+          "avg_score": 0.30439139970109813,
           "delta_quantiles": {
-            "max": 0.029985799836576916,
+            "max": 0.0259630623459816,
             "min": 0.0,
             "p10": 0.0,
             "p50": 0.0,
-            "p90": 0.029984189447422975
+            "p90": 0.02468261629343033
           },
           "pair_count": 48642,
-          "penalized_pair_count": 15644,
-          "penalized_ratio": 0.7802493765586035,
+          "penalized_pair_count": 13781,
+          "penalized_ratio": 0.6873316708229427,
           "sample_count": 0,
           "samples": [],
           "score_quantiles": {
-            "max": 0.9999109506607056,
-            "min": 0.00028400326846167445,
-            "p10": 0.0003124698589090258,
-            "p50": 0.00039901569834910333,
-            "p90": 0.9999005794525146
+            "max": 0.9997875094413757,
+            "min": 0.08073875308036804,
+            "p10": 0.1024173304438591,
+            "p50": 0.1494528353214264,
+            "p90": 0.9997242093086243
           }
         },
         "unmatched": {
-          "active_pair_count": 147174,
-          "active_ratio": 0.5552248265559039,
-          "avg_delta": 0.016138208203809377,
-          "avg_score": 0.017154974096970376,
+          "active_pair_count": 147048,
+          "active_ratio": 0.555248024226588,
+          "avg_delta": 0.010911637914074766,
+          "avg_score": 0.20882863705550603,
           "delta_quantiles": {
-            "max": 0.02998574678756995,
+            "max": 0.026212206408381462,
             "min": 0.0,
             "p10": 0.0,
-            "p50": 0.029976383229659405,
-            "p90": 0.029984054852538973
+            "p50": 0.016851534247398374,
+            "p90": 0.025413721427321435
           },
-          "pair_count": 265071,
-          "penalized_pair_count": 143110,
-          "penalized_ratio": 0.9723864269504124,
+          "pair_count": 264833,
+          "penalized_pair_count": 131860,
+          "penalized_ratio": 0.8967139981502639,
           "sample_count": 0,
           "samples": [],
           "score_quantiles": {
-            "max": 0.9999097585678101,
-            "min": 0.0002850642486009747,
-            "p10": 0.00031695497746113687,
-            "p50": 0.000404459387937095,
-            "p90": 0.9998958110809326
+            "max": 0.9997847676277161,
+            "min": 0.07409713417291641,
+            "p10": 0.09009670317173005,
+            "p50": 0.15023144707083702,
+            "p90": 0.9997170686721801
           }
         }
       },
       "train": {
         "center_distance_quantiles": {
-          "max": 84.40215272722337,
+          "max": 3.952748742404272,
           "min": 0.0014455195514442114,
-          "p10": 0.04777194699801339,
-          "p50": 0.5682606354873719,
-          "p90": 27.683598803918994
+          "p10": 0.030831507678619006,
+          "p50": 0.13992497221968012,
+          "p90": 0.5824685925906541
         },
         "hard_center_distance_quantiles": {
-          "max": 5.720873161221352,
+          "max": 1.2373438868609852,
           "min": 0.04403778519059714,
-          "p10": 0.5716666089631964,
-          "p50": 1.322454932266948,
-          "p90": 3.6954902037694692
+          "p10": 0.1505142139055727,
+          "p50": 0.3349178868736796,
+          "p90": 0.75802495292965
         },
-        "hard_negative_count": 692,
-        "hard_negative_ratio": 0.23739279588336193,
-        "negative_count": 1362,
+        "hard_negative_count": 38,
+        "hard_negative_ratio": 0.023884349465744813,
+        "negative_count": 38,
         "positive_center_distance_quantiles": {
           "max": 3.952748742404272,
           "min": 0.0014455195514442114,
@@ -254,84 +206,33 @@
           "p90": 0.5735266763968976
         },
         "positive_count": 1553,
-        "positive_ratio": 0.5327615780445969,
-        "sample_count": 2915
+        "positive_ratio": 0.9761156505342552,
+        "sample_count": 1591
       }
     },
     "3:motorcycle": {
       "diagnosis": [
-        "likely_distribution_mismatch"
+        "hard_negative_ratio_too_low"
       ],
-      "infer": {
-        "matched": {
-          "active_pair_count": 25906,
-          "active_ratio": 0.3424590532341005,
-          "avg_delta": 0.008200560014283138,
-          "avg_score": 0.07101839726424129,
-          "delta_quantiles": {
-            "max": 0.029995846806996268,
-            "min": 0.0,
-            "p10": 0.0,
-            "p50": 0.0,
-            "p90": 0.02999531643556111
-          },
-          "pair_count": 75647,
-          "penalized_pair_count": 20740,
-          "penalized_ratio": 0.8005867366633213,
-          "sample_count": 0,
-          "samples": [],
-          "score_quantiles": {
-            "max": 0.9999760389328003,
-            "min": 8.034701750148088e-05,
-            "p10": 9.295788258896209e-05,
-            "p50": 0.00010384857159806415,
-            "p90": 0.9999513745307922
-          }
-        },
-        "unmatched": {
-          "active_pair_count": 278083,
-          "active_ratio": 0.5217238765647044,
-          "avg_delta": 0.015460272185832081,
-          "avg_score": 0.0063183978863832055,
-          "delta_quantiles": {
-            "max": 0.0299957984276989,
-            "min": 0.0,
-            "p10": 0.0,
-            "p50": 0.029994379917916376,
-            "p90": 0.029995282055824645
-          },
-          "pair_count": 533008,
-          "penalized_pair_count": 274880,
-          "penalized_ratio": 0.9884818561364772,
-          "sample_count": 0,
-          "samples": [],
-          "score_quantiles": {
-            "max": 0.999966025352478,
-            "min": 8.256161527242512e-05,
-            "p10": 9.324075435870327e-05,
-            "p50": 0.00010492937144590542,
-            "p90": 0.999939250946045
-          }
-        }
-      },
+      "infer": {},
       "train": {
         "center_distance_quantiles": {
-          "max": 84.04232908712171,
+          "max": 8.587734224193593,
           "min": 0.002192598508474536,
-          "p10": 0.07570528123963301,
-          "p50": 1.5447463964439887,
-          "p90": 8.104454622416045
+          "p10": 0.039648669190390666,
+          "p50": 0.1968390351991961,
+          "p90": 0.8422125872520635
         },
         "hard_center_distance_quantiles": {
-          "max": 5.633436812177682,
+          "max": 1.1739289969816677,
           "min": 0.13786952883728376,
-          "p10": 0.8817508624253779,
-          "p50": 2.521505845908699,
-          "p90": 4.346742262521522
+          "p10": 0.3720185577487981,
+          "p50": 0.497754205340192,
+          "p90": 0.7674840299045189
         },
-        "hard_negative_count": 1120,
-        "hard_negative_ratio": 0.2841918294849023,
-        "negative_count": 2273,
+        "hard_negative_count": 32,
+        "hard_negative_ratio": 0.018823529411764704,
+        "negative_count": 32,
         "positive_center_distance_quantiles": {
           "max": 8.587734224193593,
           "min": 0.002192598508474536,
@@ -340,84 +241,86 @@
           "p90": 0.848466696883265
         },
         "positive_count": 1668,
-        "positive_ratio": 0.4232428317685867,
-        "sample_count": 3941
+        "positive_ratio": 0.9811764705882353,
+        "sample_count": 1700
       }
     },
     "4:bus": {
       "diagnosis": [
-        "needs_manual_review"
+        "hard_negative_ratio_too_low",
+        "weak_matched_unmatched_separation",
+        "candidate_for_safe_activation"
       ],
       "infer": {
         "matched": {
           "active_pair_count": 3368,
           "active_ratio": 0.5228190003104626,
-          "avg_delta": 0.004509198428998047,
-          "avg_score": 0.37254882692609237,
+          "avg_delta": 0.0,
+          "avg_score": 0.9999999941709211,
           "delta_quantiles": {
-            "max": 0.029999942977348155,
+            "max": 0.0,
             "min": 0.0,
             "p10": 0.0,
             "p50": 0.0,
-            "p90": 0.02999994255748061
+            "p90": 0.0
           },
           "pair_count": 6442,
-          "penalized_pair_count": 970,
-          "penalized_ratio": 0.28800475059382424,
+          "penalized_pair_count": 0,
+          "penalized_ratio": 0.0,
           "sample_count": 0,
           "samples": [],
           "score_quantiles": {
-            "max": 0.9999994039535522,
-            "min": 1.1380843716324307e-06,
-            "p10": 1.1464620592960273e-06,
-            "p50": 0.10000079254185722,
-            "p90": 0.9999992847442627
+            "max": 1.0,
+            "min": 0.9999998807907104,
+            "p10": 0.9999998807907104,
+            "p50": 1.0,
+            "p90": 1.0
           }
         },
         "unmatched": {
-          "active_pair_count": 8151,
-          "active_ratio": 0.7184029613960867,
-          "avg_delta": 0.02065724529533175,
-          "avg_score": 0.029713267017481972,
+          "active_pair_count": 8104,
+          "active_ratio": 0.7178033658104517,
+          "avg_delta": 0.0,
+          "avg_score": 0.9999999863051862,
           "delta_quantiles": {
-            "max": 0.029999943109997956,
+            "max": 0.0,
             "min": 0.0,
             "p10": 0.0,
-            "p50": 0.02999994122841116,
-            "p90": 0.02999994277710698
+            "p50": 0.0,
+            "p90": 0.0
           },
-          "pair_count": 11346,
-          "penalized_pair_count": 7816,
-          "penalized_ratio": 0.9589007483744326,
+          "pair_count": 11290,
+          "penalized_pair_count": 0,
+          "penalized_ratio": 0.0,
           "sample_count": 0,
           "samples": [],
           "score_quantiles": {
-            "max": 0.9999994039535522,
-            "min": 1.1373074357834412e-06,
-            "p10": 1.1435415308369556e-06,
-            "p50": 1.166239655958634e-06,
-            "p90": 0.9999990463256836
+            "max": 1.0,
+            "min": 0.9999997615814209,
+            "p10": 0.9999998807907104,
+            "p50": 1.0,
+            "p90": 1.0
           }
         }
       },
       "train": {
         "center_distance_quantiles": {
-          "max": 107.8435086207988,
+          "max": 6.8522525812900605,
           "min": 0.0021069304112054494,
-          "p10": 0.05459427815109881,
-          "p50": 0.5883269749743034,
-          "p90": 44.411159409092825
+          "p10": 0.0354576557048604,
+          "p50": 0.25121025211684567,
+          "p90": 0.9192621564701208
         },
         "hard_center_distance_quantiles": {
-          "max": 14.836223559104152,
-          "min": 3.702188230439949,
-          "p10": 6.807665865470729,
-          "p50": 9.068312748676794,
-          "p90": 10.338510793380896
+          "max": 0.0,
+          "min": 0.0,
+          "p10": 0.0,
+          "p50": 0.0,
+          "p90": 0.0
         },
-        "hard_negative_count": 340,
-        "hard_negative_ratio": 0.11221122112211221,
-        "negative_count": 1134,
+        "hard_negative_count": 0,
+        "hard_negative_ratio": 0.0,
+        "negative_count": 0,
         "positive_center_distance_quantiles": {
           "max": 6.8522525812900605,
           "min": 0.0021069304112054494,
@@ -426,84 +329,86 @@
           "p90": 0.9192621564701208
         },
         "positive_count": 1896,
-        "positive_ratio": 0.6257425742574257,
-        "sample_count": 3030
+        "positive_ratio": 1.0,
+        "sample_count": 1896
       }
     },
     "5:trailer": {
       "diagnosis": [
-        "needs_manual_review"
+        "hard_negative_ratio_too_low",
+        "weak_matched_unmatched_separation",
+        "candidate_for_safe_activation"
       ],
       "infer": {
         "matched": {
           "active_pair_count": 5689,
           "active_ratio": 0.23424054020669494,
-          "avg_delta": 0.0025477130003771493,
-          "avg_score": 0.20525442081702686,
+          "avg_delta": 0.0,
+          "avg_score": 0.9999863485803658,
           "delta_quantiles": {
-            "max": 0.029998970429533076,
+            "max": 0.0,
             "min": 0.0,
             "p10": 0.0,
             "p50": 0.0,
-            "p90": 0.029998694970572615
+            "p90": 0.0
           },
           "pair_count": 24287,
-          "penalized_pair_count": 2070,
-          "penalized_ratio": 0.36386008085779575,
+          "penalized_pair_count": 0,
+          "penalized_ratio": 0.0,
           "sample_count": 0,
           "samples": [],
           "score_quantiles": {
-            "max": 0.9999768733978271,
-            "min": 2.0561561541398987e-05,
-            "p10": 2.5105677923420445e-05,
-            "p50": 3.7615640394506045e-05,
-            "p90": 0.9999663829803467
+            "max": 1.0,
+            "min": 0.97712641954422,
+            "p10": 0.999686884880066,
+            "p50": 0.9999998807907104,
+            "p90": 1.0
           }
         },
         "unmatched": {
-          "active_pair_count": 12234,
-          "active_ratio": 0.42361495844875346,
-          "avg_delta": 0.011520580191226036,
-          "avg_score": 0.044556648311628005,
+          "active_pair_count": 12213,
+          "active_ratio": 0.4238858808829654,
+          "avg_delta": 0.0,
+          "avg_score": 0.9999642880090687,
           "delta_quantiles": {
-            "max": 0.029999003264838394,
+            "max": 0.0,
             "min": 0.0,
             "p10": 0.0,
-            "p50": 0.029998271592085075,
-            "p90": 0.029998841641445326
+            "p50": 0.0,
+            "p90": 0.0
           },
-          "pair_count": 28880,
-          "penalized_pair_count": 11117,
-          "penalized_ratio": 0.9086970737289521,
+          "pair_count": 28812,
+          "penalized_pair_count": 0,
+          "penalized_ratio": 0.0,
           "sample_count": 0,
           "samples": [],
           "score_quantiles": {
-            "max": 0.9999738931655884,
-            "min": 1.9625798813649453e-05,
-            "p10": 2.3048207367537543e-05,
-            "p50": 3.2853527955012396e-05,
-            "p90": 0.9999603748321533
+            "max": 1.0,
+            "min": 0.9795763492584229,
+            "p10": 0.9992606997489929,
+            "p50": 0.9999985694885254,
+            "p90": 1.0
           }
         }
       },
       "train": {
         "center_distance_quantiles": {
-          "max": 98.81401199323582,
+          "max": 4.933578723001404,
           "min": 0.0017749952728510132,
-          "p10": 0.09909547227732567,
-          "p50": 4.395645150900034,
-          "p90": 32.71427224000305
+          "p10": 0.02183874148290549,
+          "p50": 0.2266007060420189,
+          "p90": 0.850418730863861
         },
         "hard_center_distance_quantiles": {
-          "max": 10.3723096298559,
-          "min": 1.8125482855619979,
-          "p10": 2.8894670582765514,
-          "p50": 4.366989462504456,
-          "p90": 8.127045723938656
+          "max": 0.0,
+          "min": 0.0,
+          "p10": 0.0,
+          "p50": 0.0,
+          "p90": 0.0
         },
-        "hard_negative_count": 1636,
-        "hard_negative_ratio": 0.33401388321763986,
-        "negative_count": 3294,
+        "hard_negative_count": 0,
+        "hard_negative_ratio": 0.0,
+        "negative_count": 0,
         "positive_center_distance_quantiles": {
           "max": 4.933578723001404,
           "min": 0.0017749952728510132,
@@ -512,84 +417,86 @@
           "p90": 0.850418730863861
         },
         "positive_count": 1604,
-        "positive_ratio": 0.3274806043282973,
-        "sample_count": 4898
+        "positive_ratio": 1.0,
+        "sample_count": 1604
       }
     },
     "6:truck": {
       "diagnosis": [
-        "needs_manual_review"
+        "hard_negative_ratio_too_low",
+        "weak_matched_unmatched_separation",
+        "candidate_for_safe_activation"
       ],
       "infer": {
         "matched": {
-          "active_pair_count": 49317,
-          "active_ratio": 0.09793377351933674,
-          "avg_delta": 0.0015030673106404538,
-          "avg_score": 0.047186754577677514,
+          "active_pair_count": 49316,
+          "active_ratio": 0.0979317877178176,
+          "avg_delta": 0.0,
+          "avg_score": 0.9999996150425895,
           "delta_quantiles": {
-            "max": 0.029999781123324284,
+            "max": 0.0,
             "min": 0.0,
             "p10": 0.0,
             "p50": 0.0,
-            "p90": 0.02999977169640033
+            "p90": 0.0
           },
           "pair_count": 503575,
-          "penalized_pair_count": 25649,
-          "penalized_ratio": 0.520084352251759,
+          "penalized_pair_count": 0,
+          "penalized_ratio": 0.0,
           "sample_count": 0,
           "samples": [],
           "score_quantiles": {
-            "max": 0.9999938011169434,
-            "min": 4.298210569686489e-06,
-            "p10": 4.505585320657701e-06,
-            "p50": 5.05459809119202e-06,
-            "p90": 0.9999903440475464
+            "max": 1.0,
+            "min": 0.9997616410255432,
+            "p10": 0.9999667286872864,
+            "p50": 1.0,
+            "p90": 1.0
           }
         },
         "unmatched": {
-          "active_pair_count": 326375,
-          "active_ratio": 0.1781654215785552,
-          "avg_delta": 0.005206564907050173,
-          "avg_score": 0.0043988644907001495,
+          "active_pair_count": 324253,
+          "active_ratio": 0.17877028134901535,
+          "avg_delta": 0.0,
+          "avg_score": 0.9999970719488255,
           "delta_quantiles": {
-            "max": 0.029999781616838847,
+            "max": 0.0,
             "min": 0.0,
             "p10": 0.0,
             "p50": 0.0,
-            "p90": 0.029999771931245502
+            "p90": 0.0
           },
-          "pair_count": 1831865,
-          "penalized_pair_count": 318554,
-          "penalized_ratio": 0.9760367675220222,
+          "pair_count": 1813797,
+          "penalized_pair_count": 0,
+          "penalized_ratio": 0.0,
           "sample_count": 0,
           "samples": [],
           "score_quantiles": {
-            "max": 0.9999922513961792,
-            "min": 4.340672603575513e-06,
-            "p10": 4.517135675996542e-06,
-            "p50": 5.084963845547463e-06,
-            "p90": 0.9999871373176574
+            "max": 1.0,
+            "min": 0.998814582824707,
+            "p10": 0.9998452425003052,
+            "p50": 0.9999998807907104,
+            "p90": 1.0
           }
         }
       },
       "train": {
         "center_distance_quantiles": {
-          "max": 109.05563307306113,
+          "max": 5.952403796714783,
           "min": 0.0011691529454166227,
-          "p10": 0.07396753571441433,
-          "p50": 11.136826347819788,
-          "p90": 44.44678693223641
+          "p10": 0.024733186279600774,
+          "p50": 0.16172636089597825,
+          "p90": 0.7002648219279767
         },
         "hard_center_distance_quantiles": {
-          "max": 13.934857828503525,
-          "min": 2.3762009367291075,
-          "p10": 3.5917819644905578,
-          "p50": 7.6228505445428505,
-          "p90": 11.091968106496376
+          "max": 0.0,
+          "min": 0.0,
+          "p10": 0.0,
+          "p50": 0.0,
+          "p90": 0.0
         },
-        "hard_negative_count": 3775,
-        "hard_negative_ratio": 0.16515005687286727,
-        "negative_count": 14866,
+        "hard_negative_count": 0,
+        "hard_negative_ratio": 0.0,
+        "negative_count": 0,
         "positive_center_distance_quantiles": {
           "max": 5.952403796714783,
           "min": 0.0011691529454166227,
@@ -598,8 +505,8 @@
           "p90": 0.7002648219279767
         },
         "positive_count": 7992,
-        "positive_ratio": 0.34963688861667686,
-        "sample_count": 22858
+        "positive_ratio": 1.0,
+        "sample_count": 7992
       }
     }
   },
