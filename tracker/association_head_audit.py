@@ -97,6 +97,20 @@ def _finite_float(value, field_name):
     return result
 
 
+def _finite_add(left, right, field_name):
+    result = float(left) + float(right)
+    if not np.isfinite(result):
+        raise ValueError(f"{field_name} aggregate must remain finite")
+    return result
+
+
+def _finite_product(left, right, field_name):
+    result = float(left) * int(right)
+    if not np.isfinite(result):
+        raise ValueError(f"{field_name} aggregate must remain finite")
+    return result
+
+
 def _optional_rank(value, field_name):
     result = _nonnegative_int(value, field_name, allow_none=True)
     if result == 0:
@@ -370,9 +384,9 @@ def _validate_decision_bucket_state(item):
     for field_name in change_categories:
         if counters[field_name] > changed:
             raise ValueError(f"{field_name} cannot exceed changed_decisions")
-    if sum(counters[field_name] for field_name in change_categories) > changed:
+    if sum(counters[field_name] for field_name in change_categories) != changed:
         raise ValueError(
-            "changed assignment categories cannot exceed changed_decisions"
+            "changed assignment categories must equal changed_decisions"
         )
     known_changed = counters["known_changed_count"]
     if known_changed > changed:
@@ -384,8 +398,8 @@ def _validate_decision_bucket_state(item):
             "known_changed_count must include all improved/damaged changes and "
             "at most changed neutral decisions"
         )
-    if counters["threshold_crossing_count"] > total:
-        raise ValueError("threshold_crossing_count cannot exceed total_decisions")
+    if counters["threshold_crossing_count"] > changed:
+        raise ValueError("threshold_crossing_count cannot exceed changed_decisions")
 
     raw_decisions = item.get("raw_decisions", item.get("samples", []))
     if not isinstance(raw_decisions, list):
@@ -457,6 +471,15 @@ class _Bucket:
         sample=None,
         max_samples: int = 0,
     ) -> None:
+        score_sum = _finite_add(self.score_sum, score, "score")
+        delta_sum = _finite_add(self.delta_sum, delta, "delta")
+        cost_before_sum = _finite_add(
+            self.cost_before_sum, cost_before, "cost_before"
+        )
+        cost_after_sum = _finite_add(
+            self.cost_after_sum, cost_after, "cost_after"
+        )
+
         self.pair_count += 1
         if finite:
             self.finite_pair_count += 1
@@ -464,10 +487,10 @@ class _Bucket:
             self.active_pair_count += 1
         if delta > 0.0:
             self.penalized_pair_count += 1
-        self.score_sum += float(score)
-        self.delta_sum += float(delta)
-        self.cost_before_sum += float(cost_before)
-        self.cost_after_sum += float(cost_after)
+        self.score_sum = score_sum
+        self.delta_sum = delta_sum
+        self.cost_before_sum = cost_before_sum
+        self.cost_after_sum = cost_after_sum
         self.scores.append(float(score))
         self.deltas.append(float(delta))
         self.cost_befores.append(float(cost_before))
@@ -745,9 +768,12 @@ class AssociationHeadAuditAccumulator:
         if state is None:
             return
         validated = self._validate_merge_state(state)
+        pair_merge_plan = self._prepare_pair_merge(
+            validated["pair_buckets"]
+        )
         manifest_result = self._manifest_merge_result(validated)
 
-        for item in validated["pair_buckets"]:
+        for item, aggregate_sums in pair_merge_plan:
             key = (
                 item["class_id"],
                 item["class_name"],
@@ -767,10 +793,10 @@ class AssociationHeadAuditAccumulator:
             bucket.finite_pair_count += item["finite_pair_count"]
             bucket.active_pair_count += item["active_pair_count"]
             bucket.penalized_pair_count += item["penalized_pair_count"]
-            bucket.score_sum += item["avg_score"] * pair_count
-            bucket.delta_sum += item["avg_delta"] * pair_count
-            bucket.cost_before_sum += item["avg_cost_before"] * pair_count
-            bucket.cost_after_sum += item["avg_cost_after"] * pair_count
+            bucket.score_sum = aggregate_sums["score_sum"]
+            bucket.delta_sum = aggregate_sums["delta_sum"]
+            bucket.cost_before_sum = aggregate_sums["cost_before_sum"]
+            bucket.cost_after_sum = aggregate_sums["cost_after_sum"]
             # Scene-level states are already summarized; keep bounded proxy
             # points for merged quantiles instead of expanding millions of
             # pairs back into memory.
@@ -850,6 +876,40 @@ class AssociationHeadAuditAccumulator:
                 _validate_decision_bucket_state(item) for item in decision_items
             ],
         }
+
+    def _prepare_pair_merge(self, pair_items):
+        staged_sums = {}
+        plan = []
+        aggregate_fields = (
+            ("score", "avg_score", "score_sum"),
+            ("delta", "avg_delta", "delta_sum"),
+            ("cost_before", "avg_cost_before", "cost_before_sum"),
+            ("cost_after", "avg_cost_after", "cost_after_sum"),
+        )
+        for item in pair_items:
+            key = (
+                item["class_id"],
+                item["class_name"],
+                item["state_bucket"],
+            )
+            if key not in staged_sums:
+                bucket = self._buckets.get(key)
+                staged_sums[key] = {
+                    sum_name: 0.0 if bucket is None else getattr(bucket, sum_name)
+                    for _, _, sum_name in aggregate_fields
+                }
+
+            next_sums = dict(staged_sums[key])
+            for label, average_name, sum_name in aggregate_fields:
+                increment = _finite_product(
+                    item[average_name], item["pair_count"], label
+                )
+                next_sums[sum_name] = _finite_add(
+                    next_sums[sum_name], increment, label
+                )
+            staged_sums[key] = next_sums
+            plan.append((item, next_sums))
+        return plan
 
     def _manifest_merge_result(self, validated):
         if validated["schema_version"] == 1 and not validated["manifest_present"]:

@@ -141,6 +141,56 @@ class AssociationHeadAuditAccumulatorTest(unittest.TestCase):
                     audit.add_pair(**self._pair(), sample=sample)
                 self.assertEqual(audit.to_summary(), before)
 
+    def test_add_pair_rejects_aggregate_overflow_atomically(self):
+        max_float = np.finfo(np.float64).max
+        for field_name in ("score", "delta", "cost_before", "cost_after"):
+            with self.subTest(field=field_name):
+                audit = AssociationHeadAuditAccumulator(max_samples_per_bucket=2)
+                audit.add_pair(
+                    **self._pair(**{field_name: max_float}),
+                    sample={"call": 1},
+                )
+                before = copy.deepcopy(audit.to_summary())
+
+                with self.assertRaisesRegex(ValueError, field_name):
+                    audit.add_pair(
+                        **self._pair(**{field_name: max_float}),
+                        sample={"call": 2},
+                    )
+
+                self.assertEqual(audit.to_summary(), before)
+
+    def test_merge_rejects_pair_aggregate_overflow_atomically(self):
+        max_float = np.finfo(np.float64).max
+        for field_name in ("score", "delta", "cost_before", "cost_after"):
+            with self.subTest(field=field_name):
+                target = AssociationHeadAuditAccumulator(max_samples_per_bucket=2)
+                worker = AssociationHeadAuditAccumulator(max_samples_per_bucket=2)
+                target.add_pair(
+                    **self._pair(**{field_name: max_float}),
+                    sample={"source": "target"},
+                )
+                worker.add_pair(
+                    **self._pair(**{field_name: max_float}),
+                    sample={"source": "worker"},
+                )
+                before = copy.deepcopy(target.to_summary())
+
+                with self.assertRaisesRegex(ValueError, field_name):
+                    target.merge_state(worker.export_state())
+
+                self.assertEqual(target.to_summary(), before)
+
+        worker = AssociationHeadAuditAccumulator()
+        worker.add_pair(**self._pair(score=max_float))
+        overflow_product_state = worker.export_state()
+        overflow_product_state["pair_buckets"][0]["pair_count"] = 2
+        target = AssociationHeadAuditAccumulator()
+        before = copy.deepcopy(target.to_summary())
+        with self.assertRaisesRegex(ValueError, "score"):
+            target.merge_state(overflow_product_state)
+        self.assertEqual(target.to_summary(), before)
+
     def test_merges_exported_states_and_writes_json(self):
         first = AssociationHeadAuditAccumulator()
         second = AssociationHeadAuditAccumulator()
@@ -404,6 +454,12 @@ class AssociationHeadAuditAccumulatorTest(unittest.TestCase):
             callback(state)
             return state
 
+        def threshold_exceeds_changed(state):
+            bucket = state["decision_buckets"][0]
+            bucket["total_decisions"] = 2
+            bucket["unknown_count"] = 1
+            bucket["threshold_crossing_count"] = 2
+
         malformed_states = [
             ("schema_version", changed(lambda state: state.pop("schema_version"))),
             (
@@ -475,6 +531,14 @@ class AssociationHeadAuditAccumulatorTest(unittest.TestCase):
                 ),
             ),
             (
+                "changed assignment categories",
+                changed(
+                    lambda state: state["decision_buckets"][0].__setitem__(
+                        "changed_detection_count", 0
+                    )
+                ),
+            ),
+            (
                 "known_changed_count",
                 changed(
                     lambda state: state["decision_buckets"][0].__setitem__(
@@ -492,11 +556,7 @@ class AssociationHeadAuditAccumulatorTest(unittest.TestCase):
             ),
             (
                 "threshold_crossing_count",
-                changed(
-                    lambda state: state["decision_buckets"][0].__setitem__(
-                        "threshold_crossing_count", 2
-                    )
-                ),
+                changed(threshold_exceeds_changed),
             ),
             (
                 "raw_decisions",
