@@ -90,6 +90,13 @@ def _optional_finite_float(value, field_name):
     return result
 
 
+def _finite_float(value, field_name):
+    result = _optional_finite_float(value, field_name)
+    if result is None:
+        raise TypeError(f"{field_name} must be a finite number")
+    return result
+
+
 def _optional_rank(value, field_name):
     result = _nonnegative_int(value, field_name, allow_none=True)
     if result == 0:
@@ -218,6 +225,205 @@ def _extend_bounded(target, values, limit):
     remaining = limit - len(target)
     if remaining > 0:
         target.extend(values[:remaining])
+
+
+def _list_field(mapping, field_name, *, required=False):
+    if required and field_name not in mapping:
+        raise ValueError(f"audit state is missing required field {field_name!r}")
+    value = mapping.get(field_name, [])
+    if not isinstance(value, list):
+        raise TypeError(f"{field_name} must be a list")
+    return value
+
+
+def _validate_pair_bucket_state(item):
+    if not isinstance(item, Mapping):
+        raise TypeError("pair bucket state must be a mapping")
+    for field_name in (
+        "class_id",
+        "class_name",
+        "state_bucket",
+        "pair_count",
+        "finite_pair_count",
+        "active_pair_count",
+        "penalized_pair_count",
+        "avg_score",
+        "avg_delta",
+        "avg_cost_before",
+        "avg_cost_after",
+    ):
+        if field_name not in item:
+            raise ValueError(f"pair bucket is missing required field {field_name!r}")
+
+    normalized = dict(item)
+    normalized["class_id"] = _nonnegative_int(item["class_id"], "class_id")
+    for field_name in ("class_name", "state_bucket"):
+        value = item[field_name]
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field_name} must be a non-empty string")
+        normalized[field_name] = value.strip()
+
+    for field_name in (
+        "pair_count",
+        "finite_pair_count",
+        "active_pair_count",
+        "penalized_pair_count",
+    ):
+        normalized[field_name] = _nonnegative_int(item[field_name], field_name)
+    pair_count = normalized["pair_count"]
+    for field_name in (
+        "finite_pair_count",
+        "active_pair_count",
+        "penalized_pair_count",
+    ):
+        if normalized[field_name] > pair_count:
+            raise ValueError(f"{field_name} cannot exceed pair_count")
+
+    for field_name in (
+        "avg_score",
+        "avg_delta",
+        "avg_cost_before",
+        "avg_cost_after",
+    ):
+        normalized[field_name] = _finite_float(item[field_name], field_name)
+
+    for field_name in (
+        "score_quantiles",
+        "delta_quantiles",
+        "cost_before_quantiles",
+        "cost_after_quantiles",
+    ):
+        quantiles = item.get(field_name, {}) or {}
+        if not isinstance(quantiles, Mapping):
+            raise TypeError(f"{field_name} must be a mapping")
+        quantiles = _json_safe(quantiles, path=field_name)
+        normalized[field_name] = {
+            key: _finite_float(value, f"{field_name}.{key}")
+            for key, value in quantiles.items()
+        }
+
+    samples = _list_field(item, "samples")
+    normalized["samples"] = []
+    for index, sample in enumerate(samples):
+        if not isinstance(sample, Mapping):
+            raise TypeError(f"samples[{index}] must be a mapping")
+        normalized["samples"].append(
+            _json_safe(sample, path=f"samples[{index}]")
+        )
+    return normalized
+
+
+def _validate_decision_bucket_state(item):
+    if not isinstance(item, Mapping):
+        raise TypeError("decision bucket state must be a mapping")
+    for field_name in ("class_id", "class_name", "track_state_bucket"):
+        if field_name not in item:
+            raise ValueError(
+                f"decision bucket is missing required field {field_name!r}"
+            )
+    class_id = _nonnegative_int(item["class_id"], "class_id")
+    class_name = item["class_name"]
+    state_bucket = item["track_state_bucket"]
+    if not isinstance(class_name, str) or not class_name.strip():
+        raise ValueError("decision bucket class_name must be non-empty")
+    if state_bucket not in _TRACK_STATE_BUCKETS:
+        raise ValueError("decision bucket track_state_bucket is invalid")
+
+    counters = {}
+    for field_name in _DECISION_COUNTER_FIELDS:
+        if field_name not in item:
+            raise ValueError(
+                f"decision bucket is missing required counter {field_name!r}"
+            )
+        counters[field_name] = _nonnegative_int(item[field_name], field_name)
+
+    total = counters["total_decisions"]
+    outcome_total = sum(
+        counters[field_name]
+        for field_name in (
+            "improved_count",
+            "damaged_count",
+            "neutral_count",
+            "unknown_count",
+        )
+    )
+    if outcome_total != total:
+        raise ValueError("outcome counts must sum to total_decisions")
+    expected_known = (
+        counters["improved_count"]
+        + counters["damaged_count"]
+        + counters["neutral_count"]
+    )
+    if counters["known_gt_decisions"] != expected_known:
+        raise ValueError(
+            "known_gt_decisions must equal improved_count + damaged_count + "
+            "neutral_count"
+        )
+    changed = counters["changed_decisions"]
+    if changed > total:
+        raise ValueError("changed_decisions cannot exceed total_decisions")
+    change_categories = (
+        "changed_detection_count",
+        "changed_to_match_count",
+        "changed_to_unmatched_count",
+    )
+    for field_name in change_categories:
+        if counters[field_name] > changed:
+            raise ValueError(f"{field_name} cannot exceed changed_decisions")
+    if sum(counters[field_name] for field_name in change_categories) > changed:
+        raise ValueError(
+            "changed assignment categories cannot exceed changed_decisions"
+        )
+    known_changed = counters["known_changed_count"]
+    if known_changed > changed:
+        raise ValueError("known_changed_count cannot exceed changed_decisions")
+    minimum_known_changed = counters["improved_count"] + counters["damaged_count"]
+    maximum_known_changed = minimum_known_changed + counters["neutral_count"]
+    if not minimum_known_changed <= known_changed <= maximum_known_changed:
+        raise ValueError(
+            "known_changed_count must include all improved/damaged changes and "
+            "at most changed neutral decisions"
+        )
+    if counters["threshold_crossing_count"] > total:
+        raise ValueError("threshold_crossing_count cannot exceed total_decisions")
+
+    raw_decisions = item.get("raw_decisions", item.get("samples", []))
+    if not isinstance(raw_decisions, list):
+        raise TypeError("raw_decisions must be a list")
+    normalized_decisions = []
+    bucket_key = (class_id, class_name.strip(), state_bucket)
+    for index, record in enumerate(raw_decisions):
+        decision = _normalize_decision(record)
+        decision_key = (
+            decision["class_id"],
+            decision["class_name"],
+            decision["track_state_bucket"],
+        )
+        if decision_key != bucket_key:
+            raise ValueError(
+                f"raw_decisions[{index}] does not match decision bucket metadata"
+            )
+        normalized_decisions.append(decision)
+
+    association_scores = _list_field(item, "association_scores")
+    normalized_scores = [
+        _json_safe(value, path=f"association_scores[{index}]")
+        for index, value in enumerate(association_scores)
+    ]
+    cost_gaps = _list_field(item, "cost_gaps")
+    normalized_cost_gaps = [
+        _finite_float(value, f"cost_gaps[{index}]")
+        for index, value in enumerate(cost_gaps)
+    ]
+    return {
+        "class_id": class_id,
+        "class_name": class_name.strip(),
+        "track_state_bucket": state_bucket,
+        **counters,
+        "raw_decisions": normalized_decisions,
+        "association_scores": normalized_scores,
+        "cost_gaps": normalized_cost_gaps,
+    }
 
 
 @dataclass
@@ -438,23 +644,44 @@ class AssociationHeadAuditAccumulator:
         finite: bool,
         sample=None,
     ) -> None:
-        key = (int(class_id), str(class_name), str(state_bucket))
+        normalized_class_id = _nonnegative_int(class_id, "class_id")
+        if not isinstance(class_name, str) or not class_name.strip():
+            raise ValueError("class_name must be a non-empty string")
+        if not isinstance(state_bucket, str) or not state_bucket.strip():
+            raise ValueError("state_bucket must be a non-empty string")
+        normalized_score = _finite_float(score, "score")
+        normalized_delta = _finite_float(delta, "delta (penalty)")
+        normalized_cost_before = _finite_float(
+            cost_before, "cost_before (base_cost)"
+        )
+        normalized_cost_after = _finite_float(
+            cost_after, "cost_after (corrected_cost)"
+        )
+        normalized_active = _strict_bool(active, "active")
+        normalized_finite = _strict_bool(finite, "finite")
+        normalized_sample = None
+        if sample is not None:
+            if not isinstance(sample, Mapping):
+                raise TypeError("sample must be a JSON-serializable mapping or None")
+            normalized_sample = _json_safe(sample, path="sample")
+
+        key = (normalized_class_id, class_name.strip(), state_bucket.strip())
         bucket = self._buckets.get(key)
         if bucket is None:
             bucket = _Bucket(
-                class_id=int(class_id),
-                class_name=str(class_name),
-                state_bucket=str(state_bucket),
+                class_id=normalized_class_id,
+                class_name=class_name.strip(),
+                state_bucket=state_bucket.strip(),
             )
             self._buckets[key] = bucket
         bucket.add(
-            score=float(score),
-            delta=float(delta),
-            cost_before=float(cost_before),
-            cost_after=float(cost_after),
-            active=bool(active),
-            finite=bool(finite),
-            sample=sample,
+            score=normalized_score,
+            delta=normalized_delta,
+            cost_before=normalized_cost_before,
+            cost_after=normalized_cost_after,
+            active=normalized_active,
+            finite=normalized_finite,
+            sample=normalized_sample,
             max_samples=self.max_samples_per_bucket,
         )
 
@@ -515,38 +742,35 @@ class AssociationHeadAuditAccumulator:
         return self.to_summary()
 
     def merge_state(self, state):
-        if not state:
+        if state is None:
             return
-        if not isinstance(state, Mapping):
-            raise TypeError("audit state must be a mapping")
-        self._merge_manifest(state)
-        pair_items = state.get("pair_buckets")
-        if pair_items is None:
-            pair_items = state.get("buckets", [])
-        for item in pair_items:
+        validated = self._validate_merge_state(state)
+        manifest_result = self._manifest_merge_result(validated)
+
+        for item in validated["pair_buckets"]:
             key = (
-                int(item["class_id"]),
-                str(item["class_name"]),
-                str(item["state_bucket"]),
+                item["class_id"],
+                item["class_name"],
+                item["state_bucket"],
             )
             bucket = self._buckets.get(key)
             if bucket is None:
                 bucket = _Bucket(
-                    class_id=int(item["class_id"]),
-                    class_name=str(item["class_name"]),
-                    state_bucket=str(item["state_bucket"]),
+                    class_id=item["class_id"],
+                    class_name=item["class_name"],
+                    state_bucket=item["state_bucket"],
                 )
                 self._buckets[key] = bucket
 
-            pair_count = int(item.get("pair_count", 0))
+            pair_count = item["pair_count"]
             bucket.pair_count += pair_count
-            bucket.finite_pair_count += int(item.get("finite_pair_count", 0))
-            bucket.active_pair_count += int(item.get("active_pair_count", 0))
-            bucket.penalized_pair_count += int(item.get("penalized_pair_count", 0))
-            bucket.score_sum += float(item.get("avg_score", 0.0)) * pair_count
-            bucket.delta_sum += float(item.get("avg_delta", 0.0)) * pair_count
-            bucket.cost_before_sum += float(item.get("avg_cost_before", 0.0)) * pair_count
-            bucket.cost_after_sum += float(item.get("avg_cost_after", 0.0)) * pair_count
+            bucket.finite_pair_count += item["finite_pair_count"]
+            bucket.active_pair_count += item["active_pair_count"]
+            bucket.penalized_pair_count += item["penalized_pair_count"]
+            bucket.score_sum += item["avg_score"] * pair_count
+            bucket.delta_sum += item["avg_delta"] * pair_count
+            bucket.cost_before_sum += item["avg_cost_before"] * pair_count
+            bucket.cost_after_sum += item["avg_cost_after"] * pair_count
             # Scene-level states are already summarized; keep bounded proxy
             # points for merged quantiles instead of expanding millions of
             # pairs back into memory.
@@ -564,52 +788,104 @@ class AssociationHeadAuditAccumulator:
                     quantiles.get("p90", item.get(avg_name, 0.0)),
                     quantiles.get("max", item.get(avg_name, 0.0)),
                 ]
-                getattr(bucket, attr).extend(float(value) for value in values)
-            samples = [
-                _json_safe(sample, path="pair_bucket.samples")
-                for sample in item.get("samples", [])
-            ]
-            _extend_bounded(bucket.samples, samples, self.max_samples_per_bucket)
+                getattr(bucket, attr).extend(values)
+            _extend_bounded(
+                bucket.samples,
+                item["samples"],
+                self.max_samples_per_bucket,
+            )
 
-        for item in state.get("decision_buckets", []):
-            self._merge_decision_bucket(item)
+        for item in validated["decision_buckets"]:
+            self._apply_decision_bucket(item)
 
-    def _merge_manifest(self, state):
-        is_legacy = int(state.get("schema_version", 1)) == 1
-        if is_legacy and "runtime_manifest" not in state:
-            return
+        (
+            self.runtime_manifest,
+            self._manifest_compatible,
+            self._manifest_mismatches,
+        ) = manifest_result
 
-        incoming = state.get("runtime_manifest")
-        if incoming is not None:
-            incoming = _json_safe(incoming, path="runtime_manifest")
-            if not isinstance(incoming, dict):
+    def _validate_merge_state(self, state):
+        if not isinstance(state, Mapping):
+            raise TypeError("audit state must be a mapping")
+        if "schema_version" not in state:
+            raise ValueError("audit state is missing required schema_version")
+        schema_version = _nonnegative_int(
+            state["schema_version"], "schema_version"
+        )
+        if schema_version not in {1, 2}:
+            raise ValueError(
+                f"schema_version must be 1 or 2, got {schema_version}"
+            )
+
+        manifest_present = "runtime_manifest" in state
+        if schema_version == 2 and not manifest_present:
+            raise ValueError("schema v2 state is missing runtime_manifest")
+        runtime_manifest = state.get("runtime_manifest")
+        if runtime_manifest is not None:
+            runtime_manifest = _json_safe(
+                runtime_manifest, path="runtime_manifest"
+            )
+            if not isinstance(runtime_manifest, dict):
                 raise TypeError("runtime_manifest must be a mapping or None")
 
+        if schema_version == 1:
+            if state.get("decision_buckets"):
+                raise ValueError("schema v1 state cannot contain decision_buckets")
+            pair_items = _list_field(state, "buckets", required=True)
+            decision_items = []
+        else:
+            pair_items = _list_field(state, "pair_buckets", required=True)
+            decision_items = _list_field(
+                state, "decision_buckets", required=True
+            )
+
+        return {
+            "schema_version": schema_version,
+            "manifest_present": manifest_present,
+            "runtime_manifest": runtime_manifest,
+            "pair_buckets": [
+                _validate_pair_bucket_state(item) for item in pair_items
+            ],
+            "decision_buckets": [
+                _validate_decision_bucket_state(item) for item in decision_items
+            ],
+        }
+
+    def _manifest_merge_result(self, validated):
+        if validated["schema_version"] == 1 and not validated["manifest_present"]:
+            return (
+                self.runtime_manifest,
+                self._manifest_compatible,
+                list(self._manifest_mismatches),
+            )
+        incoming = validated["runtime_manifest"]
         if self.runtime_manifest is None and incoming is not None:
-            self.runtime_manifest = incoming
-            return
+            return (
+                incoming,
+                self._manifest_compatible,
+                list(self._manifest_mismatches),
+            )
         if runtime_manifests_compatible(self.runtime_manifest, incoming):
-            return
+            return (
+                self.runtime_manifest,
+                self._manifest_compatible,
+                list(self._manifest_mismatches),
+            )
 
         differences = _manifest_differences(self.runtime_manifest, incoming)
         message = "runtime manifest mismatch: " + "; ".join(differences)
         if self.strict_manifest:
             raise ValueError(message)
-        self._manifest_compatible = False
+        mismatches = list(self._manifest_mismatches)
         for difference in differences:
-            if difference not in self._manifest_mismatches:
-                self._manifest_mismatches.append(difference)
+            if difference not in mismatches:
+                mismatches.append(difference)
+        return self.runtime_manifest, False, mismatches
 
-    def _merge_decision_bucket(self, item):
-        if not isinstance(item, Mapping):
-            raise TypeError("decision bucket state must be a mapping")
-        class_id = _nonnegative_int(item.get("class_id"), "class_id")
-        class_name = item.get("class_name")
-        state_bucket = item.get("track_state_bucket")
-        if not isinstance(class_name, str) or not class_name:
-            raise ValueError("decision bucket class_name must be non-empty")
-        if state_bucket not in _TRACK_STATE_BUCKETS:
-            raise ValueError("decision bucket track_state_bucket is invalid")
+    def _apply_decision_bucket(self, item):
+        class_id = item["class_id"]
+        class_name = item["class_name"]
+        state_bucket = item["track_state_bucket"]
         key = (class_id, class_name, state_bucket)
         bucket = self._decision_buckets.get(key)
         if bucket is None:
@@ -621,32 +897,26 @@ class AssociationHeadAuditAccumulator:
             self._decision_buckets[key] = bucket
 
         for field_name in _DECISION_COUNTER_FIELDS:
-            value = _nonnegative_int(item.get(field_name, 0), field_name)
-            setattr(bucket, field_name, getattr(bucket, field_name) + value)
-
-        raw_decisions = item.get("raw_decisions", item.get("samples", []))
-        normalized_decisions = [
-            _normalize_decision(record) for record in raw_decisions
-        ]
-        score_samples = [
-            _json_safe(value, path="decision_bucket.association_scores")
-            for value in item.get("association_scores", [])
-        ]
-        cost_gaps = [
-            float(_json_safe(value, path="decision_bucket.cost_gaps"))
-            for value in item.get("cost_gaps", [])
-        ]
+            setattr(
+                bucket,
+                field_name,
+                getattr(bucket, field_name) + item[field_name],
+            )
         _extend_bounded(
             bucket.raw_decisions,
-            normalized_decisions,
+            item["raw_decisions"],
             self.max_samples_per_bucket,
         )
         _extend_bounded(
             bucket.association_scores,
-            score_samples,
+            item["association_scores"],
             self.max_samples_per_bucket,
         )
-        _extend_bounded(bucket.cost_gaps, cost_gaps, self.max_samples_per_bucket)
+        _extend_bounded(
+            bucket.cost_gaps,
+            item["cost_gaps"],
+            self.max_samples_per_bucket,
+        )
 
     def write_json(self, path):
         path = Path(path)

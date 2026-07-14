@@ -1,7 +1,10 @@
+import copy
 import json
 import tempfile
 import unittest
 from pathlib import Path
+
+import numpy as np
 
 from tracker.association_head_audit import AssociationHeadAuditAccumulator
 
@@ -21,6 +24,22 @@ class AssociationHeadAuditAccumulatorTest(unittest.TestCase):
             "production_selected_association_score": 0.1,
             "shadow_selected_association_score": 0.9,
             "original_cost_gap": 0.01,
+        }
+        record.update(overrides)
+        return record
+
+    @staticmethod
+    def _pair(**overrides):
+        record = {
+            "class_id": 5,
+            "class_name": "trailer",
+            "state_bucket": "unmatched",
+            "score": 0.8,
+            "delta": 0.02,
+            "cost_before": 1.0,
+            "cost_after": 1.02,
+            "active": True,
+            "finite": True,
         }
         record.update(overrides)
         return record
@@ -94,6 +113,33 @@ class AssociationHeadAuditAccumulatorTest(unittest.TestCase):
         self.assertEqual(len(bucket["samples"]), 2)
         self.assertEqual(bucket["samples"][0]["det_index"], 0)
         self.assertEqual(bucket["samples"][1]["det_index"], 1)
+
+    def test_add_pair_rejects_nonfinite_numeric_fields_without_mutation(self):
+        for field_name in ("score", "delta", "cost_before", "cost_after"):
+            for value in (float("nan"), float("inf"), float("-inf")):
+                with self.subTest(field=field_name, value=value):
+                    audit = AssociationHeadAuditAccumulator()
+                    with self.assertRaisesRegex(ValueError, field_name):
+                        audit.add_pair(**self._pair(**{field_name: value}))
+                    self.assertEqual(audit.to_summary()["pair_buckets"], [])
+                    json.dumps(audit.to_summary(), allow_nan=False)
+
+    def test_add_pair_normalizes_or_rejects_samples_before_mutation(self):
+        audit = AssociationHeadAuditAccumulator(max_samples_per_bucket=2)
+        audit.add_pair(
+            **self._pair(),
+            sample={"det_index": np.int64(3), "costs": (np.float32(0.5),)},
+        )
+        normalized = audit.to_summary()["pair_buckets"][0]["samples"][0]
+        self.assertEqual(normalized, {"det_index": 3, "costs": [0.5]})
+        json.dumps(audit.to_summary(), allow_nan=False)
+
+        before = copy.deepcopy(audit.to_summary())
+        for sample in ({"bad": object()}, {"bad": float("nan")}, {"bad": float("inf")}):
+            with self.subTest(sample=sample):
+                with self.assertRaisesRegex((TypeError, ValueError), "sample.bad"):
+                    audit.add_pair(**self._pair(), sample=sample)
+                self.assertEqual(audit.to_summary(), before)
 
     def test_merges_exported_states_and_writes_json(self):
         first = AssociationHeadAuditAccumulator()
@@ -343,6 +389,142 @@ class AssociationHeadAuditAccumulatorTest(unittest.TestCase):
         self.assertEqual(summary["pair_buckets"][0]["pair_count"], 2)
         self.assertEqual(summary["decision_buckets"], [])
         self.assertFalse(summary["decision_evidence_available"])
+
+    def test_merge_rejects_malformed_state_atomically(self):
+        worker = AssociationHeadAuditAccumulator(
+            max_samples_per_bucket=1,
+            runtime_manifest={"config_sha256": "incoming"},
+        )
+        worker.add_pair(**self._pair(), sample={"worker": 1})
+        worker.add_decision(self._decision())
+        baseline = worker.export_state()
+
+        def changed(callback):
+            state = copy.deepcopy(baseline)
+            callback(state)
+            return state
+
+        malformed_states = [
+            ("schema_version", changed(lambda state: state.pop("schema_version"))),
+            (
+                "schema_version",
+                changed(lambda state: state.__setitem__("schema_version", 3)),
+            ),
+            (
+                "total_decisions",
+                changed(
+                    lambda state: state["decision_buckets"][0].pop(
+                        "total_decisions"
+                    )
+                ),
+            ),
+            (
+                "total_decisions",
+                changed(
+                    lambda state: state["decision_buckets"][0].__setitem__(
+                        "total_decisions", True
+                    )
+                ),
+            ),
+            (
+                "damaged_count",
+                changed(
+                    lambda state: state["decision_buckets"][0].__setitem__(
+                        "damaged_count", -1
+                    )
+                ),
+            ),
+            (
+                "outcome counts",
+                changed(
+                    lambda state: state["decision_buckets"][0].__setitem__(
+                        "unknown_count", 1
+                    )
+                ),
+            ),
+            (
+                "known_gt_decisions",
+                changed(
+                    lambda state: state["decision_buckets"][0].__setitem__(
+                        "known_gt_decisions", 0
+                    )
+                ),
+            ),
+            (
+                "changed_decisions",
+                changed(
+                    lambda state: state["decision_buckets"][0].__setitem__(
+                        "changed_decisions", 2
+                    )
+                ),
+            ),
+            (
+                "changed_detection_count",
+                changed(
+                    lambda state: state["decision_buckets"][0].__setitem__(
+                        "changed_detection_count", 2
+                    )
+                ),
+            ),
+            (
+                "changed assignment categories",
+                changed(
+                    lambda state: state["decision_buckets"][0].__setitem__(
+                        "changed_to_match_count", 1
+                    )
+                ),
+            ),
+            (
+                "known_changed_count",
+                changed(
+                    lambda state: state["decision_buckets"][0].__setitem__(
+                        "known_changed_count", 2
+                    )
+                ),
+            ),
+            (
+                "known_changed_count",
+                changed(
+                    lambda state: state["decision_buckets"][0].__setitem__(
+                        "known_changed_count", 0
+                    )
+                ),
+            ),
+            (
+                "threshold_crossing_count",
+                changed(
+                    lambda state: state["decision_buckets"][0].__setitem__(
+                        "threshold_crossing_count", 2
+                    )
+                ),
+            ),
+            (
+                "raw_decisions",
+                changed(
+                    lambda state: state["decision_buckets"][0]["raw_decisions"][
+                        0
+                    ].__setitem__("class_id", 6)
+                ),
+            ),
+            (
+                "score_quantiles",
+                changed(
+                    lambda state: state["pair_buckets"][0].__setitem__(
+                        "score_quantiles", {1: 0.5}
+                    )
+                ),
+            ),
+        ]
+
+        for expected_field, state in malformed_states:
+            with self.subTest(expected_field=expected_field):
+                merged = AssociationHeadAuditAccumulator(max_samples_per_bucket=1)
+                before = copy.deepcopy(merged.to_summary())
+                with self.assertRaisesRegex(
+                    (TypeError, ValueError), expected_field
+                ):
+                    merged.merge_state(state)
+                self.assertEqual(merged.to_summary(), before)
 
     def test_rejects_malformed_decisions_and_summary_is_strict_json(self):
         required_fields = (
