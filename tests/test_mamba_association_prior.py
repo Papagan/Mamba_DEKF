@@ -159,6 +159,41 @@ class MambaAssociationPriorTest(unittest.TestCase):
         np.testing.assert_array_equal(base, base_original)
         np.testing.assert_array_equal(scores, scores_original)
 
+    def test_shadow_without_real_track_ids_skips_callback_and_preserves_production(self):
+        base, _, dets, scores = _flippable_matching_inputs()
+        trajs = [
+            _Traj("trailer", unmatch_length=1),
+            _Traj("trailer", unmatch_length=1),
+        ]
+        callback_calls = []
+
+        with patch.object(
+            matching,
+            "cost_calculate_general",
+            return_value=(
+                base,
+                np.array(["trailer", "trailer"]),
+                np.array(["trailer", "trailer"]),
+            ),
+        ):
+            production_matches, production_costs = matching.match_trajs_and_dets(
+                trajs,
+                dets,
+                _matching_cfg(shadow_mode=True),
+                association_scores=scores,
+                association_shadow_callback=callback_calls.append,
+            )
+            base_matches, base_costs = matching.match_trajs_and_dets(
+                trajs,
+                dets,
+                _matching_cfg(shadow_mode=False, head_enabled=False),
+                association_scores=scores,
+            )
+
+        self.assertEqual(callback_calls, [])
+        np.testing.assert_array_equal(production_matches, base_matches)
+        np.testing.assert_array_equal(production_costs, base_costs)
+
     def test_shadow_disabled_preserves_explicit_corrected_intervention(self):
         base, trajs, dets, scores = _flippable_matching_inputs()
 
