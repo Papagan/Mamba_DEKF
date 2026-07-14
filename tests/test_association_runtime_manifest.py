@@ -159,6 +159,50 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
         self.assertEqual(architecture["dropout"], 0.25)
         self.assertEqual(architecture["dropout_source"], "checkpoint")
 
+    def test_malformed_checkpoint_hidden_dims_fall_back_safely(self):
+        torch.save(
+            {"settings": {"hidden_dims": "bad", "dropout": 0.25}},
+            self.checkpoint_path,
+        )
+        cfg = self._cfg()
+        del cfg["MAMBA_ASSOCIATION_HEAD"]["HIDDEN_DIMS"]
+        del cfg["MAMBA_ASSOCIATION_HEAD"]["DROPOUT"]
+
+        manifest = build_association_runtime_manifest(
+            cfg=cfg,
+            config_path=str(self.config_path),
+            process_count=1,
+            git_root=self.root,
+        )
+
+        architecture = manifest["association_head_architecture"]
+        self.assertEqual(architecture["hidden_dims"], [256, 128])
+        self.assertEqual(architecture["hidden_dims_source"], "default")
+        self.assertEqual(architecture["dropout"], 0.25)
+        self.assertEqual(architecture["dropout_source"], "checkpoint")
+
+    def test_malformed_checkpoint_dropout_falls_back_safely(self):
+        torch.save(
+            {"settings": {"hidden_dims": [96, 48], "dropout": "bad"}},
+            self.checkpoint_path,
+        )
+        cfg = self._cfg()
+        del cfg["MAMBA_ASSOCIATION_HEAD"]["HIDDEN_DIMS"]
+        del cfg["MAMBA_ASSOCIATION_HEAD"]["DROPOUT"]
+
+        manifest = build_association_runtime_manifest(
+            cfg=cfg,
+            config_path=str(self.config_path),
+            process_count=1,
+            git_root=self.root,
+        )
+
+        architecture = manifest["association_head_architecture"]
+        self.assertEqual(architecture["hidden_dims"], [96, 48])
+        self.assertEqual(architecture["hidden_dims_source"], "checkpoint")
+        self.assertEqual(architecture["dropout"], 0.1)
+        self.assertEqual(architecture["dropout_source"], "default")
+
     def test_manifest_compatibility_rejects_changed_active_classes(self):
         left = {"config_sha256": "a", "active_class_states": {"2": ["matched"]}}
         right = {"config_sha256": "a", "active_class_states": {"3": ["matched"]}}
@@ -182,8 +226,7 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
     def test_active_class_states_match_runtime_normalization_semantics(self):
         mixed_cfg = self._cfg()
         mixed_cfg["MAMBA_ASSOCIATION_HEAD"]["ACTIVE_CLASS_STATES"] = {
-            2: [" MATCHED ", "matched"],
-            "2": [" UNMATCHED ", "unmatched"],
+            2: [" UNMATCHED ", "matched", " MATCHED ", "unmatched"],
             3: ["UNMATCHED", " matched "],
         }
         canonical_cfg = self._cfg()
@@ -212,6 +255,22 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
         self.assertEqual(mixed["active_class_states"], expected)
         self.assertEqual(canonical["active_class_states"], expected)
         self.assertTrue(runtime_manifests_compatible(mixed, canonical))
+
+    def test_active_class_states_prefer_integer_key_over_string_key(self):
+        cfg = self._cfg()
+        cfg["MAMBA_ASSOCIATION_HEAD"]["ACTIVE_CLASS_STATES"] = {
+            2: [" MATCHED ", "matched"],
+            "2": ["unmatched"],
+        }
+
+        manifest = build_association_runtime_manifest(
+            cfg=cfg,
+            config_path=str(self.config_path),
+            process_count=1,
+            git_root=self.root,
+        )
+
+        self.assertEqual(manifest["active_class_states"], {"2": ["matched"]})
 
 
 if __name__ == "__main__":

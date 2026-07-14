@@ -78,25 +78,42 @@ def _normalize_string_mapping(values: Any) -> dict:
     }
 
 
+def _lookup_mapping_value(values: Mapping, key: Any, default: Any) -> Any:
+    if key in values:
+        return values[key]
+    text_key = str(key)
+    if text_key in values:
+        return values[text_key]
+    return default
+
+
 def _normalize_active_class_states(values: Any) -> dict:
     if not isinstance(values, Mapping):
         return {}
 
+    missing = object()
+    effective_class_ids = set()
+    for key in values:
+        try:
+            effective_class_ids.add(int(key))
+        except (TypeError, ValueError):
+            effective_class_ids.add(str(key))
+
     normalized = {}
-    for class_id, states in values.items():
+    for class_id in sorted(effective_class_ids, key=str):
+        states = _lookup_mapping_value(values, class_id, missing)
+        if states is missing:
+            continue
         if states is None:
             state_values = []
         elif isinstance(states, str):
             state_values = [states]
         else:
             state_values = states
-        normalized.setdefault(str(class_id), set()).update(
-            str(state).strip().lower() for state in state_values
+        normalized[str(class_id)] = sorted(
+            {str(state).strip().lower() for state in state_values}
         )
-    return {
-        class_id: sorted(normalized[class_id])
-        for class_id in sorted(normalized)
-    }
+    return normalized
 
 
 def _parse_hidden_dims(value: Any) -> list:
@@ -105,6 +122,38 @@ def _parse_hidden_dims(value: Any) -> list:
     if value is None:
         return [256, 128]
     return [int(item) for item in str(value).split(",") if str(item).strip()]
+
+
+def _effective_hidden_dims(head_cfg: Mapping, checkpoint_settings: Mapping) -> tuple:
+    if "HIDDEN_DIMS" in head_cfg:
+        value = head_cfg["HIDDEN_DIMS"]
+        source = "config"
+    elif "hidden_dims" in checkpoint_settings:
+        value = checkpoint_settings["hidden_dims"]
+        source = "checkpoint"
+    else:
+        value = [256, 128]
+        source = "default"
+    try:
+        return _parse_hidden_dims(value), source
+    except Exception:
+        return [256, 128], "default"
+
+
+def _effective_dropout(head_cfg: Mapping, checkpoint_settings: Mapping) -> tuple:
+    if "DROPOUT" in head_cfg:
+        value = head_cfg["DROPOUT"]
+        source = "config"
+    elif "dropout" in checkpoint_settings:
+        value = checkpoint_settings["dropout"]
+        source = "checkpoint"
+    else:
+        value = 0.1
+        source = "default"
+    try:
+        return float(value), source
+    except Exception:
+        return 0.1, "default"
 
 
 def build_association_runtime_manifest(
@@ -135,20 +184,10 @@ def build_association_runtime_manifest(
         if needs_checkpoint_settings
         else {}
     )
-    hidden_dims_source = (
-        "config"
-        if "HIDDEN_DIMS" in head_cfg
-        else "checkpoint"
-        if "hidden_dims" in checkpoint_settings
-        else "default"
+    hidden_dims, hidden_dims_source = _effective_hidden_dims(
+        head_cfg, checkpoint_settings
     )
-    dropout_source = (
-        "config"
-        if "DROPOUT" in head_cfg
-        else "checkpoint"
-        if "dropout" in checkpoint_settings
-        else "default"
-    )
+    dropout, dropout_source = _effective_dropout(head_cfg, checkpoint_settings)
 
     return {
         "audit_schema_version": AUDIT_SCHEMA_VERSION,
@@ -162,18 +201,9 @@ def build_association_runtime_manifest(
         ),
         "association_head_architecture": {
             "input_dim": embed_dim * 4 + 7,
-            "hidden_dims": _parse_hidden_dims(
-                head_cfg.get(
-                    "HIDDEN_DIMS",
-                    checkpoint_settings.get("hidden_dims", [256, 128]),
-                )
-            ),
+            "hidden_dims": hidden_dims,
             "hidden_dims_source": hidden_dims_source,
-            "dropout": float(
-                head_cfg.get(
-                    "DROPOUT", checkpoint_settings.get("dropout", 0.1)
-                )
-            ),
+            "dropout": dropout,
             "dropout_source": dropout_source,
             "num_classes": num_classes,
         },
