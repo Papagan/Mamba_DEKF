@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,6 +7,24 @@ from tracker.association_head_audit import AssociationHeadAuditAccumulator
 
 
 class AssociationHeadAuditAccumulatorTest(unittest.TestCase):
+    @staticmethod
+    def _decision(**overrides):
+        record = {
+            "class_id": 5,
+            "class_name": "trailer",
+            "track_state_bucket": "unmatched",
+            "assignment_changed": True,
+            "production_det_index": 0,
+            "shadow_det_index": 1,
+            "threshold_crossing": False,
+            "outcome": "improved",
+            "production_selected_association_score": 0.1,
+            "shadow_selected_association_score": 0.9,
+            "original_cost_gap": 0.01,
+        }
+        record.update(overrides)
+        return record
+
     def test_summarizes_penalties_by_class_and_state(self):
         audit = AssociationHeadAuditAccumulator()
 
@@ -116,6 +135,259 @@ class AssociationHeadAuditAccumulatorTest(unittest.TestCase):
             path = Path(tmp) / "audit.json"
             merged.write_json(path)
             self.assertTrue(path.exists())
+
+    def test_schema_v2_includes_manifest_pair_buckets_and_improved_decision(self):
+        audit = AssociationHeadAuditAccumulator(
+            max_samples_per_bucket=2,
+            runtime_manifest={"config_sha256": "abc"},
+        )
+        audit.add_decision(self._decision())
+
+        summary = audit.to_summary()
+        bucket = summary["decision_buckets"][0]
+
+        self.assertEqual(summary["schema_version"], 2)
+        self.assertEqual(summary["runtime_manifest"]["config_sha256"], "abc")
+        self.assertIn("pair_buckets", summary)
+        self.assertTrue(summary["decision_evidence_available"])
+        self.assertEqual(bucket["class_id"], 5)
+        self.assertEqual(bucket["class_name"], "trailer")
+        self.assertEqual(bucket["track_state_bucket"], "unmatched")
+        self.assertEqual(bucket["total_decisions"], 1)
+        self.assertEqual(bucket["improved_count"], 1)
+
+    def test_counts_assignment_changes_thresholds_and_outcomes(self):
+        audit = AssociationHeadAuditAccumulator(max_samples_per_bucket=4)
+        records = [
+            self._decision(threshold_crossing=True, outcome="improved"),
+            self._decision(
+                production_det_index=2,
+                shadow_det_index=None,
+                threshold_crossing=True,
+                outcome="damaged",
+            ),
+            self._decision(
+                production_det_index=None,
+                shadow_det_index=3,
+                threshold_crossing=False,
+                outcome="neutral",
+            ),
+            self._decision(
+                assignment_changed=False,
+                production_det_index=None,
+                shadow_det_index=None,
+                threshold_crossing=None,
+                outcome="unknown",
+            ),
+        ]
+        for record in records:
+            audit.add_decision(record)
+
+        bucket = audit.to_summary()["decision_buckets"][0]
+        expected = {
+            "total_decisions": 4,
+            "changed_decisions": 3,
+            "changed_detection_count": 1,
+            "changed_to_match_count": 1,
+            "changed_to_unmatched_count": 1,
+            "threshold_crossing_count": 2,
+            "known_gt_decisions": 3,
+            "improved_count": 1,
+            "damaged_count": 1,
+            "neutral_count": 1,
+            "unknown_count": 1,
+            "known_changed_count": 3,
+            "net_improvement": 0,
+        }
+        for field, value in expected.items():
+            self.assertEqual(bucket[field], value, field)
+        self.assertAlmostEqual(bucket["harm_precision"], 1.0 / 3.0)
+
+    def test_decision_diagnostics_are_bounded_and_nonpositive_bound_disables_them(self):
+        audit = AssociationHeadAuditAccumulator(max_samples_per_bucket=2)
+        for idx in range(3):
+            audit.add_decision(
+                self._decision(
+                    production_det_index=idx,
+                    shadow_det_index=idx + 1,
+                    production_selected_association_score=0.1 * idx,
+                    shadow_selected_association_score=0.2 * idx,
+                    original_cost_gap=0.01 * idx,
+                )
+            )
+
+        bucket = audit.to_summary()["decision_buckets"][0]
+        self.assertEqual(bucket["total_decisions"], 3)
+        self.assertEqual(len(bucket["raw_decisions"]), 2)
+        self.assertEqual(len(bucket["association_scores"]), 2)
+        self.assertEqual(len(bucket["cost_gaps"]), 2)
+
+        for bound in (0, -1):
+            with self.subTest(bound=bound):
+                disabled = AssociationHeadAuditAccumulator(
+                    max_samples_per_bucket=bound
+                )
+                disabled.add_decision(self._decision())
+                disabled_bucket = disabled.to_summary()["decision_buckets"][0]
+                self.assertEqual(disabled_bucket["total_decisions"], 1)
+                self.assertEqual(disabled_bucket["raw_decisions"], [])
+                self.assertEqual(disabled_bucket["association_scores"], [])
+                self.assertEqual(disabled_bucket["cost_gaps"], [])
+
+    def test_merge_preserves_exact_counts_and_target_sample_bound(self):
+        manifest = {"config_sha256": "same"}
+        workers = [
+            AssociationHeadAuditAccumulator(
+                max_samples_per_bucket=3,
+                runtime_manifest=manifest,
+            )
+            for _ in range(2)
+        ]
+        for worker_index, worker in enumerate(workers):
+            for offset in range(2):
+                idx = worker_index * 2 + offset
+                worker.add_decision(
+                    self._decision(
+                        production_det_index=idx,
+                        shadow_det_index=idx + 1,
+                        outcome="damaged" if idx == 3 else "improved",
+                        original_cost_gap=0.1 * idx,
+                    )
+                )
+                worker.add_pair(
+                    class_id=5,
+                    class_name="trailer",
+                    state_bucket="unmatched",
+                    score=0.1 * idx,
+                    delta=0.0,
+                    cost_before=1.0,
+                    cost_after=1.0,
+                    active=True,
+                    finite=True,
+                    sample={"worker": worker_index, "index": idx},
+                )
+
+        merged = AssociationHeadAuditAccumulator(
+            max_samples_per_bucket=2,
+            runtime_manifest=manifest,
+            strict_manifest=True,
+        )
+        for worker in workers:
+            merged.merge_state(worker.export_state())
+
+        summary = merged.to_summary()
+        decision_bucket = summary["decision_buckets"][0]
+        pair_bucket = summary["pair_buckets"][0]
+        self.assertEqual(decision_bucket["total_decisions"], 4)
+        self.assertEqual(decision_bucket["improved_count"], 3)
+        self.assertEqual(decision_bucket["damaged_count"], 1)
+        self.assertEqual(decision_bucket["net_improvement"], 2)
+        self.assertEqual(len(decision_bucket["raw_decisions"]), 2)
+        self.assertEqual(len(decision_bucket["association_scores"]), 2)
+        self.assertEqual(len(decision_bucket["cost_gaps"]), 2)
+        self.assertEqual(pair_bucket["pair_count"], 4)
+        self.assertEqual(len(pair_bucket["samples"]), 2)
+
+    def test_strict_merge_rejects_incompatible_manifest_with_difference(self):
+        merged = AssociationHeadAuditAccumulator(
+            runtime_manifest={"config_sha256": "left", "alpha": 0.1},
+            strict_manifest=True,
+        )
+        worker = AssociationHeadAuditAccumulator(
+            runtime_manifest={"config_sha256": "right", "alpha": 0.1}
+        )
+
+        with self.assertRaisesRegex(ValueError, "config_sha256"):
+            merged.merge_state(worker.export_state())
+        self.assertEqual(merged.to_summary()["runtime_manifest"]["config_sha256"], "left")
+
+    def test_strict_merge_accepts_compatible_manifest(self):
+        manifest = {"config_sha256": "same", "active_class_states": {"5": ["unmatched"]}}
+        worker = AssociationHeadAuditAccumulator(runtime_manifest=manifest)
+        worker.add_decision(self._decision())
+        merged = AssociationHeadAuditAccumulator(
+            runtime_manifest=dict(manifest), strict_manifest=True
+        )
+
+        merged.merge_state(worker.export_state())
+
+        self.assertEqual(merged.to_summary()["runtime_manifest"], manifest)
+        self.assertEqual(
+            merged.to_summary()["decision_buckets"][0]["total_decisions"], 1
+        )
+
+    def test_merges_schema_v1_pairs_without_fabricating_decision_evidence(self):
+        legacy = {
+            "schema_version": 1,
+            "buckets": [
+                {
+                    "class_id": 2,
+                    "class_name": "bicycle",
+                    "state_bucket": "matched",
+                    "pair_count": 2,
+                    "finite_pair_count": 2,
+                    "active_pair_count": 1,
+                    "penalized_pair_count": 1,
+                    "avg_score": 0.4,
+                    "avg_delta": 0.01,
+                    "avg_cost_before": 1.0,
+                    "avg_cost_after": 1.01,
+                }
+            ],
+        }
+        merged = AssociationHeadAuditAccumulator()
+
+        merged.merge_state(legacy)
+
+        summary = merged.to_summary()
+        self.assertEqual(summary["pair_buckets"][0]["pair_count"], 2)
+        self.assertEqual(summary["decision_buckets"], [])
+        self.assertFalse(summary["decision_evidence_available"])
+
+    def test_rejects_malformed_decisions_and_summary_is_strict_json(self):
+        required_fields = (
+            "class_id",
+            "class_name",
+            "track_state_bucket",
+            "assignment_changed",
+            "production_det_index",
+            "shadow_det_index",
+            "threshold_crossing",
+            "outcome",
+        )
+        for field in required_fields:
+            with self.subTest(missing=field):
+                record = self._decision()
+                del record[field]
+                with self.assertRaises((TypeError, ValueError)):
+                    AssociationHeadAuditAccumulator().add_decision(record)
+
+        malformed = [
+            self._decision(outcome="better"),
+            self._decision(track_state_bucket="tentative"),
+            self._decision(assignment_changed=1),
+            self._decision(production_det_index=True),
+            self._decision(production_det_index=-1),
+            self._decision(assignment_changed=False),
+            self._decision(threshold_crossing="yes"),
+            self._decision(production_selected_association_score=True),
+            self._decision(shadow_selected_association_score="high"),
+            self._decision(original_cost_gap=True),
+            self._decision(original_cost_gap=float("inf")),
+            self._decision(shadow_selected_association_score=float("nan")),
+            self._decision(geometric_candidate_rank=0),
+            self._decision(shadow_candidate_rank=True),
+            self._decision(production_pair_label=True),
+            self._decision(shadow_pair_label=2),
+        ]
+        for record in malformed:
+            with self.subTest(record=record):
+                with self.assertRaises((TypeError, ValueError)):
+                    AssociationHeadAuditAccumulator().add_decision(record)
+
+        valid = AssociationHeadAuditAccumulator(max_samples_per_bucket=1)
+        valid.add_decision(self._decision(threshold_crossing=None))
+        json.dumps(valid.to_summary(), allow_nan=False)
 
 
 if __name__ == "__main__":
