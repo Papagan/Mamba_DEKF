@@ -92,6 +92,28 @@ class ClassifyAssignmentOutcomeTest(unittest.TestCase):
             "unknown",
         )
 
+    def test_unknown_when_matched_detection_gt_identity_is_unavailable(self):
+        self.assertEqual(
+            classify_assignment_outcome(
+                "gt-b",
+                None,
+                "gt-b",
+                production_matched=True,
+                shadow_matched=True,
+            ),
+            "unknown",
+        )
+        self.assertEqual(
+            classify_assignment_outcome(
+                "gt-b",
+                "gt-b",
+                None,
+                production_matched=True,
+                shadow_matched=True,
+            ),
+            "unknown",
+        )
+
 
 class CompareAssignmentResultsTest(unittest.TestCase):
     @staticmethod
@@ -218,12 +240,13 @@ class CompareAssignmentResultsTest(unittest.TestCase):
         self.assertEqual(record["production_pair_label"], 1)
         self.assertEqual(record["shadow_pair_label"], 0)
         self.assertEqual(record["outcome"], "damaged")
-        self.assertFalse(record["threshold_crossing"])
+        self.assertIsNone(record["threshold_crossing"])
 
     def test_changed_to_unmatched_is_damaged_and_crosses_match_gate(self):
         record = self._compare(
             production_matches=np.array([[0, 0]], dtype=int),
             production_costs=np.array([0.2]),
+            corrected_cost_matrix=np.array([[0.8, 0.4]]),
             track_gt_tokens=["gt-a"],
             det_gt_tokens=["gt-a", "gt-b"],
             class_thresholds={"5": 0.5},
@@ -236,7 +259,7 @@ class CompareAssignmentResultsTest(unittest.TestCase):
         self.assertIsNone(record["shadow_pair_label"])
         self.assertIsNone(record["original_cost_gap"])
 
-    def test_changed_to_match_is_improved_and_crosses_match_gate(self):
+    def test_changed_to_match_without_threshold_reports_none(self):
         record = self._compare(
             shadow_matches=np.array([[0, 1]], dtype=int),
             shadow_costs=np.array([0.4]),
@@ -245,7 +268,7 @@ class CompareAssignmentResultsTest(unittest.TestCase):
         )[0]
 
         self.assertTrue(record["assignment_changed"])
-        self.assertTrue(record["threshold_crossing"])
+        self.assertIsNone(record["threshold_crossing"])
         self.assertEqual(record["outcome"], "improved")
         self.assertIsNone(record["production_det_index"])
         self.assertEqual(record["shadow_pair_label"], 1)
@@ -288,6 +311,21 @@ class CompareAssignmentResultsTest(unittest.TestCase):
         self.assertEqual(record["shadow_candidate_rank"], 2)
         self.assertAlmostEqual(record["original_cost_gap"], 0.2)
 
+    def test_candidate_rank_uses_competition_ranking_for_tied_base_costs(self):
+        record = self._compare(
+            production_matches=np.array([[0, 0]], dtype=int),
+            production_costs=np.array([0.3]),
+            shadow_matches=np.array([[0, 1]], dtype=int),
+            shadow_costs=np.array([0.2]),
+            base_cost_matrix=np.array([[0.3, 0.3, 0.5]]),
+            corrected_cost_matrix=np.array([[0.4, 0.2, 0.5]]),
+            association_scores=np.array([[0.4, 0.9, 0.2]]),
+        )[0]
+
+        self.assertEqual(record["geometric_candidate_rank"], 1)
+        self.assertEqual(record["shadow_candidate_rank"], 1)
+        self.assertEqual(record["original_cost_gap"], 0.0)
+
     def test_threshold_crossing_uses_selected_cost_gate_for_string_key(self):
         record = self._compare(
             production_matches=np.array([[0, 0]], dtype=int),
@@ -308,20 +346,32 @@ class CompareAssignmentResultsTest(unittest.TestCase):
             production_costs=np.array([0.5]),
             shadow_matches=np.array([[0, 1]], dtype=int),
             shadow_costs=np.array([1.2]),
+            base_cost_matrix=np.array([[0.5, 0.6]]),
+            corrected_cost_matrix=np.array([[0.7, 1.2]]),
             class_ids=["5"],
             class_thresholds={5: 1.0},
         )[0]
 
         self.assertTrue(record["threshold_crossing"])
 
-    def test_match_to_unmatched_always_reports_threshold_crossing(self):
-        record = self._compare(
+    def test_global_assignment_competition_is_not_a_threshold_crossing(self):
+        records = self._compare(
             production_matches=np.array([[0, 0]], dtype=int),
-            production_costs=np.array([1.2]),
+            production_costs=np.array([0.10]),
+            shadow_matches=np.array([[1, 0]], dtype=int),
+            shadow_costs=np.array([0.10]),
+            base_cost_matrix=np.array([[0.10], [0.20]]),
+            corrected_cost_matrix=np.array([[0.20], [0.10]]),
+            association_scores=np.array([[0.8], [0.9]]),
+            track_ids=[10, 11],
+            class_ids=[5, 5],
+            class_names=["trailer", "trailer"],
+            state_buckets=["matched", "unmatched"],
             class_thresholds={5: 1.0},
-        )[0]
+        )
 
-        self.assertTrue(record["threshold_crossing"])
+        self.assertEqual([item["assignment_changed"] for item in records], [True, True])
+        self.assertEqual([item["threshold_crossing"] for item in records], [False, False])
 
     def test_unchanged_assignment_can_cross_selected_cost_gate(self):
         record = self._compare(
@@ -329,11 +379,37 @@ class CompareAssignmentResultsTest(unittest.TestCase):
             production_costs=np.array([0.9]),
             shadow_matches=np.array([[0, 0]], dtype=int),
             shadow_costs=np.array([1.1]),
+            base_cost_matrix=np.array([[0.9, 0.4]]),
+            corrected_cost_matrix=np.array([[1.1, 0.4]]),
             class_thresholds={5: 1.0},
         )[0]
 
         self.assertFalse(record["assignment_changed"])
         self.assertTrue(record["threshold_crossing"])
+
+    def test_rejects_solver_costs_that_disagree_with_source_matrices(self):
+        with self.assertRaisesRegex(ValueError, "production_costs"):
+            self._compare(
+                production_matches=np.array([[0, 0]], dtype=int),
+                production_costs=np.array([0.9]),
+            )
+        with self.assertRaisesRegex(ValueError, "shadow_costs"):
+            self._compare(
+                shadow_matches=np.array([[0, 1]], dtype=int),
+                shadow_costs=np.array([0.9]),
+            )
+
+    def test_selected_costs_are_derived_from_base_and_corrected_matrices(self):
+        record = self._compare(
+            production_matches=np.array([[0, 0]], dtype=int),
+            production_costs=np.array([np.float32(0.2)]),
+            shadow_matches=np.array([[0, 1]], dtype=int),
+            shadow_costs=np.array([np.float32(0.35)]),
+            corrected_cost_matrix=np.array([[0.25, 0.35]], dtype=np.float64),
+        )[0]
+
+        self.assertEqual(record["production_selected_cost"], 0.2)
+        self.assertEqual(record["shadow_selected_cost"], 0.35)
 
     def test_rejects_shape_metadata_and_index_programmer_errors(self):
         with self.assertRaisesRegex(ValueError, "corrected_cost_matrix"):
@@ -352,6 +428,61 @@ class CompareAssignmentResultsTest(unittest.TestCase):
                 shadow_matches=np.array([[0, 2]], dtype=int),
                 shadow_costs=np.array([0.2]),
             )
+
+    def test_normalizes_valid_track_metadata(self):
+        record = self._compare(
+            track_ids=np.array([np.int64(10)]),
+            class_ids=["5"],
+            class_names=[" trailer "],
+            state_buckets=[" UNMATCHED "],
+        )[0]
+
+        self.assertEqual(record["track_id"], 10)
+        self.assertEqual(record["class_id"], 5)
+        self.assertEqual(record["class_name"], "trailer")
+        self.assertEqual(record["track_state_bucket"], "unmatched")
+
+    def test_rejects_non_one_dimensional_track_metadata(self):
+        invalid_values = {
+            "track_ids": [[10]],
+            "class_ids": [[5]],
+            "class_names": [["trailer"]],
+            "state_buckets": [["matched"]],
+        }
+        for name, value in invalid_values.items():
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, name):
+                self._compare(**{name: value})
+
+    def test_rejects_empty_duplicate_or_non_json_track_ids(self):
+        invalid_track_ids = ([""], [None], [np.nan], [{"id": 10}])
+        for track_ids in invalid_track_ids:
+            with self.subTest(track_ids=track_ids), self.assertRaisesRegex(
+                ValueError, "track_ids"
+            ):
+                self._compare(track_ids=track_ids)
+        with self.assertRaisesRegex(ValueError, "track_ids"):
+            self._compare(
+                base_cost_matrix=np.zeros((2, 2)),
+                corrected_cost_matrix=np.zeros((2, 2)),
+                association_scores=np.zeros((2, 2)),
+                track_ids=[10, 10],
+                class_ids=[5, 5],
+                class_names=["trailer", "trailer"],
+                state_buckets=["matched", "unmatched"],
+            )
+
+    def test_rejects_invalid_class_and_state_metadata_values(self):
+        invalid_values = {
+            "class_ids": [["not-an-int"], [1.5]],
+            "class_names": [[""], ["   "]],
+            "state_buckets": [["coasting"], [""]],
+        }
+        for name, cases in invalid_values.items():
+            for value in cases:
+                with self.subTest(name=name, value=value), self.assertRaisesRegex(
+                    ValueError, name
+                ):
+                    self._compare(**{name: value})
 
     def test_rejects_invalid_threshold_values(self):
         with self.assertRaisesRegex(TypeError, "threshold"):

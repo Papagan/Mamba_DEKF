@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 
 import numpy as np
@@ -52,18 +53,48 @@ def assignment_map(matches: np.ndarray, costs: np.ndarray) -> dict[int, dict]:
 
 
 def classify_assignment_outcome(
-    track_gt_token, production_det_token, shadow_det_token
+    track_gt_token,
+    production_det_token,
+    shadow_det_token,
+    *,
+    production_matched=None,
+    shadow_matched=None,
 ) -> str:
-    """Classify whether a shadow choice changes GT-consistent correctness."""
+    """Classify correctness while distinguishing unmatched from unknown GT."""
     if not _is_known_gt_token(track_gt_token):
         return "unknown"
-    if production_det_token is not None and not _is_known_gt_token(production_det_token):
-        return "unknown"
-    if shadow_det_token is not None and not _is_known_gt_token(shadow_det_token):
-        return "unknown"
 
-    production_correct = production_det_token == track_gt_token
-    shadow_correct = shadow_det_token == track_gt_token
+    if production_matched is None:
+        production_matched = production_det_token is not None
+    if shadow_matched is None:
+        shadow_matched = shadow_det_token is not None
+    for name, matched in (
+        ("production_matched", production_matched),
+        ("shadow_matched", shadow_matched),
+    ):
+        if not isinstance(matched, (bool, np.bool_)):
+            raise TypeError(f"{name} must be a boolean or None")
+
+    production_correct = (
+        False
+        if not production_matched
+        else (
+            production_det_token == track_gt_token
+            if _is_known_gt_token(production_det_token)
+            else None
+        )
+    )
+    shadow_correct = (
+        False
+        if not shadow_matched
+        else (
+            shadow_det_token == track_gt_token
+            if _is_known_gt_token(shadow_det_token)
+            else None
+        )
+    )
+    if production_correct is None or shadow_correct is None:
+        return "unknown"
     if shadow_correct and not production_correct:
         return "improved"
     if production_correct and not shadow_correct:
@@ -93,6 +124,79 @@ def _native_scalar(value):
     return value.item() if isinstance(value, np.generic) else value
 
 
+def _metadata_values(name, values, track_count):
+    try:
+        array = np.asarray(values, dtype=object)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a one-dimensional sequence") from exc
+    if array.ndim != 1:
+        raise ValueError(f"{name} must be one-dimensional")
+    if array.shape[0] != track_count:
+        raise ValueError(f"{name} must contain one value per track ({track_count})")
+    return [_native_scalar(value) for value in array]
+
+
+def _normalize_track_ids(values, track_count):
+    track_ids = _metadata_values("track_ids", values, track_count)
+    normalized = []
+    for value in track_ids:
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            raise ValueError("track_ids must contain JSON-safe scalar identifiers")
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                raise ValueError("track_ids must not contain empty identifiers")
+        if isinstance(value, float) and not np.isfinite(value):
+            raise ValueError("track_ids must contain finite identifiers")
+        try:
+            json.dumps(value, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("track_ids must be JSON serializable") from exc
+        normalized.append(value)
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("track_ids must contain unique identifiers")
+    return normalized
+
+
+def _normalize_class_ids(values, track_count):
+    class_ids = _metadata_values("class_ids", values, track_count)
+    normalized = []
+    for value in class_ids:
+        if isinstance(value, bool):
+            raise ValueError("class_ids must contain integer-compatible values")
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("class_ids must contain integer-compatible values") from exc
+        if not np.isfinite(numeric_value) or not numeric_value.is_integer():
+            raise ValueError("class_ids must contain integer-compatible values")
+        normalized.append(int(numeric_value))
+    return normalized
+
+
+def _normalize_class_names(values, track_count):
+    class_names = _metadata_values("class_names", values, track_count)
+    normalized = []
+    for value in class_names:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("class_names must contain non-empty strings")
+        normalized.append(value.strip())
+    return normalized
+
+
+def _normalize_state_buckets(values, track_count):
+    state_buckets = _metadata_values("state_buckets", values, track_count)
+    normalized = []
+    for value in state_buckets:
+        if not isinstance(value, str):
+            raise ValueError("state_buckets must contain matched/unmatched strings")
+        state = value.strip().lower()
+        if state not in {"matched", "unmatched"}:
+            raise ValueError("state_buckets values must be matched or unmatched")
+        normalized.append(state)
+    return normalized
+
+
 def _selected_value(matrix: np.ndarray, track_index: int, det_index):
     if det_index is None:
         return None
@@ -101,6 +205,7 @@ def _selected_value(matrix: np.ndarray, track_index: int, det_index):
 
 
 def _candidate_rank(base_row: np.ndarray, det_index) -> int | None:
+    """Return a 1-based competition rank among finite base-row costs."""
     if det_index is None:
         return None
     selected_cost = float(base_row[det_index])
@@ -151,20 +256,31 @@ def _class_threshold(class_thresholds, class_id):
     return threshold
 
 
-def _accepted_match(assignment, threshold) -> bool:
-    if assignment is None:
-        return False
+def _threshold_crossing(
+    *,
+    track_index,
+    production_det_index,
+    shadow_det_index,
+    threshold,
+    base_cost_matrix,
+    corrected_cost_matrix,
+):
     if threshold is None:
-        return True
-    return assignment["cost"] <= threshold
+        return None
 
-
-def _threshold_crossing(production, shadow, threshold) -> bool:
-    if (production is None) != (shadow is None):
-        return True
-    if production is None:
-        return False
-    return _accepted_match(production, threshold) != _accepted_match(shadow, threshold)
+    selected_det_indices = {
+        det_index
+        for det_index in (production_det_index, shadow_det_index)
+        if det_index is not None
+    }
+    for det_index in selected_det_indices:
+        base_cost = float(base_cost_matrix[track_index, det_index])
+        corrected_cost = float(corrected_cost_matrix[track_index, det_index])
+        base_accepted = np.isfinite(base_cost) and base_cost <= threshold
+        corrected_accepted = np.isfinite(corrected_cost) and corrected_cost <= threshold
+        if base_accepted != corrected_accepted:
+            return True
+    return False
 
 
 def _assignment_gt_token(assignment, det_gt_tokens):
@@ -173,6 +289,19 @@ def _assignment_gt_token(assignment, det_gt_tokens):
     if det_gt_tokens is None:
         return None
     return _native_scalar(det_gt_tokens[assignment["det_index"]])
+
+
+def _validate_assignment_costs(name, assignments, source_matrix) -> None:
+    for track_index, assignment in assignments.items():
+        det_index = assignment["det_index"]
+        matrix_cost = float(source_matrix[track_index, det_index])
+        if not np.isfinite(matrix_cost) or not np.isclose(
+            assignment["cost"], matrix_cost, rtol=1e-6, atol=1e-8
+        ):
+            raise ValueError(
+                f"{name} for match ({track_index}, {det_index}) does not agree "
+                "with its source cost matrix"
+            )
 
 
 def compare_assignment_results(
@@ -193,7 +322,13 @@ def compare_assignment_results(
     context=None,
     class_thresholds=None,
 ) -> list[dict]:
-    """Return one side-effect-free production/shadow decision record per track."""
+    """Return one side-effect-free production/shadow decision record per track.
+
+    Candidate ranks are 1-based competition ranks computed only from finite
+    values in the original base-cost row. ``original_cost_gap`` is the shadow
+    detection's base cost minus the production detection's base cost and is
+    ``None`` unless both assignments select finite base-row candidates.
+    """
     base_cost_matrix = _matrix("base_cost_matrix", base_cost_matrix)
     matrix_shape = base_cost_matrix.shape
     corrected_cost_matrix = _matrix(
@@ -204,13 +339,10 @@ def compare_assignment_results(
     )
     track_count, det_count = matrix_shape
 
-    for name, values in (
-        ("track_ids", track_ids),
-        ("class_ids", class_ids),
-        ("class_names", class_names),
-        ("state_buckets", state_buckets),
-    ):
-        _validate_track_metadata(name, values, track_count)
+    track_ids = _normalize_track_ids(track_ids, track_count)
+    class_ids = _normalize_class_ids(class_ids, track_count)
+    class_names = _normalize_class_names(class_names, track_count)
+    state_buckets = _normalize_state_buckets(state_buckets, track_count)
     if track_gt_tokens is not None:
         _validate_track_metadata("track_gt_tokens", track_gt_tokens, track_count)
     if det_gt_tokens is not None and len(det_gt_tokens) != det_count:
@@ -237,6 +369,10 @@ def compare_assignment_results(
                 raise IndexError(
                     f"{name} detection index {det_index} is outside [0, {det_count})"
                 )
+    _validate_assignment_costs(
+        "production_costs", production_by_track, base_cost_matrix
+    )
+    _validate_assignment_costs("shadow_costs", shadow_by_track, corrected_cost_matrix)
 
     records = []
     for track_index in range(track_count):
@@ -262,18 +398,13 @@ def compare_assignment_results(
             shadow_det_gt_token,
             matched=shadow is not None,
         )
-        selected_gt_unknown = (
-            (production is not None and production_pair_label is None)
-            or (shadow is not None and shadow_pair_label is None)
+        outcome = classify_assignment_outcome(
+            track_gt_token,
+            production_det_gt_token,
+            shadow_det_gt_token,
+            production_matched=production is not None,
+            shadow_matched=shadow is not None,
         )
-        if not _is_known_gt_token(track_gt_token) or selected_gt_unknown:
-            outcome = "unknown"
-        else:
-            outcome = classify_assignment_outcome(
-                track_gt_token,
-                production_det_gt_token,
-                shadow_det_gt_token,
-            )
 
         threshold = _class_threshold(class_thresholds, class_ids[track_index])
         production_base_cost = _selected_value(
@@ -292,16 +423,20 @@ def compare_assignment_results(
             {
                 "scene_id": context.get("scene_id"),
                 "sample_token": context.get("sample_token"),
-                "class_id": _native_scalar(class_ids[track_index]),
-                "class_name": str(class_names[track_index]),
-                "track_id": _native_scalar(track_ids[track_index]),
-                "track_state_bucket": str(state_buckets[track_index]),
+                "class_id": class_ids[track_index],
+                "class_name": class_names[track_index],
+                "track_id": track_ids[track_index],
+                "track_state_bucket": state_buckets[track_index],
                 "production_det_index": production_det_index,
                 "shadow_det_index": shadow_det_index,
                 "production_selected_cost": (
-                    None if production is None else production["cost"]
+                    _selected_value(
+                        base_cost_matrix, track_index, production_det_index
+                    )
                 ),
-                "shadow_selected_cost": None if shadow is None else shadow["cost"],
+                "shadow_selected_cost": _selected_value(
+                    corrected_cost_matrix, track_index, shadow_det_index
+                ),
                 "production_selected_association_score": _selected_value(
                     association_scores, track_index, production_det_index
                 ),
@@ -317,7 +452,12 @@ def compare_assignment_results(
                 "original_cost_gap": original_cost_gap,
                 "assignment_changed": production_det_index != shadow_det_index,
                 "threshold_crossing": _threshold_crossing(
-                    production, shadow, threshold
+                    track_index=track_index,
+                    production_det_index=production_det_index,
+                    shadow_det_index=shadow_det_index,
+                    threshold=threshold,
+                    base_cost_matrix=base_cost_matrix,
+                    corrected_cost_matrix=corrected_cost_matrix,
                 ),
                 "track_gt_token": track_gt_token,
                 "production_det_gt_token": production_det_gt_token,
