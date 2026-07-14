@@ -324,6 +324,115 @@ def Hungarian(cost_matrix, thresholds):
     return m_det, m_tra, um_det, um_tra, np.array(costs)
 
 
+def solve_matching_cost_matrix(
+    cost_matrix,
+    trajs_category,
+    dets_category,
+    cfg,
+    match_type,
+):
+    """Solve a track-by-detection cost matrix without modifying its inputs."""
+    cost_matrix = np.asarray(cost_matrix)
+    trajs_category = np.asarray(trajs_category)
+    dets_category = np.asarray(dets_category)
+    expected_shape = (len(trajs_category), len(dets_category))
+    if cost_matrix.ndim != 2 or cost_matrix.shape != expected_shape:
+        raise ValueError(
+            f"cost_matrix must have shape {expected_shape}, got {cost_matrix.shape}"
+        )
+    if min(cost_matrix.shape) == 0:
+        return np.empty((0, 2), dtype=int), np.empty((0,), dtype=float)
+
+    category_map = cfg["CATEGORY_MAP_TO_NUMBER"]
+    vectorized_map = np.vectorize(category_map.get)
+    dets_label = vectorized_map(dets_category)
+    trajs_label = vectorized_map(trajs_category)
+
+    cls_num = len(cfg["CATEGORY_LIST"])
+    valid_mask = mask_tras_dets(cls_num, trajs_label, dets_label)
+    trans_valid_mask = valid_mask.transpose(0, 2, 1)
+
+    # Greedy mutates its working matrix, so the solver always owns this copy.
+    trans_cost_matrix = np.array(cost_matrix.T, copy=True)
+    trans_cost_matrix = trans_cost_matrix[None, :, :].repeat(cls_num, axis=0)
+    trans_cost_matrix[np.where(~trans_valid_mask)] = np.inf
+
+    matching_mode = cfg["MATCHING"][match_type]["MATCHING_MODE"]
+    thresholds = cfg["THRESHOLD"][match_type]["COST_THRE"]
+    if matching_mode == "Hungarian":
+        m_det, m_tra, _, _, costs = Hungarian(trans_cost_matrix, thresholds)
+    elif matching_mode == "Greedy":
+        m_det, m_tra, _, _, costs = Greedy(trans_cost_matrix, thresholds)
+    else:
+        raise ValueError(f"Unknown matching mode: {matching_mode}")
+
+    assert len(m_det) == len(m_tra)
+    matched_indices = np.column_stack((m_tra, m_det))
+    return matched_indices, costs
+
+
+def _association_shadow_records(
+    *,
+    production_matches,
+    production_costs,
+    shadow_matches,
+    shadow_costs,
+    base_cost_matrix,
+    corrected_cost_matrix,
+    association_scores,
+    trajs,
+    trajs_category,
+    cfg,
+    state_buckets,
+    metadata,
+):
+    from tracker.association_shadow_audit import compare_assignment_results
+
+    metadata = metadata if isinstance(metadata, dict) else {}
+    track_count = len(trajs)
+    scores = np.asarray(association_scores) if association_scores is not None else None
+    if scores is None or scores.shape != base_cost_matrix.shape:
+        scores = np.full(base_cost_matrix.shape, np.nan, dtype=float)
+
+    track_ids = metadata.get("track_ids")
+    if track_ids is None:
+        track_ids = [getattr(traj, "track_id", index) for index, traj in enumerate(trajs)]
+    class_names = metadata.get("class_names", list(trajs_category))
+    class_ids = metadata.get(
+        "class_ids",
+        [cfg["CATEGORY_MAP_TO_NUMBER"].get(category, -1) for category in trajs_category],
+    )
+    shadow_states = metadata.get("state_buckets", state_buckets)
+    if shadow_states is None or len(shadow_states) != track_count:
+        shadow_states = [_association_state_bucket(traj) for traj in trajs]
+
+    context = metadata.get("context")
+    if context is None:
+        context = {
+            key: metadata.get(key)
+            for key in ("scene_id", "sample_token")
+            if key in metadata
+        }
+
+    return compare_assignment_results(
+        production_matches=production_matches,
+        production_costs=production_costs,
+        shadow_matches=shadow_matches,
+        shadow_costs=shadow_costs,
+        base_cost_matrix=base_cost_matrix,
+        corrected_cost_matrix=corrected_cost_matrix,
+        association_scores=scores,
+        track_ids=track_ids,
+        class_ids=class_ids,
+        class_names=class_names,
+        state_buckets=shadow_states,
+        track_gt_tokens=metadata.get("track_gt_tokens"),
+        det_gt_tokens=metadata.get("det_gt_tokens"),
+        context=context,
+        class_thresholds=cfg["THRESHOLD"]["BEV"]["COST_THRE"],
+    )
+
+
 def match_trajs_and_dets(
     trajs,
     dets,
@@ -335,6 +444,8 @@ def match_trajs_and_dets(
     state_buckets=None,
     association_scores=None,
     association_audit_callback=None,
+    association_shadow_callback=None,
+    association_shadow_metadata=None,
 ):
     """
     Info: This function matches trajectories with detections using a cost matrix and a specified matching algorithm (Hungarian or Greedy).
@@ -356,7 +467,7 @@ def match_trajs_and_dets(
         trajs, dets, cfg, transform_matrix, is_rv
     )
     if not is_rv:
-        cost_matrix = apply_mamba_association_prior_to_cost_matrix(
+        base_cost_matrix = apply_mamba_association_prior_to_cost_matrix(
             cost_matrix,
             trajs,
             dets,
@@ -365,8 +476,58 @@ def match_trajs_and_dets(
             det_embeddings=det_embeddings,
             state_buckets=state_buckets,
         )
-        cost_matrix = apply_pairwise_association_head_to_cost_matrix(
-            cost_matrix,
+        base_cost_matrix = np.array(base_cost_matrix, copy=True)
+    else:
+        base_cost_matrix = np.array(cost_matrix, copy=True)
+
+    match_type = "RV" if is_rv else "BEV"
+    shadow_mode = bool(
+        not is_rv
+        and (cfg.get("ASSOCIATION_HEAD_AUDIT", {}) or {}).get("SHADOW_MODE", False)
+    )
+
+    if shadow_mode:
+        production_matches, production_costs = solve_matching_cost_matrix(
+            base_cost_matrix, trajs_category, dets_category, cfg, match_type
+        )
+        try:
+            corrected_cost_matrix = apply_pairwise_association_head_to_cost_matrix(
+                np.array(base_cost_matrix, copy=True),
+                trajs,
+                dets,
+                cfg,
+                association_scores=association_scores,
+                state_buckets=state_buckets,
+                audit_callback=association_audit_callback,
+            )
+            corrected_cost_matrix = np.array(corrected_cost_matrix, copy=True)
+            shadow_matches, shadow_costs = solve_matching_cost_matrix(
+                corrected_cost_matrix, trajs_category, dets_category, cfg, match_type
+            )
+            if association_shadow_callback is not None:
+                records = _association_shadow_records(
+                    production_matches=production_matches,
+                    production_costs=production_costs,
+                    shadow_matches=shadow_matches,
+                    shadow_costs=shadow_costs,
+                    base_cost_matrix=base_cost_matrix,
+                    corrected_cost_matrix=corrected_cost_matrix,
+                    association_scores=association_scores,
+                    trajs=trajs,
+                    trajs_category=trajs_category,
+                    cfg=cfg,
+                    state_buckets=state_buckets,
+                    metadata=association_shadow_metadata,
+                )
+                association_shadow_callback(records)
+        except Exception:
+            pass
+        return production_matches, production_costs
+
+    production_cost_matrix = base_cost_matrix
+    if not is_rv:
+        production_cost_matrix = apply_pairwise_association_head_to_cost_matrix(
+            np.array(base_cost_matrix, copy=True),
             trajs,
             dets,
             cfg,
@@ -374,40 +535,9 @@ def match_trajs_and_dets(
             state_buckets=state_buckets,
             audit_callback=association_audit_callback,
         )
-    match_type = "RV" if is_rv else "BEV"
-
-    category_map = cfg["CATEGORY_MAP_TO_NUMBER"]
-    vectorized_map = np.vectorize(category_map.get)
-    dets_label = vectorized_map(dets_category)
-    trajs_label = vectorized_map(trajs_category)
-
-    cls_num = len(cfg["CATEGORY_LIST"])
-    valid_mask = mask_tras_dets(cls_num, trajs_label, dets_label)
-    trans_valid_mask = valid_mask.transpose(0, 2, 1)
-
-    trans_cost_matrix = cost_matrix.T
-    trans_cost_matrix = trans_cost_matrix[None, :, :].repeat(cls_num, axis=0)
-    trans_cost_matrix[np.where(~trans_valid_mask)] = np.inf
-
-    if min(cost_matrix.shape) > 0:
-        if cfg["MATCHING"][match_type]["MATCHING_MODE"] == "Hungarian":
-            m_det, m_tra, um_det, um_tra, costs = Hungarian(
-                trans_cost_matrix,
-                cfg["THRESHOLD"][match_type]["COST_THRE"],
-            )
-            assert len(m_det) == len(m_tra)
-            matched_indices = np.column_stack((m_tra, m_det))
-        elif cfg["MATCHING"][match_type]["MATCHING_MODE"] == "Greedy":
-            m_det, m_tra, um_det, um_tra, costs = Greedy(
-                trans_cost_matrix,
-                cfg["THRESHOLD"][match_type]["COST_THRE"],
-            )
-            assert len(m_det) == len(m_tra)
-            matched_indices = np.column_stack((m_tra, m_det))
-    else:
-        matched_indices = np.empty(shape=(0, 2))
-
-    return matched_indices, costs
+    return solve_matching_cost_matrix(
+        production_cost_matrix, trajs_category, dets_category, cfg, match_type
+    )
 
 
 def cost_calculate_general(trajs, dets, cfg, transform_matrix, is_rv=False):

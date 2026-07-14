@@ -1,8 +1,20 @@
 import unittest
 import sys
 import types
+from unittest.mock import patch
 
 import numpy as np
+
+if "cv2" not in sys.modules:
+    sys.modules["cv2"] = types.ModuleType("cv2")
+
+if "shapely" not in sys.modules:
+    shapely_stub = types.ModuleType("shapely")
+    shapely_geometry_stub = types.ModuleType("shapely.geometry")
+    shapely_geometry_stub.Polygon = object
+    shapely_stub.geometry = shapely_geometry_stub
+    sys.modules["shapely"] = shapely_stub
+    sys.modules["shapely.geometry"] = shapely_geometry_stub
 
 if "lap" not in sys.modules:
     lap_stub = types.ModuleType("lap")
@@ -37,12 +49,261 @@ class _Box:
 
 
 class _Traj:
-    def __init__(self, category, unmatch_length=0):
+    def __init__(self, category, unmatch_length=0, track_id=None):
         self.bboxes = [_Box(category)]
         self.unmatch_length = unmatch_length
+        if track_id is not None:
+            self.track_id = track_id
+
+
+def _matching_cfg(*, shadow_mode=False, head_enabled=True):
+    return {
+        "CATEGORY_LIST": ["trailer"],
+        "CATEGORY_MAP_TO_NUMBER": {"trailer": 0},
+        "MATCHING": {
+            "BEV": {"MATCHING_MODE": "Greedy"},
+            "RV": {"MATCHING_MODE": "Greedy"},
+        },
+        "THRESHOLD": {
+            "BEV": {"COST_THRE": {0: 1.0}},
+            "RV": {"COST_THRE": {0: 1.0}},
+        },
+        "MAMBA_ASSOCIATION_HEAD": {
+            "ENABLED": head_enabled,
+            "MIN_SCORE": 0.5,
+            "ALPHA": 1.0,
+            "MAX_DELTA": 0.5,
+            "ACTIVE_CLASS_STATES": {0: ["unmatched"]},
+        },
+        "ASSOCIATION_HEAD_AUDIT": {"SHADOW_MODE": shadow_mode},
+    }
+
+
+def _flippable_matching_inputs():
+    return (
+        np.array([[0.10, 0.11], [0.11, 0.10]], dtype=np.float32),
+        [_Traj("trailer", unmatch_length=1, track_id=10),
+         _Traj("trailer", unmatch_length=1, track_id=11)],
+        [_Box("trailer"), _Box("trailer")],
+        np.array([[0.0, 1.0], [1.0, 0.0]], dtype=np.float32),
+    )
 
 
 class MambaAssociationPriorTest(unittest.TestCase):
+    def test_solve_matching_cost_matrix_preserves_inputs_and_category_mask(self):
+        cost = np.array([[0.1, 0.0], [0.0, 0.1]], dtype=np.float32)
+        original = np.array(cost, copy=True)
+        cfg = {
+            "CATEGORY_LIST": ["car", "pedestrian"],
+            "CATEGORY_MAP_TO_NUMBER": {"car": 0, "pedestrian": 1},
+            "MATCHING": {"BEV": {"MATCHING_MODE": "Greedy"}},
+            "THRESHOLD": {"BEV": {"COST_THRE": {0: 1.0, 1: 1.0}}},
+        }
+
+        matches, costs = matching.solve_matching_cost_matrix(
+            cost,
+            np.array(["car", "pedestrian"]),
+            np.array(["car", "pedestrian"]),
+            cfg,
+            "BEV",
+        )
+
+        np.testing.assert_array_equal(matches, np.array([[0, 0], [1, 1]]))
+        np.testing.assert_allclose(costs, np.array([0.1, 0.1]))
+        np.testing.assert_array_equal(cost, original)
+
+    def test_solve_matching_cost_matrix_handles_empty_axes_without_mutation(self):
+        cfg = _matching_cfg()
+        for cost, trajs_category, dets_category in (
+            (np.empty((0, 2)), np.array([]), np.array(["trailer", "trailer"])),
+            (np.empty((2, 0)), np.array(["trailer", "trailer"]), np.array([])),
+        ):
+            with self.subTest(shape=cost.shape):
+                original = np.array(cost, copy=True)
+                matches, costs = matching.solve_matching_cost_matrix(
+                    cost, trajs_category, dets_category, cfg, "BEV"
+                )
+                self.assertEqual(matches.shape, (0, 2))
+                self.assertTrue(np.issubdtype(matches.dtype, np.integer))
+                self.assertEqual(costs.shape, (0,))
+                np.testing.assert_array_equal(cost, original)
+
+    def test_shadow_mode_keeps_production_identical_to_disabled_head(self):
+        base, trajs, dets, scores = _flippable_matching_inputs()
+        base_original = np.array(base, copy=True)
+        scores_original = np.array(scores, copy=True)
+        records = []
+
+        def fake_cost(*args, **kwargs):
+            return base, np.array(["trailer", "trailer"]), np.array(["trailer", "trailer"])
+
+        with patch.object(matching, "cost_calculate_general", side_effect=fake_cost):
+            production_matches, production_costs = matching.match_trajs_and_dets(
+                trajs,
+                dets,
+                _matching_cfg(shadow_mode=True),
+                association_scores=scores,
+                association_shadow_callback=records.extend,
+            )
+            base_matches, base_costs = matching.match_trajs_and_dets(
+                trajs,
+                dets,
+                _matching_cfg(shadow_mode=False, head_enabled=False),
+                association_scores=scores,
+            )
+
+        np.testing.assert_array_equal(production_matches, np.array([[0, 0], [1, 1]]))
+        np.testing.assert_array_equal(production_matches, base_matches)
+        np.testing.assert_array_equal(production_costs, base_costs)
+        self.assertTrue(any(record["assignment_changed"] for record in records))
+        np.testing.assert_array_equal(base, base_original)
+        np.testing.assert_array_equal(scores, scores_original)
+
+    def test_shadow_disabled_preserves_explicit_corrected_intervention(self):
+        base, trajs, dets, scores = _flippable_matching_inputs()
+
+        with patch.object(
+            matching,
+            "cost_calculate_general",
+            return_value=(
+                base,
+                np.array(["trailer", "trailer"]),
+                np.array(["trailer", "trailer"]),
+            ),
+        ):
+            matches, costs = matching.match_trajs_and_dets(
+                trajs,
+                dets,
+                _matching_cfg(shadow_mode=False),
+                association_scores=scores,
+                association_shadow_callback=lambda records: self.fail(
+                    "shadow callback must not run during explicit intervention"
+                ),
+            )
+
+        np.testing.assert_array_equal(matches, np.array([[1, 0], [0, 1]]))
+        np.testing.assert_allclose(costs, np.array([0.11, 0.11]), rtol=1e-6)
+
+    def test_rv_matching_never_runs_shadow_assignment_or_callback(self):
+        base, trajs, dets, scores = _flippable_matching_inputs()
+        callback_calls = []
+
+        with patch.object(
+            matching,
+            "cost_calculate_general",
+            return_value=(
+                base,
+                np.array(["trailer", "trailer"]),
+                np.array(["trailer", "trailer"]),
+            ),
+        ), patch.object(
+            matching,
+            "solve_matching_cost_matrix",
+            wraps=matching.solve_matching_cost_matrix,
+        ) as solve:
+            matches, _ = matching.match_trajs_and_dets(
+                trajs,
+                dets,
+                _matching_cfg(shadow_mode=True),
+                is_rv=True,
+                association_scores=scores,
+                association_shadow_callback=callback_calls.append,
+            )
+
+        np.testing.assert_array_equal(matches, np.array([[0, 0], [1, 1]]))
+        self.assertEqual(solve.call_count, 1)
+        self.assertEqual(callback_calls, [])
+
+    def test_shadow_missing_or_mismatched_scores_records_unchanged(self):
+        base, trajs, dets, _ = _flippable_matching_inputs()
+        for scores in (None, np.ones((1, 2), dtype=np.float32)):
+            with self.subTest(scores_shape=None if scores is None else scores.shape):
+                records = []
+                with patch.object(
+                    matching,
+                    "cost_calculate_general",
+                    return_value=(
+                        base,
+                        np.array(["trailer", "trailer"]),
+                        np.array(["trailer", "trailer"]),
+                    ),
+                ):
+                    matches, _ = matching.match_trajs_and_dets(
+                        trajs,
+                        dets,
+                        _matching_cfg(shadow_mode=True),
+                        association_scores=scores,
+                        association_shadow_callback=records.extend,
+                    )
+
+                np.testing.assert_array_equal(matches, np.array([[0, 0], [1, 1]]))
+                self.assertEqual(len(records), 2)
+                self.assertFalse(any(record["assignment_changed"] for record in records))
+
+    def test_shadow_failures_cannot_change_or_abort_production(self):
+        base, trajs, dets, scores = _flippable_matching_inputs()
+        categories = np.array(["trailer", "trailer"])
+        expected_matches = np.array([[0, 0], [1, 1]])
+        expected_costs = np.array([0.10, 0.10], dtype=np.float32)
+
+        with self.subTest(failure="correction"):
+            with patch.object(
+                matching,
+                "cost_calculate_general",
+                return_value=(base, categories, categories),
+            ), patch.object(
+                matching,
+                "apply_pairwise_association_head_to_cost_matrix",
+                side_effect=RuntimeError("correction failed"),
+            ):
+                matches, costs = matching.match_trajs_and_dets(
+                    trajs, dets, _matching_cfg(shadow_mode=True), association_scores=scores
+                )
+            np.testing.assert_array_equal(matches, expected_matches)
+            np.testing.assert_array_equal(costs, expected_costs)
+
+        real_solver = matching.solve_matching_cost_matrix
+        solve_calls = 0
+
+        def fail_second_solve(*args, **kwargs):
+            nonlocal solve_calls
+            solve_calls += 1
+            if solve_calls == 2:
+                raise RuntimeError("shadow solve failed")
+            return real_solver(*args, **kwargs)
+
+        with self.subTest(failure="solver"):
+            with patch.object(
+                matching,
+                "cost_calculate_general",
+                return_value=(base, categories, categories),
+            ), patch.object(
+                matching, "solve_matching_cost_matrix", side_effect=fail_second_solve
+            ):
+                matches, costs = matching.match_trajs_and_dets(
+                    trajs, dets, _matching_cfg(shadow_mode=True), association_scores=scores
+                )
+            np.testing.assert_array_equal(matches, expected_matches)
+            np.testing.assert_array_equal(costs, expected_costs)
+
+        with self.subTest(failure="callback"):
+            with patch.object(
+                matching,
+                "cost_calculate_general",
+                return_value=(base, categories, categories),
+            ):
+                matches, costs = matching.match_trajs_and_dets(
+                    trajs,
+                    dets,
+                    _matching_cfg(shadow_mode=True),
+                    association_scores=scores,
+                    association_shadow_callback=lambda records: (_ for _ in ()).throw(
+                        RuntimeError("callback failed")
+                    ),
+                )
+            np.testing.assert_array_equal(matches, expected_matches)
+            np.testing.assert_array_equal(costs, expected_costs)
+
     def test_disabled_config_leaves_cost_matrix_unchanged(self):
         cost = np.array([[1.0, 1.5], [2.0, 0.5]], dtype=np.float32)
         out = apply_mamba_association_prior_to_cost_matrix(
