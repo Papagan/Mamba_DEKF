@@ -44,6 +44,27 @@ class AssociationHeadAuditAccumulatorTest(unittest.TestCase):
         record.update(overrides)
         return record
 
+    @staticmethod
+    def _legacy_pair_state():
+        return {
+            "schema_version": 1,
+            "buckets": [
+                {
+                    "class_id": 2,
+                    "class_name": "bicycle",
+                    "state_bucket": "matched",
+                    "pair_count": 2,
+                    "finite_pair_count": 2,
+                    "active_pair_count": 1,
+                    "penalized_pair_count": 1,
+                    "avg_score": 0.4,
+                    "avg_delta": 0.01,
+                    "avg_cost_before": 1.0,
+                    "avg_cost_after": 1.01,
+                }
+            ],
+        }
+
     def test_summarizes_penalties_by_class_and_state(self):
         audit = AssociationHeadAuditAccumulator()
 
@@ -159,6 +180,21 @@ class AssociationHeadAuditAccumulatorTest(unittest.TestCase):
                     )
 
                 self.assertEqual(audit.to_summary(), before)
+
+    def test_extreme_quantiles_and_derived_summary_are_strict_json_safe(self):
+        max_float = np.finfo(np.float64).max
+        audit = AssociationHeadAuditAccumulator()
+        audit.add_pair(**self._pair(score=-max_float))
+        audit.add_pair(**self._pair(score=max_float))
+
+        summary = audit.to_summary()
+        quantiles = summary["pair_buckets"][0]["score_quantiles"]
+
+        self.assertTrue(all(np.isfinite(value) for value in quantiles.values()))
+        self.assertEqual(quantiles["min"], -max_float)
+        self.assertEqual(quantiles["max"], max_float)
+        self.assertEqual(quantiles["p50"], 0.0)
+        json.dumps(summary, allow_nan=False, sort_keys=True)
 
     def test_merge_rejects_pair_aggregate_overflow_atomically(self):
         max_float = np.finfo(np.float64).max
@@ -412,28 +448,128 @@ class AssociationHeadAuditAccumulatorTest(unittest.TestCase):
             merged.to_summary()["decision_buckets"][0]["total_decisions"], 1
         )
 
-    def test_merges_schema_v1_pairs_without_fabricating_decision_evidence(self):
-        legacy = {
-            "schema_version": 1,
-            "buckets": [
-                {
-                    "class_id": 2,
-                    "class_name": "bicycle",
-                    "state_bucket": "matched",
-                    "pair_count": 2,
-                    "finite_pair_count": 2,
-                    "active_pair_count": 1,
-                    "penalized_pair_count": 1,
-                    "avg_score": 0.4,
-                    "avg_delta": 0.01,
-                    "avg_cost_before": 1.0,
-                    "avg_cost_after": 1.01,
-                }
-            ],
-        }
+    def test_decision_evidence_stays_incomplete_for_v1_in_both_merge_orders(self):
+        worker = AssociationHeadAuditAccumulator(runtime_manifest=None)
+        worker.add_decision(self._decision())
+        v2_state = worker.export_state()
+        legacy_state = self._legacy_pair_state()
+
+        for states in ((v2_state, legacy_state), (legacy_state, v2_state)):
+            with self.subTest(order=[state["schema_version"] for state in states]):
+                merged = AssociationHeadAuditAccumulator()
+                for state in states:
+                    merged.merge_state(copy.deepcopy(state))
+
+                summary = merged.to_summary()
+                self.assertEqual(
+                    summary["decision_buckets"][0]["total_decisions"], 1
+                )
+                self.assertFalse(summary["decision_evidence_available"])
+                self.assertFalse(summary["decision_evidence_complete"])
+                self.assertIn(
+                    "schema_v1_state",
+                    summary["decision_evidence_incomplete_reasons"],
+                )
+
+    def test_pair_only_v2_state_marks_decision_evidence_incomplete(self):
+        decisions = AssociationHeadAuditAccumulator(runtime_manifest=None)
+        decisions.add_decision(self._decision())
+        pair_only = AssociationHeadAuditAccumulator(runtime_manifest=None)
+        pair_only.add_pair(**self._pair())
         merged = AssociationHeadAuditAccumulator()
 
-        merged.merge_state(legacy)
+        merged.merge_state(decisions.export_state())
+        merged.merge_state(pair_only.export_state())
+
+        summary = merged.to_summary()
+        self.assertFalse(summary["decision_evidence_available"])
+        self.assertFalse(summary["decision_evidence_complete"])
+        self.assertIn(
+            "pair_only_state", summary["decision_evidence_incomplete_reasons"]
+        )
+
+    def test_strict_manifest_uses_first_worker_null_as_a_real_baseline(self):
+        null_state = AssociationHeadAuditAccumulator(
+            runtime_manifest=None
+        ).export_state()
+        manifest_state = AssociationHeadAuditAccumulator(
+            runtime_manifest={"config_sha256": "abc"}
+        ).export_state()
+
+        for states in ((null_state, manifest_state), (manifest_state, null_state)):
+            with self.subTest(first_manifest=states[0]["runtime_manifest"]):
+                merged = AssociationHeadAuditAccumulator(strict_manifest=True)
+                merged.merge_state(copy.deepcopy(states[0]))
+                before = copy.deepcopy(merged.to_summary())
+
+                with self.assertRaisesRegex(ValueError, "runtime_manifest"):
+                    merged.merge_state(copy.deepcopy(states[1]))
+
+                self.assertEqual(merged.to_summary(), before)
+
+        explicitly_null = AssociationHeadAuditAccumulator(
+            runtime_manifest=None, strict_manifest=True
+        )
+        before = copy.deepcopy(explicitly_null.to_summary())
+        with self.assertRaisesRegex(ValueError, "runtime_manifest"):
+            explicitly_null.merge_state(copy.deepcopy(manifest_state))
+        self.assertEqual(explicitly_null.to_summary(), before)
+
+        locally_populated = AssociationHeadAuditAccumulator(strict_manifest=True)
+        locally_populated.add_decision(self._decision())
+        before = copy.deepcopy(locally_populated.to_summary())
+        with self.assertRaisesRegex(ValueError, "runtime_manifest"):
+            locally_populated.merge_state(copy.deepcopy(manifest_state))
+        self.assertEqual(locally_populated.to_summary(), before)
+
+    def test_non_strict_manifest_mismatch_merges_only_pair_diagnostics(self):
+        merged = AssociationHeadAuditAccumulator(
+            max_samples_per_bucket=2,
+            runtime_manifest={"config_sha256": "left"},
+        )
+        merged.add_decision(self._decision())
+        incompatible = AssociationHeadAuditAccumulator(
+            max_samples_per_bucket=2,
+            runtime_manifest={"config_sha256": "right"},
+        )
+        incompatible.add_pair(**self._pair(), sample={"worker": "right"})
+        incompatible.add_decision(self._decision(outcome="damaged"))
+
+        merged.merge_state(incompatible.export_state())
+
+        summary = merged.to_summary()
+        self.assertEqual(summary["pair_buckets"][0]["pair_count"], 1)
+        decision_bucket = summary["decision_buckets"][0]
+        self.assertEqual(decision_bucket["total_decisions"], 1)
+        self.assertEqual(decision_bucket["improved_count"], 1)
+        self.assertEqual(decision_bucket["damaged_count"], 0)
+        self.assertEqual(len(decision_bucket["raw_decisions"]), 1)
+        self.assertFalse(summary["decision_evidence_available"])
+        self.assertFalse(summary["manifest_compatible"])
+        self.assertTrue(summary["manifest_mismatches"])
+
+    def test_manifest_mismatch_diff_is_type_sensitive_and_atomic(self):
+        merged = AssociationHeadAuditAccumulator(
+            runtime_manifest={"options": {"enabled": True}},
+            strict_manifest=True,
+        )
+        worker = AssociationHeadAuditAccumulator(
+            runtime_manifest={"options": {"enabled": 1}}
+        )
+        before = copy.deepcopy(merged.to_summary())
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"options\.enabled.*True.*bool.*1.*int",
+        ):
+            merged.merge_state(worker.export_state())
+
+        self.assertEqual(merged.to_summary(), before)
+
+    def test_merges_schema_v1_pairs_without_fabricating_decision_evidence(self):
+        merged = AssociationHeadAuditAccumulator()
+
+        merged.merge_state(self._legacy_pair_state())
 
         summary = merged.to_summary()
         self.assertEqual(summary["pair_buckets"][0]["pair_count"], 2)

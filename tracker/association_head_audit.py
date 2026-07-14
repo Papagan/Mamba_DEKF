@@ -10,6 +10,7 @@ from tracker.association_runtime_manifest import runtime_manifests_compatible
 
 _DECISION_OUTCOMES = {"improved", "damaged", "neutral", "unknown"}
 _TRACK_STATE_BUCKETS = {"matched", "unmatched"}
+_MANIFEST_UNSET = object()
 _DECISION_COUNTER_FIELDS = (
     "total_decisions",
     "changed_decisions",
@@ -219,17 +220,45 @@ def _manifest_differences(left, right, path=""):
         for key in sorted(set(left) | set(right)):
             key_path = f"{path}.{key}" if path else str(key)
             if key not in left:
-                differences.append(f"{key_path}: target=<missing>, incoming={right[key]!r}")
+                differences.append(
+                    f"{key_path}: target=<missing>, "
+                    f"incoming={right[key]!r} ({type(right[key]).__name__})"
+                )
             elif key not in right:
-                differences.append(f"{key_path}: target={left[key]!r}, incoming=<missing>")
+                differences.append(
+                    f"{key_path}: target={left[key]!r} "
+                    f"({type(left[key]).__name__}), incoming=<missing>"
+                )
             else:
                 differences.extend(
                     _manifest_differences(left[key], right[key], key_path)
                 )
         return differences
-    if left != right:
+    if isinstance(left, list) and isinstance(right, list):
+        differences = []
+        for index in range(max(len(left), len(right))):
+            item_path = f"{path}[{index}]"
+            if index >= len(left):
+                differences.append(
+                    f"{item_path}: target=<missing>, incoming={right[index]!r} "
+                    f"({type(right[index]).__name__})"
+                )
+            elif index >= len(right):
+                differences.append(
+                    f"{item_path}: target={left[index]!r} "
+                    f"({type(left[index]).__name__}), incoming=<missing>"
+                )
+            else:
+                differences.extend(
+                    _manifest_differences(left[index], right[index], item_path)
+                )
+        return differences
+    if type(left) is not type(right) or left != right:
         label = path or "runtime_manifest"
-        return [f"{label}: target={left!r}, incoming={right!r}"]
+        return [
+            f"{label}: target={left!r} ({type(left).__name__}), "
+            f"incoming={right!r} ({type(right).__name__})"
+        ]
     return []
 
 
@@ -503,11 +532,20 @@ class _Bucket:
         if not values:
             return {"min": 0.0, "p10": 0.0, "p50": 0.0, "p90": 0.0, "max": 0.0}
         arr = np.asarray(values, dtype=np.float64)
+        scale = float(np.max(np.abs(arr)))
+
+        def scaled_quantile(q):
+            if scale == 0.0:
+                return 0.0
+            normalized = arr / scale
+            value = float(np.clip(np.quantile(normalized, q), -1.0, 1.0))
+            return _finite_float(value * scale, f"quantile[{q}]")
+
         return {
             "min": float(np.min(arr)),
-            "p10": float(np.quantile(arr, 0.10)),
-            "p50": float(np.quantile(arr, 0.50)),
-            "p90": float(np.quantile(arr, 0.90)),
+            "p10": scaled_quantile(0.10),
+            "p50": scaled_quantile(0.50),
+            "p90": scaled_quantile(0.90),
             "max": float(np.max(arr)),
         }
 
@@ -634,16 +672,20 @@ class AssociationHeadAuditAccumulator:
         self,
         *,
         max_samples_per_bucket: int = 0,
-        runtime_manifest=None,
+        runtime_manifest=_MANIFEST_UNSET,
         strict_manifest: bool = False,
     ):
         self._buckets = {}
         self._decision_buckets = {}
         self.max_samples_per_bucket = int(max_samples_per_bucket)
+        self._manifest_initialized = runtime_manifest is not _MANIFEST_UNSET
+        manifest_value = (
+            None if runtime_manifest is _MANIFEST_UNSET else runtime_manifest
+        )
         self.runtime_manifest = (
             None
-            if runtime_manifest is None
-            else _json_safe(runtime_manifest, path="runtime_manifest")
+            if manifest_value is None
+            else _json_safe(manifest_value, path="runtime_manifest")
         )
         if self.runtime_manifest is not None and not isinstance(
             self.runtime_manifest, dict
@@ -652,6 +694,8 @@ class AssociationHeadAuditAccumulator:
         self.strict_manifest = bool(strict_manifest)
         self._manifest_compatible = True
         self._manifest_mismatches = []
+        self._decision_evidence_complete = True
+        self._decision_evidence_incomplete_reasons = []
 
     def add_pair(
         self,
@@ -707,6 +751,7 @@ class AssociationHeadAuditAccumulator:
             sample=normalized_sample,
             max_samples=self.max_samples_per_bucket,
         )
+        self._manifest_initialized = True
 
     def add_decision(self, record) -> None:
         decision = _normalize_decision(record)
@@ -724,6 +769,7 @@ class AssociationHeadAuditAccumulator:
             )
             self._decision_buckets[key] = bucket
         bucket.add(decision, max_samples=self.max_samples_per_bucket)
+        self._manifest_initialized = True
 
     def to_summary(self):
         pair_buckets = [bucket.to_summary() for bucket in self._buckets.values()]
@@ -747,19 +793,29 @@ class AssociationHeadAuditAccumulator:
         decision_evidence = any(
             item["total_decisions"] > 0 for item in decision_buckets
         )
-        return {
+        summary = {
             "schema_version": 2,
             "runtime_manifest": self.runtime_manifest,
+            "manifest_initialized": bool(self._manifest_initialized),
             "pair_buckets": pair_buckets,
             # Preserve the schema-v1 key for existing pair-diagnostic readers.
             "buckets": pair_buckets,
             "decision_buckets": decision_buckets,
             "decision_evidence_available": bool(
-                decision_evidence and self._manifest_compatible
+                decision_evidence
+                and self._manifest_compatible
+                and self._decision_evidence_complete
+            ),
+            "decision_evidence_complete": bool(
+                self._decision_evidence_complete
+            ),
+            "decision_evidence_incomplete_reasons": list(
+                self._decision_evidence_incomplete_reasons
             ),
             "manifest_compatible": bool(self._manifest_compatible),
             "manifest_mismatches": list(self._manifest_mismatches),
         }
+        return _json_safe(summary, path="summary")
 
     def export_state(self):
         return self.to_summary()
@@ -772,6 +828,9 @@ class AssociationHeadAuditAccumulator:
             validated["pair_buckets"]
         )
         manifest_result = self._manifest_merge_result(validated)
+        evidence_result = self._decision_evidence_merge_result(
+            validated, manifest_result
+        )
 
         for item, aggregate_sums in pair_merge_plan:
             key = (
@@ -821,14 +880,16 @@ class AssociationHeadAuditAccumulator:
                 self.max_samples_per_bucket,
             )
 
-        for item in validated["decision_buckets"]:
-            self._apply_decision_bucket(item)
+        if manifest_result["accept_decisions"]:
+            for item in validated["decision_buckets"]:
+                self._apply_decision_bucket(item)
 
-        (
-            self.runtime_manifest,
-            self._manifest_compatible,
-            self._manifest_mismatches,
-        ) = manifest_result
+        self.runtime_manifest = manifest_result["runtime_manifest"]
+        self._manifest_initialized = manifest_result["manifest_initialized"]
+        self._manifest_compatible = manifest_result["manifest_compatible"]
+        self._manifest_mismatches = manifest_result["manifest_mismatches"]
+        self._decision_evidence_complete = evidence_result["complete"]
+        self._decision_evidence_incomplete_reasons = evidence_result["reasons"]
 
     def _validate_merge_state(self, state):
         if not isinstance(state, Mapping):
@@ -865,16 +926,52 @@ class AssociationHeadAuditAccumulator:
                 state, "decision_buckets", required=True
             )
 
+        pair_buckets = [
+            _validate_pair_bucket_state(item) for item in pair_items
+        ]
+        decision_buckets = [
+            _validate_decision_bucket_state(item) for item in decision_items
+        ]
+        source_manifest_compatible = state.get("manifest_compatible", True)
+        source_manifest_compatible = _strict_bool(
+            source_manifest_compatible, "manifest_compatible"
+        )
+        source_manifest_mismatches = _list_field(
+            state, "manifest_mismatches"
+        )
+        if not all(isinstance(item, str) for item in source_manifest_mismatches):
+            raise TypeError("manifest_mismatches must contain strings")
+        decision_total = sum(
+            item["total_decisions"] for item in decision_buckets
+        )
+        source_evidence_complete = state.get(
+            "decision_evidence_complete",
+            state.get("decision_evidence_available", decision_total > 0),
+        )
+        source_evidence_complete = _strict_bool(
+            source_evidence_complete, "decision_evidence_complete"
+        )
+        source_evidence_reasons = _list_field(
+            state, "decision_evidence_incomplete_reasons"
+        )
+        if not all(isinstance(item, str) for item in source_evidence_reasons):
+            raise TypeError(
+                "decision_evidence_incomplete_reasons must contain strings"
+            )
+
         return {
             "schema_version": schema_version,
             "manifest_present": manifest_present,
             "runtime_manifest": runtime_manifest,
-            "pair_buckets": [
-                _validate_pair_bucket_state(item) for item in pair_items
-            ],
-            "decision_buckets": [
-                _validate_decision_bucket_state(item) for item in decision_items
-            ],
+            "manifest_compatible": source_manifest_compatible,
+            "manifest_mismatches": list(source_manifest_mismatches),
+            "decision_evidence_complete": source_evidence_complete,
+            "decision_evidence_incomplete_reasons": list(
+                source_evidence_reasons
+            ),
+            "decision_total": decision_total,
+            "pair_buckets": pair_buckets,
+            "decision_buckets": decision_buckets,
         }
 
     def _prepare_pair_merge(self, pair_items):
@@ -913,34 +1010,79 @@ class AssociationHeadAuditAccumulator:
 
     def _manifest_merge_result(self, validated):
         if validated["schema_version"] == 1 and not validated["manifest_present"]:
-            return (
-                self.runtime_manifest,
-                self._manifest_compatible,
-                list(self._manifest_mismatches),
-            )
-        incoming = validated["runtime_manifest"]
-        if self.runtime_manifest is None and incoming is not None:
-            return (
-                incoming,
-                self._manifest_compatible,
-                list(self._manifest_mismatches),
-            )
-        if runtime_manifests_compatible(self.runtime_manifest, incoming):
-            return (
-                self.runtime_manifest,
-                self._manifest_compatible,
-                list(self._manifest_mismatches),
-            )
+            return {
+                "runtime_manifest": self.runtime_manifest,
+                "manifest_initialized": self._manifest_initialized,
+                "manifest_compatible": self._manifest_compatible,
+                "manifest_mismatches": list(self._manifest_mismatches),
+                "accept_decisions": False,
+            }
 
-        differences = _manifest_differences(self.runtime_manifest, incoming)
-        message = "runtime manifest mismatch: " + "; ".join(differences)
-        if self.strict_manifest:
-            raise ValueError(message)
+        incoming = validated["runtime_manifest"]
+        if self._manifest_initialized:
+            differences = _manifest_differences(
+                self.runtime_manifest, incoming
+            )
+            direct_compatible = bool(
+                runtime_manifests_compatible(self.runtime_manifest, incoming)
+                and not differences
+            )
+            baseline = self.runtime_manifest
+        else:
+            differences = []
+            direct_compatible = True
+            baseline = incoming
+
+        source_compatible = validated["manifest_compatible"]
+        if self.strict_manifest and (not direct_compatible or not source_compatible):
+            details = list(differences) + list(validated["manifest_mismatches"])
+            if not details:
+                details = ["incoming state reports manifest_compatible=False"]
+            raise ValueError("runtime manifest mismatch: " + "; ".join(details))
+
         mismatches = list(self._manifest_mismatches)
-        for difference in differences:
+        for difference in differences + validated["manifest_mismatches"]:
             if difference not in mismatches:
                 mismatches.append(difference)
-        return self.runtime_manifest, False, mismatches
+        incoming_compatible = bool(direct_compatible and source_compatible)
+        return {
+            "runtime_manifest": baseline,
+            "manifest_initialized": True,
+            "manifest_compatible": bool(
+                self._manifest_compatible and incoming_compatible
+            ),
+            "manifest_mismatches": mismatches,
+            "accept_decisions": incoming_compatible,
+        }
+
+    def _decision_evidence_merge_result(self, validated, manifest_result):
+        complete = self._decision_evidence_complete
+        reasons = list(self._decision_evidence_incomplete_reasons)
+
+        def mark_incomplete(reason):
+            nonlocal complete
+            complete = False
+            if reason not in reasons:
+                reasons.append(reason)
+
+        if validated["schema_version"] == 1:
+            mark_incomplete("schema_v1_state")
+        else:
+            if validated["decision_total"] == 0:
+                mark_incomplete("pair_only_state")
+            if not validated["decision_evidence_complete"]:
+                incoming_reasons = validated[
+                    "decision_evidence_incomplete_reasons"
+                ]
+                if incoming_reasons:
+                    for reason in incoming_reasons:
+                        mark_incomplete(reason)
+                else:
+                    mark_incomplete("upstream_incomplete_evidence")
+            if not manifest_result["accept_decisions"]:
+                mark_incomplete("manifest_mismatch")
+
+        return {"complete": complete, "reasons": reasons}
 
     def _apply_decision_bucket(self, item):
         class_id = item["class_id"]
