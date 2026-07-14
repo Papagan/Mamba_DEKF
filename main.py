@@ -17,6 +17,7 @@ from kalmanfilter.noise_audit import NoiseAuditAccumulator
 from tracker.base_tracker import Base3DTracker
 from tracker.dirty_suppressor_audit import DirtySuppressorAuditAccumulator
 from tracker.association_head_audit import AssociationHeadAuditAccumulator
+from tracker.association_runtime_manifest import build_association_runtime_manifest
 from dataset.baseversion_dataset import BaseVersionTrackingDataset
 from evaluation.static_evaluation.kitti.evaluation_HOTA.scripts.run_kitti import (
     eval_kitti,
@@ -329,6 +330,13 @@ if __name__ == "__main__":
             cfg_path = cfg_path.replace(".yaml", "_offline.yaml")
 
     cfg = yaml.load(open(cfg_path, "r"), Loader=yaml.Loader)
+
+    cfg["_ASSOCIATION_AUDIT_RUNTIME_MANIFEST"] = build_association_runtime_manifest(
+        cfg=cfg,
+        config_path=cfg_path,
+        process_count=args.process,
+        git_root=os.path.dirname(os.path.abspath(__file__)),
+    )
 
     save_path = os.path.join(
         os.path.dirname(cfg["SAVE_PATH"]),
