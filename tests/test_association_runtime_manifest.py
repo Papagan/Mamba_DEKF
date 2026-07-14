@@ -3,6 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import torch
+
 from tracker.association_runtime_manifest import (
     build_association_runtime_manifest,
     runtime_manifests_compatible,
@@ -77,7 +79,9 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
             {
                 "input_dim": 263,
                 "hidden_dims": [256, 128],
+                "hidden_dims_source": "config",
                 "dropout": 0.2,
+                "dropout_source": "config",
                 "num_classes": 7,
             },
         )
@@ -117,6 +121,44 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
         )
         self.assertIsNone(manifest["association_checkpoint_sha256"])
 
+    def test_cyclic_checkpoint_path_does_not_escape_manifest_builder(self):
+        (self.root / "loop-a").symlink_to("loop-b")
+        (self.root / "loop-b").symlink_to("loop-a")
+        cfg = self._cfg()
+        cfg["MAMBA_ASSOCIATION_HEAD"]["CHECKPOINT_PATH"] = "loop-a/model.pt"
+
+        manifest = build_association_runtime_manifest(
+            cfg=cfg,
+            config_path=str(self.config_path),
+            process_count=1,
+            git_root=self.root,
+        )
+
+        self.assertIsNone(manifest["association_checkpoint_path"])
+        self.assertIsNone(manifest["association_checkpoint_sha256"])
+
+    def test_architecture_uses_checkpoint_settings_when_config_omits_them(self):
+        torch.save(
+            {"settings": {"hidden_dims": [96, 48], "dropout": 0.25}},
+            self.checkpoint_path,
+        )
+        cfg = self._cfg()
+        del cfg["MAMBA_ASSOCIATION_HEAD"]["HIDDEN_DIMS"]
+        del cfg["MAMBA_ASSOCIATION_HEAD"]["DROPOUT"]
+
+        manifest = build_association_runtime_manifest(
+            cfg=cfg,
+            config_path=str(self.config_path),
+            process_count=1,
+            git_root=self.root,
+        )
+
+        architecture = manifest["association_head_architecture"]
+        self.assertEqual(architecture["hidden_dims"], [96, 48])
+        self.assertEqual(architecture["hidden_dims_source"], "checkpoint")
+        self.assertEqual(architecture["dropout"], 0.25)
+        self.assertEqual(architecture["dropout_source"], "checkpoint")
+
     def test_manifest_compatibility_rejects_changed_active_classes(self):
         left = {"config_sha256": "a", "active_class_states": {"2": ["matched"]}}
         right = {"config_sha256": "a", "active_class_states": {"3": ["matched"]}}
@@ -136,6 +178,40 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
         self.assertTrue(runtime_manifests_compatible(left, right))
         self.assertTrue(runtime_manifests_compatible(None, None))
         self.assertFalse(runtime_manifests_compatible(left, None))
+
+    def test_active_class_states_match_runtime_normalization_semantics(self):
+        mixed_cfg = self._cfg()
+        mixed_cfg["MAMBA_ASSOCIATION_HEAD"]["ACTIVE_CLASS_STATES"] = {
+            2: [" MATCHED ", "matched"],
+            "2": [" UNMATCHED ", "unmatched"],
+            3: ["UNMATCHED", " matched "],
+        }
+        canonical_cfg = self._cfg()
+        canonical_cfg["MAMBA_ASSOCIATION_HEAD"]["ACTIVE_CLASS_STATES"] = {
+            "3": ["matched", "unmatched"],
+            "2": ["unmatched", "matched"],
+        }
+
+        mixed = build_association_runtime_manifest(
+            cfg=mixed_cfg,
+            config_path=str(self.config_path),
+            process_count=1,
+            git_root=self.root,
+        )
+        canonical = build_association_runtime_manifest(
+            cfg=canonical_cfg,
+            config_path=str(self.config_path),
+            process_count=1,
+            git_root=self.root,
+        )
+
+        expected = {
+            "2": ["matched", "unmatched"],
+            "3": ["matched", "unmatched"],
+        }
+        self.assertEqual(mixed["active_class_states"], expected)
+        self.assertEqual(canonical["active_class_states"], expected)
+        self.assertTrue(runtime_manifests_compatible(mixed, canonical))
 
 
 if __name__ == "__main__":

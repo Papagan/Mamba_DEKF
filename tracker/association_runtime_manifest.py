@@ -18,7 +18,7 @@ def sha256_file(path: str | Path) -> str | None:
             for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
                 digest.update(chunk)
         return digest.hexdigest()
-    except (OSError, TypeError, ValueError):
+    except (OSError, RuntimeError, TypeError, ValueError):
         return None
 
 
@@ -41,6 +41,34 @@ def _git_output(git_root: Path, *args: str) -> str | None:
     return result.stdout.strip()
 
 
+def _resolve_checkpoint_path(value: Any, git_root: Path) -> str | None:
+    if not value:
+        return None
+    try:
+        checkpoint = Path(value).expanduser()
+        if not checkpoint.is_absolute():
+            checkpoint = git_root / checkpoint
+        return str(checkpoint.resolve())
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def _load_checkpoint_settings(checkpoint_path: str | None) -> dict:
+    if checkpoint_path is None:
+        return {}
+    try:
+        import torch
+
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        if not isinstance(checkpoint, Mapping):
+            return {}
+        settings = checkpoint.get("settings", {}) or {}
+        return dict(settings) if isinstance(settings, Mapping) else {}
+    except Exception:
+        # Checkpoint metadata is audit-only and must never prevent tracking.
+        return {}
+
+
 def _normalize_string_mapping(values: Any) -> dict:
     if not isinstance(values, Mapping):
         return {}
@@ -55,15 +83,20 @@ def _normalize_active_class_states(values: Any) -> dict:
         return {}
 
     normalized = {}
-    for class_id, states in sorted(values.items(), key=lambda item: str(item[0])):
+    for class_id, states in values.items():
         if states is None:
             state_values = []
         elif isinstance(states, str):
             state_values = [states]
         else:
             state_values = states
-        normalized[str(class_id)] = sorted(str(state) for state in state_values)
-    return normalized
+        normalized.setdefault(str(class_id), set()).update(
+            str(state).strip().lower() for state in state_values
+        )
+    return {
+        class_id: sorted(normalized[class_id])
+        for class_id in sorted(normalized)
+    }
 
 
 def _parse_hidden_dims(value: Any) -> list:
@@ -83,13 +116,9 @@ def build_association_runtime_manifest(
 
     normalized_config_path = _absolute_path(config_path)
     normalized_git_root = Path(git_root).expanduser().resolve()
-    checkpoint_value = head_cfg.get("CHECKPOINT_PATH")
-    checkpoint_path = None
-    if checkpoint_value:
-        checkpoint = Path(checkpoint_value).expanduser()
-        if not checkpoint.is_absolute():
-            checkpoint = normalized_git_root / checkpoint
-        checkpoint_path = str(checkpoint.resolve())
+    checkpoint_path = _resolve_checkpoint_path(
+        head_cfg.get("CHECKPOINT_PATH"), normalized_git_root
+    )
 
     git_commit = _git_output(normalized_git_root, "rev-parse", "HEAD")
     git_status = _git_output(
@@ -98,6 +127,28 @@ def build_association_runtime_manifest(
 
     embed_dim = int(mamba_cfg.get("EMBED_DIM", 32))
     num_classes = int(head_cfg.get("NUM_CLASSES", mamba_cfg.get("NUM_CLASSES", 7)))
+    needs_checkpoint_settings = (
+        "HIDDEN_DIMS" not in head_cfg or "DROPOUT" not in head_cfg
+    )
+    checkpoint_settings = (
+        _load_checkpoint_settings(checkpoint_path)
+        if needs_checkpoint_settings
+        else {}
+    )
+    hidden_dims_source = (
+        "config"
+        if "HIDDEN_DIMS" in head_cfg
+        else "checkpoint"
+        if "hidden_dims" in checkpoint_settings
+        else "default"
+    )
+    dropout_source = (
+        "config"
+        if "DROPOUT" in head_cfg
+        else "checkpoint"
+        if "dropout" in checkpoint_settings
+        else "default"
+    )
 
     return {
         "audit_schema_version": AUDIT_SCHEMA_VERSION,
@@ -111,8 +162,19 @@ def build_association_runtime_manifest(
         ),
         "association_head_architecture": {
             "input_dim": embed_dim * 4 + 7,
-            "hidden_dims": _parse_hidden_dims(head_cfg.get("HIDDEN_DIMS")),
-            "dropout": float(head_cfg.get("DROPOUT", 0.1)),
+            "hidden_dims": _parse_hidden_dims(
+                head_cfg.get(
+                    "HIDDEN_DIMS",
+                    checkpoint_settings.get("hidden_dims", [256, 128]),
+                )
+            ),
+            "hidden_dims_source": hidden_dims_source,
+            "dropout": float(
+                head_cfg.get(
+                    "DROPOUT", checkpoint_settings.get("dropout", 0.1)
+                )
+            ),
+            "dropout_source": dropout_source,
             "num_classes": num_classes,
         },
         "active_class_states": _normalize_active_class_states(
