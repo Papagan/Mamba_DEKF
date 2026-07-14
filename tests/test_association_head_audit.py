@@ -539,14 +539,104 @@ class AssociationHeadAuditAccumulatorTest(unittest.TestCase):
 
         summary = merged.to_summary()
         self.assertEqual(summary["pair_buckets"][0]["pair_count"], 1)
-        decision_bucket = summary["decision_buckets"][0]
-        self.assertEqual(decision_bucket["total_decisions"], 1)
-        self.assertEqual(decision_bucket["improved_count"], 1)
-        self.assertEqual(decision_bucket["damaged_count"], 0)
-        self.assertEqual(len(decision_bucket["raw_decisions"]), 1)
+        self.assertEqual(summary["decision_buckets"], [])
         self.assertFalse(summary["decision_evidence_available"])
         self.assertFalse(summary["manifest_compatible"])
         self.assertTrue(summary["manifest_mismatches"])
+
+        compatible_after_mismatch = AssociationHeadAuditAccumulator(
+            runtime_manifest={"config_sha256": "left"}
+        )
+        compatible_after_mismatch.add_pair(**self._pair(score=0.2))
+        compatible_after_mismatch.add_decision(self._decision())
+        merged.merge_state(compatible_after_mismatch.export_state())
+        summary = merged.to_summary()
+        self.assertEqual(summary["pair_buckets"][0]["pair_count"], 2)
+        self.assertEqual(summary["decision_buckets"], [])
+
+    def test_manifest_mismatch_decision_result_is_merge_order_independent(self):
+        def worker_state(manifest, score):
+            worker = AssociationHeadAuditAccumulator(
+                max_samples_per_bucket=2,
+                runtime_manifest={"config_sha256": manifest},
+            )
+            worker.add_pair(**self._pair(score=score))
+            worker.add_decision(self._decision())
+            return worker.export_state()
+
+        def merged_state(states):
+            merged = AssociationHeadAuditAccumulator(max_samples_per_bucket=4)
+            for state in states:
+                merged.merge_state(copy.deepcopy(state))
+            return merged
+
+        state_a = worker_state("left", 0.1)
+        state_b = worker_state("right", 0.2)
+        state_c = worker_state("left", 0.3)
+
+        direct_ab = merged_state((state_a, state_b))
+        direct_abc = merged_state((state_a, state_b, state_c))
+        left_tree = merged_state((direct_ab.export_state(), state_c))
+        right_branch = merged_state((state_b, state_c))
+        right_tree = merged_state((state_a, right_branch.export_state()))
+        reverse = merged_state((state_c, state_b, state_a))
+
+        self.assertEqual(direct_ab.to_summary()["decision_buckets"], [])
+        for merged in (direct_abc, left_tree, right_tree, reverse):
+            with self.subTest(manifest=merged.to_summary()["runtime_manifest"]):
+                summary = merged.to_summary()
+                self.assertEqual(summary["decision_buckets"], [])
+                self.assertFalse(summary["decision_evidence_available"])
+                self.assertFalse(summary["manifest_compatible"])
+                self.assertEqual(summary["pair_buckets"][0]["pair_count"], 3)
+
+    def test_manifest_initialized_protocol_and_atomic_failures(self):
+        empty_uninitialized = AssociationHeadAuditAccumulator().export_state()
+        target = AssociationHeadAuditAccumulator(
+            runtime_manifest={"config_sha256": "target"},
+            strict_manifest=True,
+        )
+        target.add_decision(self._decision())
+        before = copy.deepcopy(target.to_summary())
+
+        target.merge_state(copy.deepcopy(empty_uninitialized))
+        self.assertEqual(target.to_summary(), before)
+
+        for invalid in (None, 0, "false"):
+            with self.subTest(invalid=invalid):
+                state = copy.deepcopy(empty_uninitialized)
+                state["manifest_initialized"] = invalid
+                with self.assertRaisesRegex(
+                    (TypeError, ValueError), "manifest_initialized"
+                ):
+                    target.merge_state(state)
+                self.assertEqual(target.to_summary(), before)
+
+        for data_kind in ("pair", "decision"):
+            with self.subTest(data_kind=data_kind):
+                worker = AssociationHeadAuditAccumulator(runtime_manifest=None)
+                if data_kind == "pair":
+                    worker.add_pair(**self._pair())
+                else:
+                    worker.add_decision(self._decision())
+                state = worker.export_state()
+                state["manifest_initialized"] = False
+                with self.assertRaisesRegex(ValueError, "manifest_initialized"):
+                    target.merge_state(state)
+                self.assertEqual(target.to_summary(), before)
+
+        legacy_empty = {"schema_version": 1, "buckets": []}
+        legacy_target = AssociationHeadAuditAccumulator(strict_manifest=True)
+        legacy_target.merge_state(legacy_empty)
+        self.assertFalse(legacy_target.to_summary()["manifest_initialized"])
+        baseline = AssociationHeadAuditAccumulator(
+            runtime_manifest={"config_sha256": "baseline"}
+        )
+        legacy_target.merge_state(baseline.export_state())
+        self.assertEqual(
+            legacy_target.to_summary()["runtime_manifest"],
+            {"config_sha256": "baseline"},
+        )
 
     def test_manifest_mismatch_diff_is_type_sensitive_and_atomic(self):
         merged = AssociationHeadAuditAccumulator(

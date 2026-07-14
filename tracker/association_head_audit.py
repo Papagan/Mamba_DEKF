@@ -824,6 +824,8 @@ class AssociationHeadAuditAccumulator:
         if state is None:
             return
         validated = self._validate_merge_state(state)
+        if validated["no_op"]:
+            return
         pair_merge_plan = self._prepare_pair_merge(
             validated["pair_buckets"]
         )
@@ -880,7 +882,9 @@ class AssociationHeadAuditAccumulator:
                 self.max_samples_per_bucket,
             )
 
-        if manifest_result["accept_decisions"]:
+        if manifest_result["discard_decisions"]:
+            self._decision_buckets = {}
+        elif manifest_result["accept_decisions"]:
             for item in validated["decision_buckets"]:
                 self._apply_decision_bucket(item)
 
@@ -926,6 +930,31 @@ class AssociationHeadAuditAccumulator:
                 state, "decision_buckets", required=True
             )
 
+        manifest_initialized_present = "manifest_initialized" in state
+        if manifest_initialized_present:
+            manifest_initialized = _strict_bool(
+                state["manifest_initialized"], "manifest_initialized"
+            )
+        else:
+            # Schema v1 predates this field; schema v2 states without it used
+            # runtime_manifest as an implicit initialized baseline.
+            manifest_initialized = schema_version == 2
+        has_bucket_data = bool(pair_items or decision_items)
+        if (
+            manifest_initialized_present
+            and not manifest_initialized
+            and has_bucket_data
+        ):
+            raise ValueError(
+                "manifest_initialized=false state cannot contain pair or "
+                "decision data"
+            )
+        no_op = bool(
+            manifest_initialized_present
+            and not manifest_initialized
+            and not has_bucket_data
+        )
+
         pair_buckets = [
             _validate_pair_bucket_state(item) for item in pair_items
         ]
@@ -962,6 +991,8 @@ class AssociationHeadAuditAccumulator:
         return {
             "schema_version": schema_version,
             "manifest_present": manifest_present,
+            "manifest_initialized": manifest_initialized,
+            "no_op": no_op,
             "runtime_manifest": runtime_manifest,
             "manifest_compatible": source_manifest_compatible,
             "manifest_mismatches": list(source_manifest_mismatches),
@@ -1009,13 +1040,14 @@ class AssociationHeadAuditAccumulator:
         return plan
 
     def _manifest_merge_result(self, validated):
-        if validated["schema_version"] == 1 and not validated["manifest_present"]:
+        if not validated["manifest_initialized"]:
             return {
                 "runtime_manifest": self.runtime_manifest,
                 "manifest_initialized": self._manifest_initialized,
                 "manifest_compatible": self._manifest_compatible,
                 "manifest_mismatches": list(self._manifest_mismatches),
                 "accept_decisions": False,
+                "discard_decisions": not self._manifest_compatible,
             }
 
         incoming = validated["runtime_manifest"]
@@ -1045,14 +1077,16 @@ class AssociationHeadAuditAccumulator:
             if difference not in mismatches:
                 mismatches.append(difference)
         incoming_compatible = bool(direct_compatible and source_compatible)
+        globally_compatible = bool(
+            self._manifest_compatible and incoming_compatible
+        )
         return {
             "runtime_manifest": baseline,
             "manifest_initialized": True,
-            "manifest_compatible": bool(
-                self._manifest_compatible and incoming_compatible
-            ),
+            "manifest_compatible": globally_compatible,
             "manifest_mismatches": mismatches,
-            "accept_decisions": incoming_compatible,
+            "accept_decisions": globally_compatible,
+            "discard_decisions": not globally_compatible,
         }
 
     def _decision_evidence_merge_result(self, validated, manifest_result):
