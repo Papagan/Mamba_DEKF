@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 
 import numpy as np
+
+
+_THRESHOLD_RTOL = 1e-6
+_THRESHOLD_ATOL = 1e-8
 
 
 def _is_known_gt_token(token) -> bool:
@@ -31,6 +35,8 @@ def assignment_map(matches: np.ndarray, costs: np.ndarray) -> dict[int, dict]:
         raise TypeError("matches must contain integer indices")
     if costs.ndim != 1 or costs.shape[0] != matches.shape[0]:
         raise ValueError("costs must have shape (n_matches,)")
+    if np.issubdtype(costs.dtype, np.complexfloating):
+        raise TypeError("costs must contain real-valued numeric values")
     if not np.issubdtype(costs.dtype, np.number):
         raise TypeError("costs must contain numeric values")
     if not np.all(np.isfinite(costs)):
@@ -106,6 +112,8 @@ def _matrix(name, value, expected_shape=None) -> np.ndarray:
     array = np.asarray(value)
     if array.ndim != 2:
         raise ValueError(f"{name} must be a two-dimensional array")
+    if np.issubdtype(array.dtype, np.complexfloating):
+        raise TypeError(f"{name} must contain real-valued numeric values")
     if not np.issubdtype(array.dtype, np.number):
         raise TypeError(f"{name} must contain numeric values")
     if expected_shape is not None and array.shape != expected_shape:
@@ -113,11 +121,6 @@ def _matrix(name, value, expected_shape=None) -> np.ndarray:
             f"{name} must have shape {expected_shape}, got {array.shape}"
         )
     return array
-
-
-def _validate_track_metadata(name: str, values: Sequence, track_count: int) -> None:
-    if len(values) != track_count:
-        raise ValueError(f"{name} must contain one value per track ({track_count})")
 
 
 def _native_scalar(value):
@@ -194,6 +197,33 @@ def _normalize_state_buckets(values, track_count):
         if state not in {"matched", "unmatched"}:
             raise ValueError("state_buckets values must be matched or unmatched")
         normalized.append(state)
+    return normalized
+
+
+def _normalize_gt_tokens(name, values, expected_count):
+    if values is None:
+        return None
+    tokens = _metadata_values(name, values, expected_count)
+    normalized = []
+    for token in tokens:
+        if token is None:
+            normalized.append(None)
+            continue
+        if not isinstance(token, (str, int, float, bool)):
+            raise ValueError(
+                f"{name} must contain JSON-safe scalar tokens or None"
+            )
+        if isinstance(token, str):
+            token = token.strip()
+            if not token:
+                raise ValueError(f"{name} must not contain empty string tokens")
+        if isinstance(token, float) and not np.isfinite(token):
+            raise ValueError(f"{name} must contain finite numeric tokens")
+        try:
+            json.dumps(token, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{name} tokens must be JSON serializable") from exc
+        normalized.append(token)
     return normalized
 
 
@@ -276,11 +306,40 @@ def _threshold_crossing(
     for det_index in selected_det_indices:
         base_cost = float(base_cost_matrix[track_index, det_index])
         corrected_cost = float(corrected_cost_matrix[track_index, det_index])
-        base_accepted = np.isfinite(base_cost) and base_cost <= threshold
-        corrected_accepted = np.isfinite(corrected_cost) and corrected_cost <= threshold
+        base_accepted = _cost_within_threshold(base_cost, threshold)
+        corrected_accepted = _cost_within_threshold(corrected_cost, threshold)
         if base_accepted != corrected_accepted:
             return True
     return False
+
+
+def _cost_within_threshold(cost, threshold) -> bool:
+    return bool(
+        np.isfinite(cost)
+        and (
+            cost <= threshold
+            or np.isclose(
+                cost,
+                threshold,
+                rtol=_THRESHOLD_RTOL,
+                atol=_THRESHOLD_ATOL,
+            )
+        )
+    )
+
+
+def _validate_selected_cost_threshold(
+    label, assignment, source_matrix, track_index, threshold
+) -> None:
+    if assignment is None or threshold is None:
+        return
+    det_index = assignment["det_index"]
+    selected_cost = float(source_matrix[track_index, det_index])
+    if not _cost_within_threshold(selected_cost, threshold):
+        raise ValueError(
+            f"{label} selected cost {selected_cost} exceeds class threshold "
+            f"{threshold} for match ({track_index}, {det_index})"
+        )
 
 
 def _assignment_gt_token(assignment, det_gt_tokens):
@@ -343,12 +402,10 @@ def compare_assignment_results(
     class_ids = _normalize_class_ids(class_ids, track_count)
     class_names = _normalize_class_names(class_names, track_count)
     state_buckets = _normalize_state_buckets(state_buckets, track_count)
-    if track_gt_tokens is not None:
-        _validate_track_metadata("track_gt_tokens", track_gt_tokens, track_count)
-    if det_gt_tokens is not None and len(det_gt_tokens) != det_count:
-        raise ValueError(
-            f"det_gt_tokens must contain one value per detection ({det_count})"
-        )
+    track_gt_tokens = _normalize_gt_tokens(
+        "track_gt_tokens", track_gt_tokens, track_count
+    )
+    det_gt_tokens = _normalize_gt_tokens("det_gt_tokens", det_gt_tokens, det_count)
     if context is not None and not isinstance(context, Mapping):
         raise TypeError("context must be a mapping or None")
     context = context or {}
@@ -407,6 +464,20 @@ def compare_assignment_results(
         )
 
         threshold = _class_threshold(class_thresholds, class_ids[track_index])
+        _validate_selected_cost_threshold(
+            "production/base",
+            production,
+            base_cost_matrix,
+            track_index,
+            threshold,
+        )
+        _validate_selected_cost_threshold(
+            "shadow/corrected",
+            shadow,
+            corrected_cost_matrix,
+            track_index,
+            threshold,
+        )
         production_base_cost = _selected_value(
             base_cost_matrix, track_index, production_det_index
         )

@@ -50,6 +50,18 @@ class AssignmentMapTest(unittest.TestCase):
             {},
         )
 
+    def test_rejects_complex_cost_arrays_including_empty_arrays(self):
+        with self.assertRaisesRegex(TypeError, "costs.*real-valued"):
+            assignment_map(
+                np.array([[0, 0]], dtype=int),
+                np.array([0.2 + 0.0j]),
+            )
+        with self.assertRaisesRegex(TypeError, "costs.*real-valued"):
+            assignment_map(
+                np.empty((0, 2), dtype=int),
+                np.empty((0,), dtype=complex),
+            )
+
 
 class ClassifyAssignmentOutcomeTest(unittest.TestCase):
     def test_improved_when_shadow_becomes_gt_consistent(self):
@@ -331,9 +343,9 @@ class CompareAssignmentResultsTest(unittest.TestCase):
             production_matches=np.array([[0, 0]], dtype=int),
             production_costs=np.array([0.5]),
             shadow_matches=np.array([[0, 1]], dtype=int),
-            shadow_costs=np.array([1.2]),
-            base_cost_matrix=np.array([[0.5, 0.6]]),
-            corrected_cost_matrix=np.array([[0.7, 1.2]]),
+            shadow_costs=np.array([0.8]),
+            base_cost_matrix=np.array([[0.5, 1.2]]),
+            corrected_cost_matrix=np.array([[1.2, 0.8]]),
             class_thresholds={"5": 1.0},
         )[0]
 
@@ -345,9 +357,9 @@ class CompareAssignmentResultsTest(unittest.TestCase):
             production_matches=np.array([[0, 0]], dtype=int),
             production_costs=np.array([0.5]),
             shadow_matches=np.array([[0, 1]], dtype=int),
-            shadow_costs=np.array([1.2]),
-            base_cost_matrix=np.array([[0.5, 0.6]]),
-            corrected_cost_matrix=np.array([[0.7, 1.2]]),
+            shadow_costs=np.array([0.8]),
+            base_cost_matrix=np.array([[0.5, 1.2]]),
+            corrected_cost_matrix=np.array([[1.2, 0.8]]),
             class_ids=["5"],
             class_thresholds={5: 1.0},
         )[0]
@@ -373,19 +385,34 @@ class CompareAssignmentResultsTest(unittest.TestCase):
         self.assertEqual([item["assignment_changed"] for item in records], [True, True])
         self.assertEqual([item["threshold_crossing"] for item in records], [False, False])
 
-    def test_unchanged_assignment_can_cross_selected_cost_gate(self):
+    def test_rejects_matched_selected_cost_above_class_threshold(self):
+        with self.assertRaisesRegex(ValueError, "production.*threshold"):
+            self._compare(
+                production_matches=np.array([[0, 0]], dtype=int),
+                production_costs=np.array([1.1]),
+                base_cost_matrix=np.array([[1.1, 0.4]]),
+                class_thresholds={5: 1.0},
+            )
+        with self.assertRaisesRegex(ValueError, "shadow.*threshold"):
+            self._compare(
+                shadow_matches=np.array([[0, 1]], dtype=int),
+                shadow_costs=np.array([1.1]),
+                corrected_cost_matrix=np.array([[0.2, 1.1]]),
+                class_thresholds={5: 1.0},
+            )
+
+    def test_allows_matched_cost_within_floating_threshold_tolerance(self):
+        selected_cost = 1.0 + 5e-9
         record = self._compare(
             production_matches=np.array([[0, 0]], dtype=int),
-            production_costs=np.array([0.9]),
-            shadow_matches=np.array([[0, 0]], dtype=int),
-            shadow_costs=np.array([1.1]),
-            base_cost_matrix=np.array([[0.9, 0.4]]),
-            corrected_cost_matrix=np.array([[1.1, 0.4]]),
+            production_costs=np.array([selected_cost]),
+            base_cost_matrix=np.array([[selected_cost, 0.4]]),
+            corrected_cost_matrix=np.array([[selected_cost, 0.4]]),
             class_thresholds={5: 1.0},
         )[0]
 
-        self.assertFalse(record["assignment_changed"])
-        self.assertTrue(record["threshold_crossing"])
+        self.assertAlmostEqual(record["production_selected_cost"], selected_cost)
+        self.assertFalse(record["threshold_crossing"])
 
     def test_rejects_solver_costs_that_disagree_with_source_matrices(self):
         with self.assertRaisesRegex(ValueError, "production_costs"):
@@ -428,6 +455,42 @@ class CompareAssignmentResultsTest(unittest.TestCase):
                 shadow_matches=np.array([[0, 2]], dtype=int),
                 shadow_costs=np.array([0.2]),
             )
+
+    def test_rejects_non_one_dimensional_gt_token_arrays(self):
+        with self.assertRaisesRegex(ValueError, "track_gt_tokens"):
+            self._compare(track_gt_tokens=np.array([["gt-a"]], dtype=object))
+        with self.assertRaisesRegex(ValueError, "det_gt_tokens"):
+            self._compare(
+                det_gt_tokens=np.array([["gt-a", "gt-b"]], dtype=object)
+            )
+
+    def test_rejects_nested_or_non_serializable_gt_tokens(self):
+        nested_track_tokens = np.empty((1,), dtype=object)
+        nested_track_tokens[0] = np.array(["gt-a"])
+        invalid_values = {
+            "track_gt_tokens": [
+                nested_track_tokens,
+                [{"token": "gt-a"}],
+                [object()],
+            ],
+            "det_gt_tokens": [
+                [["gt-a"], None],
+                [{"token": "gt-a"}, None],
+                [object(), None],
+            ],
+        }
+        for name, cases in invalid_values.items():
+            for value in cases:
+                with self.subTest(name=name, value=value), self.assertRaisesRegex(
+                    ValueError, name
+                ):
+                    self._compare(**{name: value})
+
+    def test_rejects_empty_or_nonfinite_gt_tokens(self):
+        with self.assertRaisesRegex(ValueError, "track_gt_tokens"):
+            self._compare(track_gt_tokens=["   "])
+        with self.assertRaisesRegex(ValueError, "det_gt_tokens"):
+            self._compare(det_gt_tokens=["gt-a", np.inf])
 
     def test_normalizes_valid_track_metadata(self):
         record = self._compare(
@@ -489,6 +552,18 @@ class CompareAssignmentResultsTest(unittest.TestCase):
             self._compare(class_thresholds={5: "not-a-number"})
         with self.assertRaisesRegex(ValueError, "finite"):
             self._compare(class_thresholds={5: np.inf})
+
+    def test_rejects_complex_cost_and_score_matrices(self):
+        matrix_names = (
+            "base_cost_matrix",
+            "corrected_cost_matrix",
+            "association_scores",
+        )
+        for name in matrix_names:
+            with self.subTest(name=name), self.assertRaisesRegex(
+                TypeError, f"{name}.*real-valued"
+            ):
+                self._compare(**{name: np.array([[0.2 + 0.0j, 0.4 + 0.0j]])})
 
 
 if __name__ == "__main__":
