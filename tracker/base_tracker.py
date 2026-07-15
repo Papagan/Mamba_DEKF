@@ -971,6 +971,9 @@ class Base3DTracker:
                 "association_checkpoint_head_key_count": checkpoint_preflight[
                     "head_key_count"
                 ],
+                "association_checkpoint_key_validation_status": checkpoint_preflight[
+                    "key_validation_status"
+                ],
                 "association_checkpoint_validation_error": checkpoint_preflight[
                     "validation_error"
                 ],
@@ -983,6 +986,10 @@ class Base3DTracker:
                 "association_checkpoint_runtime_contract_validation_status": checkpoint_preflight[
                     "runtime_contract_validation_status"
                 ],
+                "association_checkpoint_loaded": (
+                    checkpoint_preflight["loadable"]
+                    and checkpoint_preflight["validation_error"] is None
+                ),
             }
             preflight_mismatches = {
                 field: {

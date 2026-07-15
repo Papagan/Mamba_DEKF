@@ -200,6 +200,9 @@ class AssociationCheckpointAuditTest(unittest.TestCase):
             "association_checkpoint_sha256": sha256_file(self.checkpoint_path),
             "association_checkpoint_loadable": preflight["loadable"],
             "association_checkpoint_head_key_count": preflight["head_key_count"],
+            "association_checkpoint_key_validation_status": preflight[
+                "key_validation_status"
+            ],
             "association_checkpoint_validation_error": preflight["validation_error"],
             "association_checkpoint_runtime_contract_expected": preflight[
                 "runtime_contract_expected"
@@ -210,6 +213,10 @@ class AssociationCheckpointAuditTest(unittest.TestCase):
             "association_checkpoint_runtime_contract_validation_status": preflight[
                 "runtime_contract_validation_status"
             ],
+            "association_checkpoint_loaded": (
+                preflight["loadable"]
+                and preflight["validation_error"] is None
+            ),
         }
 
     def _assert_one_load_error(self, tracker):

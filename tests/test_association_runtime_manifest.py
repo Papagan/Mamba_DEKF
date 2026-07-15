@@ -42,6 +42,7 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
             },
             "THRESHOLD": {"BEV": {"COST_MODE": "geometric"}},
             "MAMBA_ASSOCIATION_HEAD": {
+                "ENABLED": True,
                 "CHECKPOINT_PATH": "checkpoints/association.pt",
                 "HIDDEN_DIMS": [256, 128],
                 "DROPOUT": 0.2,
@@ -52,6 +53,10 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
                 "MIN_SCORE": 0.6,
                 "ALPHA": 0.05,
                 "MAX_DELTA": 0.03,
+            },
+            "ASSOCIATION_HEAD_AUDIT": {
+                "ENABLED": True,
+                "SHADOW_MODE": True,
             },
         }
 
@@ -87,6 +92,14 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
         )
         self.assertFalse(manifest["association_checkpoint_loadable"])
         self.assertEqual(manifest["association_checkpoint_head_key_count"], 0)
+        self.assertEqual(
+            manifest["association_checkpoint_key_validation_status"], "invalid"
+        )
+        self.assertFalse(manifest["association_checkpoint_loaded"])
+        self.assertTrue(manifest["association_head_enabled"])
+        self.assertTrue(manifest["association_head_audit_enabled"])
+        self.assertTrue(manifest["association_head_audit_shadow_mode"])
+        self.assertTrue(manifest["association_checkpoint_configured"])
         self.assertIsInstance(
             manifest["association_checkpoint_validation_error"], str
         )
@@ -158,6 +171,10 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
 
         self.assertTrue(manifest["association_checkpoint_loadable"])
         self.assertEqual(manifest["association_checkpoint_head_key_count"], 2)
+        self.assertEqual(
+            manifest["association_checkpoint_key_validation_status"], "valid"
+        )
+        self.assertTrue(manifest["association_checkpoint_loaded"])
         self.assertIsNone(manifest["association_checkpoint_validation_error"])
         self.assertEqual(
             manifest["association_checkpoint_runtime_contract_actual"],

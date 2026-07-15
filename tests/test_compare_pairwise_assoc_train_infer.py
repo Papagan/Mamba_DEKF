@@ -9,7 +9,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import torch
+
 from tracker.association_head_audit import AssociationHeadAuditAccumulator
+from tracker.association_runtime_manifest import build_association_runtime_manifest
 import tools.compare_pairwise_assoc_train_infer as comparator
 
 
@@ -323,6 +326,55 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
         self.assertEqual(state["total_decisions"], 1)
         self.assertEqual(state["known_changed_count"], 1)
         self.assertEqual(state["improved_count"], 1)
+
+    def test_real_runtime_manifest_builder_satisfies_comparator_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "shadow.yaml"
+            config_path.write_text("shadow: true\n", encoding="utf-8")
+            checkpoint_path = root / "association.pt"
+            runtime_contract = {
+                "filter_mode": "mamba_multihead_closure",
+                "history_source": "fusion",
+                "tracker_compat_mode": "mctrack",
+                "expected_bev_cost_mode": "geometric",
+            }
+            torch.save(
+                {
+                    "model_state_dict": {
+                        "association_heads.heads.2.weight": torch.ones(1)
+                    },
+                    "runtime_contract": runtime_contract,
+                },
+                checkpoint_path,
+            )
+            cfg = {
+                "FILTER_MODE": "mamba_multihead_closure",
+                "TRACKER_COMPAT_MODE": "mctrack",
+                "CATEGORY_MAP_TO_NUMBER": {"bicycle": 2},
+                "THRESHOLD": {"BEV": {"COST_MODE": "geometric"}},
+                "MAMBA_ASSOCIATION_HEAD": {
+                    "ENABLED": True,
+                    "CHECKPOINT_PATH": str(checkpoint_path),
+                    "ACTIVE_CLASS_STATES": {2: ["matched"]},
+                },
+                "ASSOCIATION_HEAD_AUDIT": {
+                    "ENABLED": True,
+                    "SHADOW_MODE": True,
+                },
+            }
+            manifest = build_association_runtime_manifest(
+                cfg=cfg,
+                config_path=str(config_path),
+                process_count=1,
+                git_root=root,
+            )
+            data = self._run_compare(
+                self._complete_audit(runtime_manifest=manifest)
+            )
+
+        self.assertTrue(data["runtime_manifest_validation"]["valid"])
+        self.assertTrue(data["decision_evidence"]["usable"])
 
     def test_default_minimum_requires_100_known_changed_decisions(self):
         audit = self._complete_audit(

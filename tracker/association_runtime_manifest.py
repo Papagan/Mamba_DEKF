@@ -271,6 +271,7 @@ def preflight_association_checkpoint(
     result = {
         "loadable": False,
         "head_key_count": 0,
+        "key_validation_status": "invalid",
         "validation_error": None,
         "runtime_contract_expected": contract_validation["expected"],
         "runtime_contract_actual": contract_validation["actual"],
@@ -347,6 +348,8 @@ def preflight_association_checkpoint(
             result["validation_error"] = (
                 "association checkpoint has no association_heads.* keys"
             )
+        else:
+            result["key_validation_status"] = "valid"
 
     settings = checkpoint.get("settings", {})
     settings_error = None
@@ -448,6 +451,7 @@ def build_association_runtime_manifest(
     *, cfg: dict, config_path: str, process_count: int, git_root: str | Path
 ) -> dict:
     head_cfg = cfg.get("MAMBA_ASSOCIATION_HEAD", {}) or {}
+    audit_cfg = cfg.get("ASSOCIATION_HEAD_AUDIT", {}) or {}
     mamba_cfg = cfg.get("MAMBA", {}) or {}
     bev_cfg = ((cfg.get("MATCHING", {}) or {}).get("BEV", {}) or {})
 
@@ -485,6 +489,12 @@ def build_association_runtime_manifest(
         "config_sha256": sha256_file(normalized_config_path),
         "git_commit": git_commit,
         "git_dirty": None if git_status is None else bool(git_status),
+        "association_head_enabled": bool(head_cfg.get("ENABLED", False)),
+        "association_head_audit_enabled": bool(audit_cfg.get("ENABLED", False)),
+        "association_head_audit_shadow_mode": bool(
+            audit_cfg.get("SHADOW_MODE", False)
+        ),
+        "association_checkpoint_configured": checkpoint_path is not None,
         "association_checkpoint_path": checkpoint_path,
         "association_checkpoint_sha256": (
             sha256_file(checkpoint_path) if checkpoint_path is not None else None
@@ -492,6 +502,9 @@ def build_association_runtime_manifest(
         "association_checkpoint_loadable": checkpoint_preflight["loadable"],
         "association_checkpoint_head_key_count": checkpoint_preflight[
             "head_key_count"
+        ],
+        "association_checkpoint_key_validation_status": checkpoint_preflight[
+            "key_validation_status"
         ],
         "association_checkpoint_validation_error": checkpoint_preflight[
             "validation_error"
@@ -505,6 +518,12 @@ def build_association_runtime_manifest(
         "association_checkpoint_runtime_contract_validation_status": checkpoint_preflight[
             "runtime_contract_validation_status"
         ],
+        # This is the deterministic CPU preflight load. Any later device-load
+        # failure is recorded as an audit error and therefore fails closed.
+        "association_checkpoint_loaded": (
+            checkpoint_preflight["loadable"]
+            and checkpoint_preflight["validation_error"] is None
+        ),
         "association_head_architecture": {
             "input_dim": embed_dim * 4 + 7,
             "hidden_dims": (
