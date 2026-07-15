@@ -94,13 +94,24 @@ are aggregated, then each state independently applies:
 The report exposes these results as `decision_evidence_by_state` and
 `diagnosis_by_state`. Class-level activation scope comes only from
 `runtime_manifest.active_class_states`; observed buckets do not define or
-expand production activation. Class IDs may be native non-negative integers or
-their canonical decimal string form. Each configured state must be exactly
-`matched` or `unmatched`.
+expand production activation. `runtime_manifest.class_id_to_name` is the
+canonical class mapping. Its keys and `active_class_states` keys must be
+canonical decimal class IDs in the bounded range `0..2147483647`; each
+configured state must be exactly `matched` or `unmatched`.
 
-Every manifest-active state is required for a class-level candidate. A
-configured state with no observed decision bucket is added to
-`diagnosis_by_state` as `insufficient_decision_evidence`. The class is a
+The comparator checks every training-cache `(class_id, category)`, pair-bucket
+`(class_id, class_name)`, and decision-bucket `(class_id, class_name)` against
+that canonical mapping. Unknown IDs, mismatched names, malformed or oversized
+numeric keys, duplicate identities, and missing mappings are reported in
+`class_identity_validation`. Any such error makes decision evidence and
+class-level activation unusable. The CLI still writes a fail-closed report
+rather than authorizing a candidate or crashing on an oversized key.
+
+Every manifest-active class and state is required for a class-level candidate.
+The report includes active classes even when train, pair, and decision inputs
+never observed them. A configured state with no decision bucket receives an
+explicit zero-count `decision_evidence_by_state` entry and
+`insufficient_decision_evidence` in `diagnosis_by_state`. The class is a
 candidate only when every configured active state independently reaches the
 known-changed minimum and is a candidate. An observed state that is not active
 in the manifest remains visible in the state-level report, but it neither
@@ -112,7 +123,9 @@ Missing or malformed `active_class_states` fails closed only at class level:
 valid observed states may still retain state-level conclusions, but no class
 can be a candidate. Empty class state lists and classes omitted from the map
 also cannot produce a class-level candidate. The report records normalized
-scope and validation failures in `class_state_activation`.
+scope and validation failures in `class_state_activation`. Safely parsed active
+entries remain visible with insufficient evidence even when another scope key
+is malformed; retaining them for reporting never restores class-level use.
 
 The 100 known-changed minimum is a hard safety floor. The
 `--min-known-changed` option may raise it for a stricter experiment but rejects
@@ -129,30 +142,48 @@ list. `audit_errors` must contain non-negative native integer `count` and
 `sample_count == len(samples) <= count`; an optional top-level
 `audit_error_count` must agree. Any recorded audit error also fails closed.
 
-Each decision bucket requires a non-negative native integer `class_id`, a
-non-empty `class_name`, a `matched` or `unmatched` state, and every production
-counter as a non-negative native integer. Outcome counts, known-GT counts,
-changed-assignment categories, threshold crossings, and known-changed counts
-must satisfy the schema v2 accounting identities. Optional `net_improvement`
-and `harm_precision` must be finite and consistent with those counters. Numeric
-strings, booleans used as integers, negative values, and inconsistent derived
-metrics are rejected rather than coerced or clipped. Rejection reasons are
-reported in `decision_evidence.incomplete_reasons`.
+Each decision bucket requires a bounded non-negative native integer `class_id`,
+the exact canonical `class_name`, a `matched` or `unmatched` state, and every
+production counter as a non-negative native integer. Outcome counts, known-GT
+counts, changed-assignment categories, threshold crossings, and known-changed
+counts must satisfy the schema v2 accounting identities. Optional
+`net_improvement` and `harm_precision` must be finite and consistent with those
+counters. Numeric strings, booleans used as integers, negative values, and
+inconsistent derived metrics are rejected rather than coerced or clipped.
+Rejection reasons are reported in `decision_evidence.incomplete_reasons`.
 
 Unknown GT identities are retained as unknown evidence and cannot count as
 `improved` or `damaged`, so sparse or unavailable GT can prevent the minimum
 known-changed gate from being reached.
 
-### Pending: audit-only GT enrichment
+### Audit-only GT enrichment
 
-Standard detection inference has no GT identity annotations, so its assignment
-changes normally remain unknown and `known_changed_count` stays at zero. Before
-using the decision gate, generate a separate GT-enriched audit input that labels
-the outcomes of already-recorded production and shadow decisions. This is an
-audit-only prerequisite; the enrichment path is not yet implemented by this
-tool. GT must never be supplied to candidate generation, scoring, matching, or
-assignment selection. It may only annotate outcomes after both production and
-shadow decisions have been made.
+GT enrichment is implemented as an explicit, default-off nuScenes preprocessing
+mode. Generate a separate audit dataset rather than replacing the normal
+converted detections:
+
+```bash
+python preprocess/convert_nuscenes.py \
+  --raw_data_path /path/to/nuscenes/raw_data \
+  --dets_path data/nuscenes/detectors \
+  --detector centerpoint \
+  --save_path data/base_version/nuscenes_audit_gt \
+  --split val \
+  --audit_gt_enrichment
+```
+
+The converter matches detections to same-class GT annotations within the audit
+distance gate and writes aligned `audit_gt_tokens` as a sidecar. Filtering and
+NMS keep that sidecar aligned; GT identities are not copied into detection or
+`BBox` payloads. The tracker carries the sidecar only into the shadow decision
+comparison so known changed assignments can be classified as improved,
+damaged, or neutral. Running conversion without `--audit_gt_enrichment` keeps
+the prior behavior and normally leaves `known_changed_count` at zero.
+
+GT must never be supplied to candidate generation, scoring, matching, or
+assignment selection. It only annotates outcomes after production and shadow
+decisions have both been made. Use the separately converted audit dataset only
+for the shadow audit, never for baseline or intervention measurements.
 
 A candidate authorizes only a separate A/B experiment, not default activation.
 Real assignment intervention requires another experimental config with

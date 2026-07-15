@@ -37,14 +37,14 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
             },
         ]
 
-    def _run_compare(self, audit, *extra_args, expect_success=True):
+    def _run_compare(self, audit, *extra_args, expect_success=True, samples=None):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             train_path = tmp_path / "train.pkl"
             audit_path = tmp_path / "audit.json"
             output_path = tmp_path / "summary.json"
             with open(train_path, "wb") as f:
-                pickle.dump(self.samples, f)
+                pickle.dump(self.samples if samples is None else samples, f)
             audit_path.write_text(json.dumps(audit), encoding="utf-8")
 
             result = subprocess.run(
@@ -159,6 +159,7 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
             "schema_version": 2,
             "runtime_manifest": {
                 "config_sha256": "test",
+                "class_id_to_name": {"2": "bicycle"},
                 "active_class_states": {2: ["matched"]},
             },
             "manifest_initialized": True,
@@ -241,7 +242,11 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
 
     def test_complete_production_v2_bucket_is_accepted(self):
         audit = AssociationHeadAuditAccumulator(
-            runtime_manifest={"config_sha256": "producer"}
+            runtime_manifest={
+                "config_sha256": "producer",
+                "class_id_to_name": {"2": "bicycle", "5": "trailer"},
+                "active_class_states": {"5": ["unmatched"]},
+            }
         )
         audit.add_decision(
             {
@@ -376,6 +381,7 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
             self._complete_audit(
                 runtime_manifest={
                     "config_sha256": "test",
+                    "class_id_to_name": {"2": "bicycle"},
                     "active_class_states": {"2": ["matched", "unmatched"]},
                 },
                 decision_buckets=[
@@ -407,6 +413,7 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
             self._complete_audit(
                 runtime_manifest={
                     "config_sha256": "test",
+                    "class_id_to_name": {"2": "bicycle"},
                     "active_class_states": {2: ["matched", "unmatched"]},
                 },
                 decision_buckets=[
@@ -571,12 +578,16 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
 
         activation_cases = {
             "missing_active_class_states": (
-                {"config_sha256": "test"},
+                {
+                    "config_sha256": "test",
+                    "class_id_to_name": {"2": "bicycle"},
+                },
                 "missing_active_class_states",
             ),
             "invalid_active_class_states": (
                 {
                     "config_sha256": "test",
+                    "class_id_to_name": {"2": "bicycle"},
                     "active_class_states": {"2": ["matched", "lost"]},
                 },
                 "invalid_active_class_states_state",
@@ -597,6 +608,189 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
                 )
                 self.assertIn("insufficient_decision_evidence", bicycle["diagnosis"])
                 self.assertFalse(any("candidate" in item for item in bicycle["diagnosis"]))
+
+    def test_canonical_manifest_mapping_validates_every_bucket_source(self):
+        cases = {}
+
+        train_samples = copy.deepcopy(self.samples)
+        train_samples[0]["category"] = "motorcycle"
+        cases["train"] = (
+            self._complete_audit(pair_buckets=[self._pair_bucket()]),
+            train_samples,
+            "train_bucket_class_identity_mismatch",
+        )
+
+        pair_audit = self._complete_audit(pair_buckets=[self._pair_bucket()])
+        pair_audit["pair_buckets"][0]["class_name"] = "motorcycle"
+        cases["pair"] = (
+            pair_audit,
+            self.samples,
+            "pair_bucket_class_identity_mismatch",
+        )
+
+        decision_audit = self._complete_audit()
+        decision_audit["decision_buckets"][0]["class_name"] = "motorcycle"
+        cases["decision"] = (
+            decision_audit,
+            self.samples,
+            "decision_bucket_class_identity_mismatch",
+        )
+
+        for source, (audit, samples, reason) in cases.items():
+            with self.subTest(source=source):
+                data = self._run_compare(audit, samples=samples)
+                identity = data["class_identity_validation"]
+                self.assertFalse(identity["valid"])
+                self.assertIn(reason, identity["incomplete_reasons"])
+                bicycle = data["classes"]["2:bicycle"]
+                self.assertIn("insufficient_decision_evidence", bicycle["diagnosis"])
+                self.assertFalse(any("candidate" in item for item in bicycle["diagnosis"]))
+
+    def test_invalid_or_oversized_manifest_class_keys_fail_closed_without_crash(self):
+        invalid_keys = ["02", "+2", "9" * 5000]
+
+        for invalid_key in invalid_keys:
+            with self.subTest(key_length=len(invalid_key)):
+                audit = self._complete_audit()
+                audit["runtime_manifest"]["class_id_to_name"] = {
+                    invalid_key: "bicycle"
+                }
+                audit["runtime_manifest"]["active_class_states"] = {
+                    invalid_key: ["matched"]
+                }
+
+                data = self._run_compare(audit)
+                identity = data["class_identity_validation"]
+                self.assertFalse(identity["valid"])
+                self.assertIn(
+                    "invalid_class_id_to_name_class_id",
+                    identity["incomplete_reasons"],
+                )
+                self.assertFalse(data["decision_evidence"]["usable"])
+                self.assertFalse(
+                    any(
+                        "candidate" in diagnosis
+                        for bucket in data["classes"].values()
+                        for diagnosis in bucket["diagnosis"]
+                    )
+                )
+
+    def test_unhashable_pair_state_fails_closed_without_crash(self):
+        audit = self._complete_audit(pair_buckets=[self._pair_bucket()])
+        audit["pair_buckets"][0]["state_bucket"] = ["matched"]
+
+        data = self._run_compare(audit)
+
+        identity = data["class_identity_validation"]
+        self.assertFalse(identity["valid"])
+        self.assertIn("invalid_pair_bucket_state", identity["incomplete_reasons"])
+        self.assertFalse(data["decision_evidence"]["usable"])
+        self.assertIn(
+            "insufficient_decision_evidence",
+            data["classes"]["2:bicycle"]["diagnosis"],
+        )
+
+    def test_oversized_bucket_class_ids_fail_closed_for_every_source(self):
+        oversized_class_id = 10**100
+        cases = {}
+
+        train_samples = copy.deepcopy(self.samples)
+        train_samples[0]["class_id"] = oversized_class_id
+        cases["train"] = (
+            self._complete_audit(),
+            train_samples,
+            "train_bucket_invalid_class_identity",
+        )
+
+        pair_audit = self._complete_audit(pair_buckets=[self._pair_bucket()])
+        pair_audit["pair_buckets"][0]["class_id"] = oversized_class_id
+        cases["pair"] = (
+            pair_audit,
+            self.samples,
+            "pair_bucket_invalid_class_identity",
+        )
+
+        decision_audit = self._complete_audit()
+        decision_audit["decision_buckets"][0]["class_id"] = oversized_class_id
+        cases["decision"] = (
+            decision_audit,
+            self.samples,
+            "decision_bucket_invalid_class_identity",
+        )
+
+        for source, (audit, samples, reason) in cases.items():
+            with self.subTest(source=source):
+                data = self._run_compare(audit, samples=samples)
+                self.assertFalse(data["class_identity_validation"]["valid"])
+                self.assertIn(
+                    reason,
+                    data["class_identity_validation"]["incomplete_reasons"],
+                )
+                self.assertFalse(data["decision_evidence"]["usable"])
+                self.assertFalse(
+                    any(
+                        "candidate" in diagnosis
+                        for bucket in data["classes"].values()
+                        for diagnosis in bucket["diagnosis"]
+                    )
+                )
+
+    def test_unobserved_manifest_active_classes_and_states_are_insufficient(self):
+        data = self._run_compare(
+            self._complete_audit(
+                runtime_manifest={
+                    "config_sha256": "test",
+                    "class_id_to_name": {"2": "bicycle", "5": "trailer"},
+                    "active_class_states": {
+                        "2": ["matched"],
+                        "5": ["matched", "unmatched"],
+                    },
+                }
+            )
+        )
+
+        trailer = data["classes"]["5:trailer"]
+        self.assertEqual(
+            set(trailer["decision_evidence_by_state"]),
+            {"matched", "unmatched"},
+        )
+        for state in ("matched", "unmatched"):
+            self.assertEqual(
+                trailer["decision_evidence_by_state"][state][
+                    "known_changed_count"
+                ],
+                0,
+            )
+            self.assertIn(
+                "insufficient_decision_evidence",
+                trailer["diagnosis_by_state"][state],
+            )
+        self.assertIn("insufficient_decision_evidence", trailer["diagnosis"])
+
+    def test_valid_active_scope_remains_visible_when_another_key_is_invalid(self):
+        invalid_key = "9" * 5000
+        audit = self._complete_audit(
+            runtime_manifest={
+                "config_sha256": "test",
+                "class_id_to_name": {"2": "bicycle", "5": "trailer"},
+                "active_class_states": {
+                    "2": ["matched"],
+                    "5": ["unmatched"],
+                    invalid_key: ["matched"],
+                },
+            }
+        )
+
+        data = self._run_compare(audit)
+
+        self.assertFalse(data["class_state_activation"]["class_level_usable"])
+        trailer = data["classes"]["5:trailer"]
+        self.assertIn("unmatched", trailer["decision_evidence_by_state"])
+        self.assertIn(
+            "insufficient_decision_evidence",
+            trailer["diagnosis_by_state"]["unmatched"],
+        )
+        self.assertIn("insufficient_decision_evidence", trailer["diagnosis"])
 
 
 if __name__ == "__main__":

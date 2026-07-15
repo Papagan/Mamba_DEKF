@@ -17,6 +17,7 @@ import numpy as np
 
 DEFAULT_MIN_KNOWN_CHANGED = 100
 MAX_HARM_PRECISION = 0.20
+MAX_CLASS_ID = 2**31 - 1
 TRACK_STATE_BUCKETS = {"matched", "unmatched"}
 DECISION_COUNTER_FIELDS = (
     "total_decisions",
@@ -57,18 +58,153 @@ def _load_train_cache(path: Path) -> List[Dict[str, Any]]:
 
 
 def _class_key(class_id: int, class_name: str) -> str:
-    return f"{int(class_id)}:{class_name}"
+    return f"{class_id}:{class_name}"
+
+
+class _ClassIdentityError(ValueError):
+    def __init__(self, reason: str, message: str):
+        super().__init__(message)
+        self.reason = reason
+
+
+def _bounded_class_id(
+    value: Any, field: str, *, allow_canonical_string: bool = False
+) -> int:
+    if type(value) is int:
+        class_id = value
+    elif allow_canonical_string and isinstance(value, str):
+        if (
+            not value
+            or len(value) > len(str(MAX_CLASS_ID))
+            or not all("0" <= char <= "9" for char in value)
+            or (len(value) > 1 and value.startswith("0"))
+        ):
+            raise ValueError(f"{field} must be a canonical decimal class id")
+        class_id = int(value)
+    else:
+        expected = (
+            "a native integer or canonical decimal string"
+            if allow_canonical_string
+            else "a native integer"
+        )
+        raise TypeError(f"{field} must be {expected}")
+    if not 0 <= class_id <= MAX_CLASS_ID:
+        raise ValueError(f"{field} must be between 0 and {MAX_CLASS_ID}")
+    return class_id
+
+
+def _canonical_class_identity_status(
+    audit: Mapping[str, Any],
+) -> Tuple[Dict[str, Any], Dict[int, str]]:
+    reasons = []
+    normalized = {}
+    runtime_manifest = audit.get("runtime_manifest")
+    if not isinstance(runtime_manifest, Mapping):
+        reasons.append("invalid_runtime_manifest")
+        raw_mapping = None
+    elif "class_id_to_name" not in runtime_manifest:
+        reasons.append("missing_class_id_to_name")
+        raw_mapping = None
+    else:
+        raw_mapping = runtime_manifest["class_id_to_name"]
+        if not isinstance(raw_mapping, Mapping) or not raw_mapping:
+            reasons.append("invalid_class_id_to_name")
+
+    seen_names = set()
+    if isinstance(raw_mapping, Mapping):
+        for raw_class_id, raw_class_name in raw_mapping.items():
+            try:
+                class_id = _bounded_class_id(
+                    raw_class_id,
+                    "class_id_to_name key",
+                    allow_canonical_string=True,
+                )
+            except (TypeError, ValueError):
+                reasons.append("invalid_class_id_to_name_class_id")
+                continue
+            if (
+                not isinstance(raw_class_name, str)
+                or not raw_class_name
+                or raw_class_name != raw_class_name.strip()
+            ):
+                reasons.append("invalid_class_id_to_name_class_name")
+                continue
+            if class_id in normalized:
+                reasons.append("duplicate_class_id_to_name_class_id")
+                continue
+            if raw_class_name in seen_names:
+                reasons.append("duplicate_class_id_to_name_class_name")
+                continue
+            normalized[class_id] = raw_class_name
+            seen_names.add(raw_class_name)
+
+    reasons = list(dict.fromkeys(reasons))
+    valid = not reasons
+    status = {
+        "valid": valid,
+        "incomplete_reasons": reasons,
+        "canonical_class_id_to_name": {
+            str(class_id): class_name
+            for class_id, class_name in sorted(normalized.items())
+        }
+        if valid
+        else {},
+    }
+    return status, normalized if valid else {}
+
+
+def _bucket_class_identity(
+    bucket: Mapping[str, Any],
+    *,
+    id_field: str,
+    name_field: str,
+    source: str,
+    canonical_classes: Mapping[int, str],
+) -> Tuple[int, str]:
+    try:
+        class_id = _bounded_class_id(bucket.get(id_field), id_field)
+    except (TypeError, ValueError) as exc:
+        raise _ClassIdentityError(
+            f"{source}_bucket_invalid_class_identity", str(exc)
+        ) from exc
+    class_name = bucket.get(name_field)
+    if not isinstance(class_name, str) or not class_name:
+        raise _ClassIdentityError(
+            f"{source}_bucket_invalid_class_identity",
+            f"{name_field} must be a non-empty string",
+        )
+    if canonical_classes and canonical_classes.get(class_id) != class_name:
+        raise _ClassIdentityError(
+            f"{source}_bucket_class_identity_mismatch",
+            f"{source} bucket class id/name does not match runtime manifest",
+        )
+    return class_id, class_name
 
 
 def _is_hard_negative_type(value: Any) -> bool:
     return str(value).strip().lower() in {"hard", "inference_margin", "inference_topk"}
 
 
-def _summarize_train(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _summarize_train(
+    samples: List[Dict[str, Any]], canonical_classes: Mapping[int, str]
+) -> Tuple[Dict[str, Any], List[str]]:
     grouped = defaultdict(list)
+    reasons = []
     for sample in samples:
-        class_id = int(sample.get("class_id", -1))
-        class_name = str(sample.get("category", class_id))
+        if not isinstance(sample, Mapping):
+            reasons.append("train_bucket_invalid_class_identity")
+            continue
+        try:
+            class_id, class_name = _bucket_class_identity(
+                sample,
+                id_field="class_id",
+                name_field="category",
+                source="train",
+                canonical_classes=canonical_classes,
+            )
+        except _ClassIdentityError as exc:
+            reasons.append(exc.reason)
+            continue
         grouped[_class_key(class_id, class_name)].append(sample)
 
     out = {}
@@ -98,7 +234,7 @@ def _summarize_train(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
             "positive_center_distance_quantiles": _quantiles(pos_center_distances),
             "hard_center_distance_quantiles": _quantiles(hard_center_distances),
         }
-    return out
+    return out, list(dict.fromkeys(reasons))
 
 
 def _finite_float(value: Any, default: float = 0.0) -> float:
@@ -109,34 +245,67 @@ def _finite_float(value: Any, default: float = 0.0) -> float:
     return result if math.isfinite(result) else default
 
 
-def _summarize_track_state_scores(audit: Dict[str, Any]) -> Dict[str, Any]:
+def _summarize_track_state_scores(
+    audit: Dict[str, Any], canonical_classes: Mapping[int, str]
+) -> Tuple[Dict[str, Any], List[str]]:
     out = defaultdict(dict)
+    reasons = []
     pair_buckets = audit.get("pair_buckets", audit.get("buckets", []))
-    for bucket in pair_buckets or []:
-        class_id = int(bucket.get("class_id", -1))
-        class_name = str(bucket.get("class_name", class_id))
-        state_bucket = str(bucket.get("state_bucket", "unknown"))
+    if not isinstance(pair_buckets, list):
+        return {}, ["invalid_pair_buckets"]
+    for bucket in pair_buckets:
+        if not isinstance(bucket, Mapping):
+            reasons.append("pair_bucket_invalid_class_identity")
+            continue
+        try:
+            class_id, class_name = _bucket_class_identity(
+                bucket,
+                id_field="class_id",
+                name_field="class_name",
+                source="pair",
+                canonical_classes=canonical_classes,
+            )
+        except _ClassIdentityError as exc:
+            reasons.append(exc.reason)
+            continue
+        state_bucket = bucket.get("state_bucket")
+        if (
+            not isinstance(state_bucket, str)
+            or state_bucket not in TRACK_STATE_BUCKETS
+        ):
+            reasons.append("invalid_pair_bucket_state")
+            continue
         key = _class_key(class_id, class_name)
-        out[key][state_bucket] = {
-            "pair_count": int(bucket.get("pair_count", 0)),
-            "active_pair_count": int(bucket.get("active_pair_count", 0)),
-            "penalized_pair_count": int(bucket.get("penalized_pair_count", 0)),
-            "active_ratio": _finite_float(bucket.get("active_ratio", 0.0)),
-            "penalized_ratio": _finite_float(bucket.get("penalized_ratio", 0.0)),
-            "avg_score": _finite_float(bucket.get("avg_score", 0.0)),
-            "avg_delta": _finite_float(bucket.get("avg_delta", 0.0)),
-            "avg_cost_before": _finite_float(
-                bucket.get("avg_cost_before", 0.0)
-            ),
-            "avg_cost_after": _finite_float(bucket.get("avg_cost_after", 0.0)),
-            "score_quantiles": bucket.get("score_quantiles", {}),
-            "delta_quantiles": bucket.get("delta_quantiles", {}),
-            "cost_before_quantiles": bucket.get("cost_before_quantiles", {}),
-            "cost_after_quantiles": bucket.get("cost_after_quantiles", {}),
-            "sample_count": int(bucket.get("sample_count", 0)),
-            "samples": bucket.get("samples", []),
-        }
-    return dict(out)
+        try:
+            out[key][state_bucket] = {
+                "pair_count": int(bucket.get("pair_count", 0)),
+                "active_pair_count": int(bucket.get("active_pair_count", 0)),
+                "penalized_pair_count": int(bucket.get("penalized_pair_count", 0)),
+                "active_ratio": _finite_float(bucket.get("active_ratio", 0.0)),
+                "penalized_ratio": _finite_float(
+                    bucket.get("penalized_ratio", 0.0)
+                ),
+                "avg_score": _finite_float(bucket.get("avg_score", 0.0)),
+                "avg_delta": _finite_float(bucket.get("avg_delta", 0.0)),
+                "avg_cost_before": _finite_float(
+                    bucket.get("avg_cost_before", 0.0)
+                ),
+                "avg_cost_after": _finite_float(
+                    bucket.get("avg_cost_after", 0.0)
+                ),
+                "score_quantiles": bucket.get("score_quantiles", {}),
+                "delta_quantiles": bucket.get("delta_quantiles", {}),
+                "cost_before_quantiles": bucket.get(
+                    "cost_before_quantiles", {}
+                ),
+                "cost_after_quantiles": bucket.get("cost_after_quantiles", {}),
+                "sample_count": int(bucket.get("sample_count", 0)),
+                "samples": bucket.get("samples", []),
+            }
+        except (TypeError, ValueError, OverflowError):
+            reasons.append("invalid_pair_bucket")
+            out[key].pop(state_bucket, None)
+    return dict(out), list(dict.fromkeys(reasons))
 
 
 def _empty_decision_summary() -> Dict[str, int]:
@@ -202,17 +371,22 @@ def _strict_finite_number(value: Any, field: str) -> float:
     return float(value)
 
 
-def _validate_decision_bucket(bucket: Any) -> Dict[str, Any]:
+def _validate_decision_bucket(
+    bucket: Any, canonical_classes: Mapping[int, str]
+) -> Dict[str, Any]:
     if not isinstance(bucket, Mapping):
         raise TypeError("decision bucket must be a mapping")
     for field in ("class_id", "class_name", "track_state_bucket"):
         if field not in bucket:
             raise ValueError(f"missing required field {field}")
 
-    class_id = _strict_nonnegative_int(bucket["class_id"], "class_id")
-    class_name = bucket["class_name"]
-    if not isinstance(class_name, str) or not class_name.strip():
-        raise ValueError("class_name must be a non-empty string")
+    class_id, class_name = _bucket_class_identity(
+        bucket,
+        id_field="class_id",
+        name_field="class_name",
+        source="decision",
+        canonical_classes=canonical_classes,
+    )
     state = bucket["track_state_bucket"]
     if state not in TRACK_STATE_BUCKETS:
         raise ValueError("track_state_bucket must be matched or unmatched")
@@ -334,7 +508,7 @@ def _audit_errors_status(audit: Mapping[str, Any]) -> Dict[str, Any]:
 
 
 def _active_class_states_status(
-    audit: Mapping[str, Any],
+    audit: Mapping[str, Any], canonical_classes: Mapping[int, str]
 ) -> Tuple[Dict[str, Any], Dict[int, set]]:
     reasons = []
     runtime_manifest = audit.get("runtime_manifest")
@@ -352,20 +526,17 @@ def _active_class_states_status(
     normalized = {}
     if isinstance(active_class_states, Mapping):
         for raw_class_id, raw_states in active_class_states.items():
-            if type(raw_class_id) is int:
-                class_id = raw_class_id
-            elif (
-                isinstance(raw_class_id, str)
-                and raw_class_id == raw_class_id.strip()
-                and raw_class_id
-                and all("0" <= char <= "9" for char in raw_class_id)
-            ):
-                class_id = int(raw_class_id)
-            else:
+            try:
+                class_id = _bounded_class_id(
+                    raw_class_id,
+                    "active_class_states key",
+                    allow_canonical_string=True,
+                )
+            except (TypeError, ValueError):
                 reasons.append("invalid_active_class_states_class_id")
                 continue
-            if class_id < 0 or str(class_id) != str(raw_class_id):
-                reasons.append("invalid_active_class_states_class_id")
+            if canonical_classes and class_id not in canonical_classes:
+                reasons.append("active_class_not_in_class_id_to_name")
                 continue
             if class_id in normalized:
                 reasons.append("duplicate_active_class_states_class_id")
@@ -390,16 +561,14 @@ def _active_class_states_status(
         "active_class_states": {
             str(class_id): sorted(states)
             for class_id, states in sorted(normalized.items())
-        }
-        if valid
-        else {},
+        },
     }
-    return status, normalized if valid else {}
+    return status, normalized
 
 
 def _decision_evidence_status(
-    audit: Any,
-) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    audit: Any, canonical_classes: Mapping[int, str]
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[str]]:
     if not isinstance(audit, Mapping):
         return (
             {
@@ -412,6 +581,7 @@ def _decision_evidence_status(
                 "decision_bucket_count": 0,
                 "incomplete_reasons": ["invalid_audit_root"],
             },
+            [],
             [],
         )
 
@@ -455,13 +625,19 @@ def _decision_evidence_status(
 
     decision_buckets = audit.get("decision_buckets", [])
     validated_buckets = []
+    class_identity_reasons = []
     if not isinstance(decision_buckets, list) or not decision_buckets:
         reject("invalid_decision_buckets")
     else:
         bucket_errors = []
         for index, bucket in enumerate(decision_buckets):
             try:
-                validated_buckets.append(_validate_decision_bucket(bucket))
+                validated_buckets.append(
+                    _validate_decision_bucket(bucket, canonical_classes)
+                )
+            except _ClassIdentityError as exc:
+                class_identity_reasons.append(exc.reason)
+                bucket_errors.append(f"decision_bucket[{index}]: {exc}")
             except (TypeError, ValueError) as exc:
                 bucket_errors.append(f"decision_bucket[{index}]: {exc}")
         if bucket_errors:
@@ -487,7 +663,11 @@ def _decision_evidence_status(
         else 0,
         "incomplete_reasons": incomplete_reasons,
     }
-    return status, validated_buckets
+    return (
+        status,
+        validated_buckets,
+        list(dict.fromkeys(class_identity_reasons)),
+    )
 
 
 def _diagnose(
@@ -528,6 +708,7 @@ def _class_diagnosis(
     train_summary: Dict[str, Any],
     diagnosis_by_state: Dict[str, List[str]],
     active_states: Any,
+    class_level_usable: bool,
 ) -> List[str]:
     diagnoses = []
     pos_ratio = float(train_summary.get("positive_ratio", 0.0))
@@ -552,7 +733,8 @@ def _class_diagnosis(
         if active_states is not None and state in active_states
     ]
     if (
-        active_states is None
+        not class_level_usable
+        or active_states is None
         or not active_states
         or len(state_gates) != len(active_states)
         or "insufficient_decision_evidence" in state_gates
@@ -577,6 +759,16 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+def _bounded_json_int(value: str) -> Any:
+    digits = value[1:] if value.startswith("-") else value
+    if len(digits) > len(str(MAX_CLASS_ID)):
+        return value
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
 def build_summary(
     train_cache: Path,
     infer_audit: Path,
@@ -586,30 +778,79 @@ def build_summary(
         raise ValueError(
             f"min_known_changed must be at least {DEFAULT_MIN_KNOWN_CHANGED}"
         )
-    train = _summarize_train(_load_train_cache(train_cache))
-    audit = json.loads(infer_audit.read_text(encoding="utf-8"))
+    train_samples = _load_train_cache(train_cache)
+    audit = json.loads(
+        infer_audit.read_text(encoding="utf-8"), parse_int=_bounded_json_int
+    )
     audit_mapping = audit if isinstance(audit, Mapping) else {}
-    track_state_scores = _summarize_track_state_scores(audit_mapping)
-    evidence, validated_buckets = _decision_evidence_status(audit)
-    activation_status, active_class_states = _active_class_states_status(
+    identity_status, canonical_classes = _canonical_class_identity_status(
         audit_mapping
     )
+    train, train_identity_reasons = _summarize_train(
+        train_samples, canonical_classes
+    )
+    track_state_scores, pair_identity_reasons = _summarize_track_state_scores(
+        audit_mapping, canonical_classes
+    )
+    evidence, validated_buckets, decision_identity_reasons = (
+        _decision_evidence_status(audit, canonical_classes)
+    )
+    activation_status, active_class_states = _active_class_states_status(
+        audit_mapping, canonical_classes
+    )
+    identity_reasons = list(
+        dict.fromkeys(
+            identity_status["incomplete_reasons"]
+            + train_identity_reasons
+            + pair_identity_reasons
+            + decision_identity_reasons
+        )
+    )
+    identity_status["valid"] = not identity_reasons
+    identity_status["incomplete_reasons"] = identity_reasons
+    if identity_reasons:
+        evidence["usable"] = False
+        if "invalid_class_identity" not in evidence["incomplete_reasons"]:
+            evidence["incomplete_reasons"].append("invalid_class_identity")
+        activation_status["class_level_usable"] = False
+        if (
+            "class_identity_validation_failed"
+            not in activation_status["incomplete_reasons"]
+        ):
+            activation_status["incomplete_reasons"].append(
+                "class_identity_validation_failed"
+            )
     decisions = _summarize_decisions(validated_buckets)
+    manifest_active_keys = {
+        _class_key(class_id, canonical_classes[class_id])
+        for class_id in active_class_states
+        if class_id in canonical_classes
+    }
     keys = sorted(
-        set(train.keys()) | set(track_state_scores.keys()) | set(decisions.keys())
+        set(train.keys())
+        | set(track_state_scores.keys())
+        | set(decisions.keys())
+        | manifest_active_keys
     )
     classes = {}
     for key in keys:
         train_summary = train.get(key, {})
         class_decisions = decisions.get(key, {})
-        decision_summary = class_decisions.get("decision_evidence", {})
-        decision_by_state = class_decisions.get(
-            "decision_evidence_by_state", {}
+        decision_summary = class_decisions.get(
+            "decision_evidence", _finish_decision_summary(_empty_decision_summary())
         )
-        class_id = int(key.split(":", 1)[0])
-        active_states = (
-            active_class_states.get(class_id) if activation_status["valid"] else None
+        decision_by_state = dict(
+            class_decisions.get("decision_evidence_by_state", {})
         )
+        class_id = _bounded_class_id(
+            key.split(":", 1)[0], "report class id", allow_canonical_string=True
+        )
+        active_states = active_class_states.get(class_id)
+        if active_states is not None:
+            for state in active_states:
+                decision_by_state.setdefault(
+                    state, _finish_decision_summary(_empty_decision_summary())
+                )
         reported_states = set(decision_by_state)
         if active_states is not None:
             reported_states.update(active_states)
@@ -629,24 +870,30 @@ def build_summary(
             "decision_evidence_by_state": decision_by_state,
             "diagnosis_by_state": diagnosis_by_state,
             "diagnosis": _class_diagnosis(
-                train_summary, diagnosis_by_state, active_states
+                train_summary,
+                diagnosis_by_state,
+                active_states,
+                activation_status["class_level_usable"],
             ),
         }
-    return _json_safe({
-        "schema_version": 2,
-        "infer_audit_schema_version": audit_mapping.get("schema_version"),
-        "train_cache": str(train_cache),
-        "infer_audit": str(infer_audit),
-        "decision_evidence": evidence,
-        "class_state_activation": activation_status,
-        "decision_gates": {
-            "min_known_changed": int(min_known_changed),
-            "max_harm_precision": MAX_HARM_PRECISION,
-            "require_improved_greater_than_damaged": True,
-            "class_candidate_requires_all_manifest_active_states": True,
-        },
-        "classes": classes,
-    })
+    return _json_safe(
+        {
+            "schema_version": 2,
+            "infer_audit_schema_version": audit_mapping.get("schema_version"),
+            "train_cache": str(train_cache),
+            "infer_audit": str(infer_audit),
+            "decision_evidence": evidence,
+            "class_identity_validation": identity_status,
+            "class_state_activation": activation_status,
+            "decision_gates": {
+                "min_known_changed": int(min_known_changed),
+                "max_harm_precision": MAX_HARM_PRECISION,
+                "require_improved_greater_than_damaged": True,
+                "class_candidate_requires_all_manifest_active_states": True,
+            },
+            "classes": classes,
+        }
+    )
 
 
 def main() -> None:
