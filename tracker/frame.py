@@ -13,9 +13,11 @@ class Frame:
         cur_sample_token=None,
         timestamp=None,
         transform_matrix=None,
+        scene_id=None,
     ):
 
         self.frame_id = frame_id
+        self.scene_id = scene_id
         self.cur_sample_token = cur_sample_token
         self.timestamp = timestamp
         self.transform_matrix = transform_matrix

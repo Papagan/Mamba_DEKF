@@ -16,6 +16,7 @@ import os
 import copy
 import numpy as np
 import torch
+from collections.abc import Sequence
 from typing import Dict, List, Tuple, Optional
 
 from tracker.matching import (
@@ -524,7 +525,17 @@ class Base3DTracker:
         )
         self.association_head_audit = (
             AssociationHeadAuditAccumulator(
-                max_samples_per_bucket=int(self.association_head_audit_cfg.get("MAX_SAMPLES_PER_BUCKET", 0))
+                max_samples_per_bucket=int(
+                    self.association_head_audit_cfg.get(
+                        "MAX_SAMPLES_PER_BUCKET", 0
+                    )
+                ),
+                runtime_manifest=self.cfg.get(
+                    "_ASSOCIATION_AUDIT_RUNTIME_MANIFEST"
+                ),
+                strict_manifest=bool(
+                    self.association_head_audit_cfg.get("STRICT", False)
+                ),
             )
             if bool(self.association_head_audit_cfg.get("ENABLED", False))
             else None
@@ -731,6 +742,94 @@ class Base3DTracker:
             finite=bool(record.get("finite", False)),
             sample=record.get("sample", None),
         )
+
+    def _record_association_shadow_decisions(self, records) -> None:
+        if isinstance(records, (str, bytes, bytearray, dict)) or not isinstance(
+            records, Sequence
+        ):
+            raise TypeError("association shadow records must be a sequence of dicts")
+        if not all(isinstance(record, dict) for record in records):
+            raise TypeError("association shadow records must contain only dicts")
+        if self.association_head_audit is None:
+            return
+        for record in records:
+            self.association_head_audit.add_decision(record)
+
+    def _record_association_shadow_error(self, record: Dict) -> None:
+        if self.association_head_audit is None:
+            return
+        self.association_head_audit.add_error(record)
+
+    def _real_association_gt_token(self, obj):
+        if obj is None:
+            return None
+        candidates = [obj]
+        bboxes = getattr(obj, "bboxes", None)
+        if bboxes:
+            candidates.extend(
+                bbox
+                for bbox in reversed(bboxes)
+                if not bool(getattr(bbox, "is_fake", False))
+            )
+        for candidate in candidates:
+            if bool(getattr(candidate, "is_fake", False)):
+                continue
+            for attribute in ("gt_token", "instance_token"):
+                if not hasattr(candidate, attribute):
+                    continue
+                token = getattr(candidate, attribute)
+                if isinstance(token, np.generic):
+                    token = token.item()
+                if isinstance(token, str):
+                    token = token.strip()
+                    if token:
+                        return token
+                elif isinstance(token, int) and not isinstance(token, bool):
+                    return token
+        return None
+
+    def _association_shadow_options(self, frame_info, trajs, dets) -> Dict:
+        if (
+            self.association_head_audit is None
+            or not bool(self.association_head_audit_cfg.get("ENABLED", False))
+            or not bool(self.association_head_audit_cfg.get("SHADOW_MODE", False))
+        ):
+            return {}
+
+        class_names = [str(traj.bboxes[-1].category) for traj in trajs]
+        state_buckets = [
+            infer_state_bucket(getattr(traj, "unmatch_length", 0))
+            for traj in trajs
+        ]
+        metadata = {
+            "track_ids": [traj.track_id for traj in trajs],
+            "class_ids": [
+                int(self.cfg["CATEGORY_MAP_TO_NUMBER"].get(name, -1))
+                for name in class_names
+            ],
+            "class_names": class_names,
+            "state_buckets": state_buckets,
+            "track_gt_tokens": [
+                self._real_association_gt_token(traj) for traj in trajs
+            ],
+            "det_gt_tokens": [
+                self._real_association_gt_token(det) for det in dets
+            ],
+            "context": {
+                "scene_id": getattr(frame_info, "scene_id", None),
+                "sample_token": getattr(frame_info, "cur_sample_token", None),
+                "frame_id": getattr(frame_info, "frame_id", None),
+            },
+        }
+        return {
+            "state_buckets": state_buckets,
+            "association_shadow_callback": self._record_association_shadow_decisions,
+            "association_shadow_error_callback": self._record_association_shadow_error,
+            "association_shadow_metadata": metadata,
+            "association_shadow_strict": bool(
+                self.association_head_audit_cfg.get("STRICT", False)
+            ),
+        }
 
     def export_association_head_audit_state(self) -> Optional[Dict]:
         if self.association_head_audit is None:
@@ -1852,6 +1951,9 @@ class Base3DTracker:
         matched_bboxes: List[BBox] = []
 
         if trajs_cnt > 0 and dets_cnt > 0:
+            shadow_options = self._association_shadow_options(
+                frame_info, trajs, frame_info.bboxes
+            )
             match_res, costs = match_trajs_and_dets(
                 trajs,
                 frame_info.bboxes,
@@ -1860,6 +1962,7 @@ class Base3DTracker:
                 det_embeddings=det_embeddings_all,
                 association_scores=association_scores,
                 association_audit_callback=self._record_association_head_audit,
+                **shadow_options,
             )
         else:
             match_res = np.empty((0, 2), dtype=int)
@@ -2189,6 +2292,9 @@ class Base3DTracker:
             matched_det_indices: set = set()
 
             if trajs_cnt > 0 and dets_cnt > 0:
+                shadow_options = self._association_shadow_options(
+                    frame_info, trajs, frame_info.bboxes
+                )
                 match_res, costs = match_trajs_and_dets_uncertainty_aware(
                     trajs, frame_info.bboxes, self.cfg,
                     trk_embeddings=trk_embeddings,
@@ -2198,6 +2304,7 @@ class Base3DTracker:
                     cal_flag=cal_flags,
                     association_scores=association_scores,
                     association_audit_callback=self._record_association_head_audit,
+                    **shadow_options,
                 )
             else:
                 match_res = np.empty((0, 2), dtype=int)

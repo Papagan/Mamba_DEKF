@@ -279,6 +279,46 @@ def _list_field(mapping, field_name, *, required=False):
     return value
 
 
+def _normalize_audit_error(record):
+    if not isinstance(record, Mapping):
+        raise TypeError("audit error must be a mapping")
+    stage = record.get("stage")
+    error_type = record.get("type")
+    message = record.get("message")
+    context = record.get("context", {})
+    for field_name, value in (
+        ("stage", stage),
+        ("type", error_type),
+        ("message", message),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"audit error {field_name} must be a non-empty string")
+    if not isinstance(context, Mapping):
+        raise TypeError("audit error context must be a mapping")
+    return {
+        "stage": stage.strip(),
+        "type": error_type.strip(),
+        "message": message.strip(),
+        "context": _json_safe(context, path="audit_error.context"),
+    }
+
+
+def _validate_audit_errors(state):
+    value = state.get("audit_errors", {"count": state.get("audit_error_count", 0), "samples": []})
+    if not isinstance(value, Mapping):
+        raise TypeError("audit_errors must be a mapping")
+    count = _nonnegative_int(value.get("count", 0), "audit_errors.count")
+    samples = _list_field(value, "samples")
+    normalized_samples = [_normalize_audit_error(sample) for sample in samples]
+    if len(normalized_samples) > count:
+        raise ValueError("audit_errors samples cannot exceed count")
+    legacy_count = state.get("audit_error_count", count)
+    legacy_count = _nonnegative_int(legacy_count, "audit_error_count")
+    if legacy_count != count:
+        raise ValueError("audit_error_count must equal audit_errors.count")
+    return {"count": count, "samples": normalized_samples}
+
+
 def _validate_pair_bucket_state(item):
     if not isinstance(item, Mapping):
         raise TypeError("pair bucket state must be a mapping")
@@ -696,6 +736,8 @@ class AssociationHeadAuditAccumulator:
         self._manifest_mismatches = []
         self._decision_evidence_complete = True
         self._decision_evidence_incomplete_reasons = []
+        self._audit_error_count = 0
+        self._audit_error_samples = []
 
     def add_pair(
         self,
@@ -771,6 +813,47 @@ class AssociationHeadAuditAccumulator:
         bucket.add(decision, max_samples=self.max_samples_per_bucket)
         self._manifest_initialized = True
 
+    def add_error(
+        self,
+        error=None,
+        *,
+        stage=None,
+        error_type=None,
+        message=None,
+        context=None,
+    ) -> None:
+        if isinstance(error, Mapping):
+            if any(value is not None for value in (stage, error_type, message, context)):
+                raise TypeError("mapping audit errors cannot include keyword fields")
+            record = error
+        else:
+            if isinstance(error, BaseException):
+                derived_type = type(error).__name__
+                derived_message = str(error) or derived_type
+            elif error is None:
+                derived_type = error_type
+                derived_message = message
+            else:
+                derived_type = type(error).__name__
+                derived_message = str(error) or derived_type
+            record = {
+                "stage": stage,
+                "type": error_type or derived_type,
+                "message": message or derived_message,
+                "context": {} if context is None else context,
+            }
+        normalized = _normalize_audit_error(record)
+        self._audit_error_count += 1
+        _extend_bounded(
+            self._audit_error_samples,
+            [normalized],
+            self.max_samples_per_bucket,
+        )
+        self._decision_evidence_complete = False
+        if "audit_errors" not in self._decision_evidence_incomplete_reasons:
+            self._decision_evidence_incomplete_reasons.append("audit_errors")
+        self._manifest_initialized = True
+
     def to_summary(self):
         pair_buckets = [bucket.to_summary() for bucket in self._buckets.values()]
         pair_buckets.sort(
@@ -814,6 +897,12 @@ class AssociationHeadAuditAccumulator:
             ),
             "manifest_compatible": bool(self._manifest_compatible),
             "manifest_mismatches": list(self._manifest_mismatches),
+            "audit_error_count": int(self._audit_error_count),
+            "audit_errors": {
+                "count": int(self._audit_error_count),
+                "sample_count": int(len(self._audit_error_samples)),
+                "samples": list(self._audit_error_samples),
+            },
         }
         return _json_safe(summary, path="summary")
 
@@ -832,6 +921,9 @@ class AssociationHeadAuditAccumulator:
         manifest_result = self._manifest_merge_result(validated)
         evidence_result = self._decision_evidence_merge_result(
             validated, manifest_result
+        )
+        next_audit_error_count = (
+            self._audit_error_count + validated["audit_errors"]["count"]
         )
 
         for item, aggregate_sums in pair_merge_plan:
@@ -894,6 +986,12 @@ class AssociationHeadAuditAccumulator:
         self._manifest_mismatches = manifest_result["manifest_mismatches"]
         self._decision_evidence_complete = evidence_result["complete"]
         self._decision_evidence_incomplete_reasons = evidence_result["reasons"]
+        self._audit_error_count = next_audit_error_count
+        _extend_bounded(
+            self._audit_error_samples,
+            validated["audit_errors"]["samples"],
+            self.max_samples_per_bucket,
+        )
 
     def _validate_merge_state(self, state):
         if not isinstance(state, Mapping):
@@ -929,6 +1027,7 @@ class AssociationHeadAuditAccumulator:
             decision_items = _list_field(
                 state, "decision_buckets", required=True
             )
+        audit_errors = _validate_audit_errors(state)
 
         manifest_initialized_present = "manifest_initialized" in state
         if manifest_initialized_present:
@@ -939,7 +1038,9 @@ class AssociationHeadAuditAccumulator:
             # Schema v1 predates this field; schema v2 states without it used
             # runtime_manifest as an implicit initialized baseline.
             manifest_initialized = schema_version == 2
-        has_bucket_data = bool(pair_items or decision_items)
+        has_bucket_data = bool(
+            pair_items or decision_items or audit_errors["count"]
+        )
         if (
             manifest_initialized_present
             and not manifest_initialized
@@ -1003,6 +1104,7 @@ class AssociationHeadAuditAccumulator:
             "decision_total": decision_total,
             "pair_buckets": pair_buckets,
             "decision_buckets": decision_buckets,
+            "audit_errors": audit_errors,
         }
 
     def _prepare_pair_merge(self, pair_items):
@@ -1102,6 +1204,8 @@ class AssociationHeadAuditAccumulator:
         if validated["schema_version"] == 1:
             mark_incomplete("schema_v1_state")
         else:
+            if validated["audit_errors"]["count"] > 0:
+                mark_incomplete("audit_errors")
             if validated["decision_total"] == 0:
                 mark_incomplete("pair_only_state")
             if not validated["decision_evidence_complete"]:

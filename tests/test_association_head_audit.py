@@ -1,12 +1,224 @@
+import ast
 import copy
+import importlib
 import json
+import sys
 import tempfile
+import types
 import unittest
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import numpy as np
 
 from tracker.association_head_audit import AssociationHeadAuditAccumulator
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_main_audit_functions():
+    tree = ast.parse((ROOT / "main.py").read_text(encoding="utf-8"))
+    wanted = {
+        "_build_association_head_audit_cfg",
+        "_write_merged_association_head_audit",
+    }
+    functions = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name in wanted
+    ]
+    namespace = {"AssociationHeadAuditAccumulator": AssociationHeadAuditAccumulator}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "main.py", "exec"), namespace)
+    return namespace["_write_merged_association_head_audit"]
+
+
+def _load_base_tracker_methods(*names):
+    tree = ast.parse((ROOT / "tracker/base_tracker.py").read_text(encoding="utf-8"))
+    tracker_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "Base3DTracker"
+    )
+    selected = [
+        node
+        for node in tracker_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names
+    ]
+    missing = set(names) - {node.name for node in selected}
+    if missing:
+        raise AssertionError(f"Missing Base3DTracker methods: {sorted(missing)}")
+    namespace = {
+        "AssociationHeadAuditAccumulator": AssociationHeadAuditAccumulator,
+        "Dict": dict,
+        "List": list,
+        "Mapping": Mapping,
+        "Sequence": Sequence,
+        "infer_state_bucket": lambda unmatch_length: (
+            "unmatched" if int(unmatch_length or 0) > 0 else "matched"
+        ),
+        "np": np,
+    }
+    exec(
+        compile(ast.Module(body=selected, type_ignores=[]), "tracker/base_tracker.py", "exec"),
+        namespace,
+    )
+    return {name: namespace[name] for name in names}
+
+
+class SceneContextWiringTest(unittest.TestCase):
+    def test_dataset_copies_scene_and_sample_context_to_frame(self):
+        nusc_stub = types.ModuleType("utils.nusc_utils")
+        nusc_stub.obtain_box_bottom_corners = lambda *args, **kwargs: None
+        nusc_stub.filter_bboxes_with_nms = lambda boxes, cfg: boxes
+        sys.modules.setdefault("utils.nusc_utils", nusc_stub)
+
+        pyquaternion_stub = types.ModuleType("pyquaternion")
+        pyquaternion_stub.Quaternion = object
+        sys.modules.setdefault("pyquaternion", pyquaternion_stub)
+        sys.modules.setdefault("cv2", types.ModuleType("cv2"))
+
+        module = importlib.import_module("dataset.baseversion_dataset")
+        dataset = module.BaseVersionTrackingDataset(
+            "scene-real",
+            [
+                {
+                    "frame_id": "3",
+                    "timestamp": 12.5,
+                    "cur_sample_token": "sample-real",
+                    "transform_matrix": np.eye(4).tolist(),
+                    "bboxes": [],
+                }
+            ],
+            cfg={
+                "CATEGORY_MAP_TO_NUMBER": {"trailer": 0},
+                "TRACKING_MODE": "ONLINE",
+                "THRESHOLD": {"INPUT_SCORE": {"ONLINE": {0: 0.0}}},
+                "DATASET": "kitti",
+            },
+        )
+
+        frame = dataset[0]
+        self.assertEqual(frame.scene_id, "scene-real")
+        self.assertEqual(frame.cur_sample_token, "sample-real")
+
+    def test_tracker_accumulator_constructor_receives_runtime_contract(self):
+        tree = ast.parse((ROOT / "tracker/base_tracker.py").read_text(encoding="utf-8"))
+        tracker_class = next(
+            node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Base3DTracker"
+        )
+        init = next(
+            node for node in tracker_class.body if isinstance(node, ast.FunctionDef) and node.name == "__init__"
+        )
+        calls = [
+            node
+            for node in ast.walk(init)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "AssociationHeadAuditAccumulator"
+        ]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            {keyword.arg for keyword in calls[0].keywords},
+            {"max_samples_per_bucket", "runtime_manifest", "strict_manifest"},
+        )
+
+    def test_tracker_decision_callback_requires_dict_sequence_and_adds_each(self):
+        method = _load_base_tracker_methods("_record_association_shadow_decisions")[
+            "_record_association_shadow_decisions"
+        ]
+        tracker = types.SimpleNamespace(
+            association_head_audit=AssociationHeadAuditAccumulator()
+        )
+        records = [
+            AssociationHeadAuditAccumulatorTest._decision(production_det_index=0),
+            AssociationHeadAuditAccumulatorTest._decision(production_det_index=2),
+        ]
+
+        method(tracker, records)
+        self.assertEqual(
+            tracker.association_head_audit.to_summary()["decision_buckets"][0]["total_decisions"],
+            2,
+        )
+        with self.assertRaises(TypeError):
+            method(tracker, {"not": "a sequence of records"})
+        with self.assertRaises(TypeError):
+            method(tracker, [records[0], ("not", "a dict")])
+
+    def test_tracker_shadow_metadata_uses_real_lifecycle_and_context(self):
+        methods = _load_base_tracker_methods(
+            "_real_association_gt_token",
+            "_association_shadow_options",
+            "_record_association_shadow_decisions",
+            "_record_association_shadow_error",
+        )
+        tracker = types.SimpleNamespace(
+            association_head_audit=AssociationHeadAuditAccumulator(),
+            association_head_audit_cfg={"ENABLED": True, "SHADOW_MODE": True, "STRICT": False},
+            cfg={"CATEGORY_MAP_TO_NUMBER": {"trailer": 5}},
+        )
+        traj_box = types.SimpleNamespace(
+            category="trailer", is_fake=False, instance_token="track-gt"
+        )
+        traj = types.SimpleNamespace(
+            track_id=17,
+            unmatch_length=2,
+            status_flag=1,
+            bboxes=[traj_box],
+        )
+        det = types.SimpleNamespace(
+            category="trailer", is_fake=False, instance_token="det-gt"
+        )
+        frame = types.SimpleNamespace(
+            scene_id="scene-real",
+            cur_sample_token="sample-real",
+            frame_id=9,
+        )
+
+        tracker._real_association_gt_token = types.MethodType(
+            methods["_real_association_gt_token"], tracker
+        )
+        tracker._record_association_shadow_decisions = types.MethodType(
+            methods["_record_association_shadow_decisions"], tracker
+        )
+        tracker._record_association_shadow_error = types.MethodType(
+            methods["_record_association_shadow_error"], tracker
+        )
+        options = methods["_association_shadow_options"](tracker, frame, [traj], [det])
+        metadata = options["association_shadow_metadata"]
+
+        self.assertEqual(metadata["track_ids"], [17])
+        self.assertEqual(metadata["class_ids"], [5])
+        self.assertEqual(metadata["class_names"], ["trailer"])
+        self.assertEqual(metadata["state_buckets"], ["unmatched"])
+        self.assertEqual(metadata["track_gt_tokens"], ["track-gt"])
+        self.assertEqual(metadata["det_gt_tokens"], ["det-gt"])
+        self.assertEqual(
+            metadata["context"],
+            {"scene_id": "scene-real", "sample_token": "sample-real", "frame_id": 9},
+        )
+        self.assertIs(
+            options["association_shadow_callback"].__self__, tracker
+        )
+
+        no_gt_traj = types.SimpleNamespace(
+            track_id=18,
+            unmatch_length=0,
+            status_flag=0,
+            bboxes=[types.SimpleNamespace(category="trailer", is_fake=True)],
+        )
+        no_gt_det = types.SimpleNamespace(category="trailer", is_fake=False)
+        no_gt = methods["_association_shadow_options"](
+            tracker, frame, [no_gt_traj], [no_gt_det]
+        )["association_shadow_metadata"]
+        self.assertEqual(no_gt["track_gt_tokens"], [None])
+        self.assertEqual(no_gt["det_gt_tokens"], [None])
+
+        tracker.association_head_audit_cfg["SHADOW_MODE"] = False
+        self.assertEqual(
+            methods["_association_shadow_options"](tracker, frame, [traj], [det]),
+            {},
+        )
 
 
 class AssociationHeadAuditAccumulatorTest(unittest.TestCase):
@@ -419,6 +631,94 @@ class AssociationHeadAuditAccumulatorTest(unittest.TestCase):
         self.assertEqual(len(decision_bucket["cost_gaps"]), 2)
         self.assertEqual(pair_bucket["pair_count"], 4)
         self.assertEqual(len(pair_bucket["samples"]), 2)
+
+    def test_audit_errors_are_json_safe_bounded_and_mergeable(self):
+        workers = []
+        for scene_index in range(2):
+            worker = AssociationHeadAuditAccumulator(max_samples_per_bucket=2)
+            worker.add_error(
+                stage="shadow_solver",
+                error=RuntimeError(f"scene {scene_index} failed"),
+                context={"scene_id": np.str_(f"scene-{scene_index}")},
+            )
+            workers.append(worker)
+
+        merged = AssociationHeadAuditAccumulator(max_samples_per_bucket=1)
+        for worker in workers:
+            merged.merge_state(worker.export_state())
+
+        summary = merged.to_summary()
+        self.assertEqual(summary["audit_errors"]["count"], 2)
+        self.assertEqual(summary["audit_error_count"], 2)
+        self.assertEqual(len(summary["audit_errors"]["samples"]), 1)
+        sample = summary["audit_errors"]["samples"][0]
+        self.assertEqual(sample["stage"], "shadow_solver")
+        self.assertEqual(sample["type"], "RuntimeError")
+        self.assertEqual(sample["context"]["scene_id"], "scene-0")
+        json.dumps(summary, allow_nan=False)
+
+    def test_empty_exception_message_uses_error_type_fallback(self):
+        audit = AssociationHeadAuditAccumulator(max_samples_per_bucket=1)
+        audit.add_error(stage="worker_merge", error=RuntimeError(), context={})
+
+        sample = audit.to_summary()["audit_errors"]["samples"][0]
+        self.assertEqual(sample["type"], "RuntimeError")
+        self.assertEqual(sample["message"], "RuntimeError")
+
+    def test_merged_writer_preserves_bound_manifest_and_worker_errors(self):
+        manifest = {"config_sha256": "same"}
+        workers = {}
+        for scene_index in range(2):
+            worker = AssociationHeadAuditAccumulator(
+                max_samples_per_bucket=2,
+                runtime_manifest=manifest,
+            )
+            for offset in range(2):
+                worker.add_decision(
+                    self._decision(
+                        production_det_index=scene_index * 2 + offset,
+                        shadow_det_index=scene_index * 2 + offset + 1,
+                    )
+                )
+            workers[f"scene-{scene_index}"] = worker.export_state()
+        workers["scene-bad"] = {"schema_version": 2}
+
+        write_merged = _load_main_audit_functions()
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / "merged.json"
+            cfg = {
+                "_ASSOCIATION_AUDIT_RUNTIME_MANIFEST": manifest,
+                "ASSOCIATION_HEAD_AUDIT": {
+                    "ENABLED": True,
+                    "SHADOW_MODE": True,
+                    "STRICT": False,
+                    "MAX_SAMPLES_PER_BUCKET": 2,
+                    "INFER_OUTPUT_PATH": str(output_path),
+                },
+            }
+            write_merged(cfg, workers)
+            summary = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(summary["runtime_manifest"], manifest)
+        self.assertEqual(summary["decision_buckets"][0]["total_decisions"], 4)
+        self.assertEqual(len(summary["decision_buckets"][0]["raw_decisions"]), 2)
+        self.assertEqual(summary["audit_errors"]["count"], 1)
+        self.assertEqual(summary["audit_errors"]["samples"][0]["context"]["scene_id"], "scene-bad")
+        self.assertFalse(summary["decision_evidence_complete"])
+        self.assertIn("audit_errors", summary["decision_evidence_incomplete_reasons"])
+
+    def test_merged_writer_strict_mode_reraises_bad_worker(self):
+        write_merged = _load_main_audit_functions()
+        cfg = {
+            "_ASSOCIATION_AUDIT_RUNTIME_MANIFEST": {"config_sha256": "same"},
+            "ASSOCIATION_HEAD_AUDIT": {
+                "ENABLED": True,
+                "STRICT": True,
+                "MAX_SAMPLES_PER_BUCKET": 2,
+            },
+        }
+        with self.assertRaisesRegex(ValueError, "runtime_manifest"):
+            write_merged(cfg, {"scene-bad": {"schema_version": 2}})
 
     def test_strict_merge_rejects_incompatible_manifest_with_difference(self):
         merged = AssociationHeadAuditAccumulator(

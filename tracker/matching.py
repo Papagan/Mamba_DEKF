@@ -456,6 +456,23 @@ def _association_shadow_records(
     )
 
 
+def _association_shadow_error_record(exc, *, stage, metadata):
+    metadata = metadata if isinstance(metadata, dict) else {}
+    context = metadata.get("context")
+    if not isinstance(context, dict):
+        context = {
+            key: metadata.get(key)
+            for key in ("scene_id", "sample_token", "frame_id")
+            if key in metadata
+        }
+    return {
+        "stage": stage,
+        "type": type(exc).__name__,
+        "message": str(exc) or type(exc).__name__,
+        "context": context,
+    }
+
+
 def match_trajs_and_dets(
     trajs,
     dets,
@@ -469,6 +486,8 @@ def match_trajs_and_dets(
     association_audit_callback=None,
     association_shadow_callback=None,
     association_shadow_metadata=None,
+    association_shadow_error_callback=None,
+    association_shadow_strict=False,
 ):
     """
     Info: This function matches trajectories with detections using a cost matrix and a specified matching algorithm (Hungarian or Greedy).
@@ -504,15 +523,18 @@ def match_trajs_and_dets(
         base_cost_matrix = np.array(cost_matrix, copy=True)
 
     match_type = "RV" if is_rv else "BEV"
+    audit_cfg = cfg.get("ASSOCIATION_HEAD_AUDIT", {}) or {}
     shadow_mode = bool(
         not is_rv
-        and (cfg.get("ASSOCIATION_HEAD_AUDIT", {}) or {}).get("SHADOW_MODE", False)
+        and audit_cfg.get("ENABLED", False)
+        and audit_cfg.get("SHADOW_MODE", False)
     )
 
     if shadow_mode:
         production_matches, production_costs = solve_matching_cost_matrix(
             base_cost_matrix, trajs_category, dets_category, cfg, match_type
         )
+        shadow_stage = "shadow_correction"
         try:
             corrected_cost_matrix = apply_pairwise_association_head_to_cost_matrix(
                 np.array(base_cost_matrix, copy=True),
@@ -524,10 +546,12 @@ def match_trajs_and_dets(
                 audit_callback=association_audit_callback,
             )
             corrected_cost_matrix = np.array(corrected_cost_matrix, copy=True)
+            shadow_stage = "shadow_solver"
             shadow_matches, shadow_costs = solve_matching_cost_matrix(
                 corrected_cost_matrix, trajs_category, dets_category, cfg, match_type
             )
             if association_shadow_callback is not None:
+                shadow_stage = "decision_records"
                 records = _association_shadow_records(
                     production_matches=production_matches,
                     production_costs=production_costs,
@@ -543,9 +567,23 @@ def match_trajs_and_dets(
                     metadata=association_shadow_metadata,
                 )
                 if records is not None:
+                    shadow_stage = "decision_callback"
                     association_shadow_callback(records)
-        except Exception:
-            pass
+        except Exception as exc:
+            if association_shadow_error_callback is not None:
+                try:
+                    association_shadow_error_callback(
+                        _association_shadow_error_record(
+                            exc,
+                            stage=shadow_stage,
+                            metadata=association_shadow_metadata,
+                        )
+                    )
+                except Exception:
+                    if association_shadow_strict:
+                        raise exc
+            if association_shadow_strict:
+                raise
         return production_matches, production_costs
 
     production_cost_matrix = base_cost_matrix
@@ -723,6 +761,11 @@ def match_trajs_and_dets_uncertainty_aware(
     cal_flag = "Predict",
     association_scores=None,
     association_audit_callback=None,
+    state_buckets=None,
+    association_shadow_callback=None,
+    association_shadow_metadata=None,
+    association_shadow_error_callback=None,
+    association_shadow_strict=False,
 ) -> tuple:
     """
     Uncertainty-aware matching pipeline (Module C entry point).
@@ -759,6 +802,11 @@ def match_trajs_and_dets_uncertainty_aware(
             cfg,
             association_scores=association_scores,
             association_audit_callback=association_audit_callback,
+            state_buckets=state_buckets,
+            association_shadow_callback=association_shadow_callback,
+            association_shadow_metadata=association_shadow_metadata,
+            association_shadow_error_callback=association_shadow_error_callback,
+            association_shadow_strict=association_shadow_strict,
         )
 
     # fallback to original if no Mamba outputs available
@@ -770,6 +818,11 @@ def match_trajs_and_dets_uncertainty_aware(
             cfg,
             association_scores=association_scores,
             association_audit_callback=association_audit_callback,
+            state_buckets=state_buckets,
+            association_shadow_callback=association_shadow_callback,
+            association_shadow_metadata=association_shadow_metadata,
+            association_shadow_error_callback=association_shadow_error_callback,
+            association_shadow_strict=association_shadow_strict,
         )
 
     cost_matrix, trajs_category, dets_category = cost_calculate_uncertainty_aware(
@@ -778,14 +831,21 @@ def match_trajs_and_dets_uncertainty_aware(
         trk_pos_P, trk_ori_P,
         cal_flag=cal_flag,
     )
-    cost_matrix = apply_pairwise_association_head_to_cost_matrix(
-        cost_matrix,
-        trajs,
-        dets,
-        cfg,
-        association_scores=association_scores,
-        audit_callback=association_audit_callback,
+    shadow_mode = bool(
+        (cfg.get("ASSOCIATION_HEAD_AUDIT", {}) or {}).get("ENABLED", False)
+        and (cfg.get("ASSOCIATION_HEAD_AUDIT", {}) or {}).get("SHADOW_MODE", False)
     )
+    base_cost_matrix = np.array(cost_matrix, copy=True)
+    if not shadow_mode:
+        cost_matrix = apply_pairwise_association_head_to_cost_matrix(
+            cost_matrix,
+            trajs,
+            dets,
+            cfg,
+            association_scores=association_scores,
+            state_buckets=state_buckets,
+            audit_callback=association_audit_callback,
+        )
 
     category_map = cfg["CATEGORY_MAP_TO_NUMBER"]
     vectorized_map = np.vectorize(category_map.get)
@@ -884,22 +944,79 @@ def match_trajs_and_dets_uncertainty_aware(
                 cfg,
                 association_scores=association_scores,
                 association_audit_callback=association_audit_callback,
+                state_buckets=state_buckets,
+                association_shadow_callback=association_shadow_callback,
+                association_shadow_metadata=association_shadow_metadata,
+                association_shadow_error_callback=association_shadow_error_callback,
+                association_shadow_strict=association_shadow_strict,
             )
 
-        if matching_mode == "Hungarian":
-            m_det, m_tra, um_det, um_tra, costs = Hungarian(
-                trans_cost_matrix,
-                adaptive_thresholds,
-            )
-        elif matching_mode == "Greedy":
-            m_det, m_tra, um_det, um_tra, costs = Greedy(
-                trans_cost_matrix,
-                adaptive_thresholds,
-            )
-        else:
+        def solve_adaptive(matrix):
+            if matching_mode == "Hungarian":
+                return Hungarian(matrix, adaptive_thresholds)
+            if matching_mode == "Greedy":
+                return Greedy(matrix, adaptive_thresholds)
             raise ValueError(f"Unknown matching mode: {matching_mode}")
+
+        m_det, m_tra, _, _, costs = solve_adaptive(trans_cost_matrix)
         assert len(m_det) == len(m_tra)
         matched_indices = np.column_stack((m_tra, m_det))
+
+        if shadow_mode:
+            shadow_stage = "shadow_correction"
+            try:
+                corrected_cost_matrix = apply_pairwise_association_head_to_cost_matrix(
+                    np.array(base_cost_matrix, copy=True),
+                    trajs,
+                    dets,
+                    cfg,
+                    association_scores=association_scores,
+                    state_buckets=state_buckets,
+                    audit_callback=association_audit_callback,
+                )
+                corrected_cost_matrix = np.array(corrected_cost_matrix, copy=True)
+                shadow_trans = corrected_cost_matrix.T
+                shadow_trans = shadow_trans[None, :, :].repeat(cls_num, axis=0)
+                shadow_trans[np.where(~trans_valid_mask)] = np.inf
+                shadow_stage = "shadow_solver"
+                shadow_det, shadow_tra, _, _, shadow_costs = solve_adaptive(
+                    shadow_trans
+                )
+                shadow_matches = np.column_stack((shadow_tra, shadow_det))
+                if association_shadow_callback is not None:
+                    shadow_stage = "decision_records"
+                    records = _association_shadow_records(
+                        production_matches=matched_indices,
+                        production_costs=costs,
+                        shadow_matches=shadow_matches,
+                        shadow_costs=shadow_costs,
+                        base_cost_matrix=base_cost_matrix,
+                        corrected_cost_matrix=corrected_cost_matrix,
+                        association_scores=association_scores,
+                        trajs=trajs,
+                        trajs_category=trajs_category,
+                        cfg=cfg,
+                        state_buckets=state_buckets,
+                        metadata=association_shadow_metadata,
+                    )
+                    if records is not None:
+                        shadow_stage = "decision_callback"
+                        association_shadow_callback(records)
+            except Exception as exc:
+                if association_shadow_error_callback is not None:
+                    try:
+                        association_shadow_error_callback(
+                            _association_shadow_error_record(
+                                exc,
+                                stage=shadow_stage,
+                                metadata=association_shadow_metadata,
+                            )
+                        )
+                    except Exception:
+                        if association_shadow_strict:
+                            raise exc
+                if association_shadow_strict:
+                    raise
     else:
         matched_indices = np.empty(shape=(0, 2))
         costs = np.empty(shape=(0,))

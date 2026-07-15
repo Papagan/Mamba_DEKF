@@ -30,6 +30,7 @@ class BaseVersionTrackingDataset:
 
         cur_frame = Frame(
             frame_id=int(frame_id),
+            scene_id=self.scene_id,
             cur_sample_token=cur_sample_token,
             timestamp=timestamp,
             transform_matrix=transform_matrix,

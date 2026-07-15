@@ -56,7 +56,7 @@ class _Traj:
             self.track_id = track_id
 
 
-def _matching_cfg(*, shadow_mode=False, head_enabled=True):
+def _matching_cfg(*, shadow_mode=False, head_enabled=True, audit_enabled=True):
     return {
         "CATEGORY_LIST": ["trailer"],
         "CATEGORY_MAP_TO_NUMBER": {"trailer": 0},
@@ -75,7 +75,10 @@ def _matching_cfg(*, shadow_mode=False, head_enabled=True):
             "MAX_DELTA": 0.5,
             "ACTIVE_CLASS_STATES": {0: ["unmatched"]},
         },
-        "ASSOCIATION_HEAD_AUDIT": {"SHADOW_MODE": shadow_mode},
+        "ASSOCIATION_HEAD_AUDIT": {
+            "ENABLED": audit_enabled,
+            "SHADOW_MODE": shadow_mode,
+        },
     }
 
 
@@ -222,6 +225,7 @@ class MambaAssociationPriorTest(unittest.TestCase):
     def test_rv_matching_never_runs_shadow_assignment_or_callback(self):
         base, trajs, dets, scores = _flippable_matching_inputs()
         callback_calls = []
+        error_calls = []
 
         with patch.object(
             matching,
@@ -243,11 +247,44 @@ class MambaAssociationPriorTest(unittest.TestCase):
                 is_rv=True,
                 association_scores=scores,
                 association_shadow_callback=callback_calls.append,
+                association_shadow_error_callback=error_calls.append,
+                association_shadow_strict=True,
             )
 
         np.testing.assert_array_equal(matches, np.array([[0, 0], [1, 1]]))
         self.assertEqual(solve.call_count, 1)
         self.assertEqual(callback_calls, [])
+        self.assertEqual(error_calls, [])
+
+    def test_uncertainty_aware_shadow_keeps_production_assignment(self):
+        base, trajs, dets, scores = _flippable_matching_inputs()
+        cfg = _matching_cfg(shadow_mode=True)
+        cfg["THRESHOLD"]["BEV"]["COST_MODE"] = "full"
+        records = []
+
+        with patch.object(
+            matching,
+            "cost_calculate_uncertainty_aware",
+            return_value=(
+                base,
+                np.array(["trailer", "trailer"]),
+                np.array(["trailer", "trailer"]),
+            ),
+        ):
+            matches, costs = matching.match_trajs_and_dets_uncertainty_aware(
+                trajs,
+                dets,
+                cfg,
+                trk_embeddings=np.eye(2, dtype=np.float32),
+                det_embeddings=np.eye(2, dtype=np.float32),
+                association_scores=scores,
+                state_buckets=["unmatched", "unmatched"],
+                association_shadow_callback=records.extend,
+            )
+
+        np.testing.assert_array_equal(matches, np.array([[0, 0], [1, 1]]))
+        np.testing.assert_allclose(costs, np.array([0.10, 0.10]), rtol=1e-6)
+        self.assertTrue(any(record["assignment_changed"] for record in records))
 
     def test_shadow_missing_or_mismatched_scores_records_unchanged(self):
         base, trajs, dets, _ = _flippable_matching_inputs()
@@ -338,6 +375,99 @@ class MambaAssociationPriorTest(unittest.TestCase):
                 )
             np.testing.assert_array_equal(matches, expected_matches)
             np.testing.assert_array_equal(costs, expected_costs)
+
+    def test_shadow_failure_records_error_and_strict_controls_reraise(self):
+        base, trajs, dets, scores = _flippable_matching_inputs()
+        categories = np.array(["trailer", "trailer"])
+        expected_matches = np.array([[0, 0], [1, 1]])
+        errors = []
+
+        with patch.object(
+            matching,
+            "cost_calculate_general",
+            return_value=(base, categories, categories),
+        ), patch.object(
+            matching,
+            "apply_pairwise_association_head_to_cost_matrix",
+            side_effect=RuntimeError("shadow correction failed"),
+        ):
+            matches, costs = matching.match_trajs_and_dets(
+                trajs,
+                dets,
+                _matching_cfg(shadow_mode=True),
+                association_scores=scores,
+                association_shadow_error_callback=errors.append,
+                association_shadow_metadata={
+                    "context": {"scene_id": "scene-real", "sample_token": "sample-real"}
+                },
+            )
+
+        np.testing.assert_array_equal(matches, expected_matches)
+        np.testing.assert_array_equal(costs, np.array([0.10, 0.10], dtype=np.float32))
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["stage"], "shadow_correction")
+        self.assertEqual(errors[0]["type"], "RuntimeError")
+        self.assertEqual(errors[0]["context"]["scene_id"], "scene-real")
+
+        with patch.object(
+            matching,
+            "cost_calculate_general",
+            return_value=(base, categories, categories),
+        ), patch.object(
+            matching,
+            "apply_pairwise_association_head_to_cost_matrix",
+            side_effect=RuntimeError("shadow correction failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "shadow correction failed"):
+                matching.match_trajs_and_dets(
+                    trajs,
+                    dets,
+                    _matching_cfg(shadow_mode=True),
+                    association_scores=scores,
+                    association_shadow_strict=True,
+                    association_shadow_error_callback=errors.append,
+                )
+
+    def test_production_solver_failure_is_never_treated_as_shadow_error(self):
+        base, trajs, dets, scores = _flippable_matching_inputs()
+        errors = []
+        with patch.object(
+            matching,
+            "cost_calculate_general",
+            return_value=(base, np.array(["trailer"] * 2), np.array(["trailer"] * 2)),
+        ), patch.object(
+            matching,
+            "solve_matching_cost_matrix",
+            side_effect=RuntimeError("production solver failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "production solver failed"):
+                matching.match_trajs_and_dets(
+                    trajs,
+                    dets,
+                    _matching_cfg(shadow_mode=True),
+                    association_scores=scores,
+                    association_shadow_error_callback=errors.append,
+                )
+        self.assertEqual(errors, [])
+
+    def test_shadow_requires_both_enabled_and_shadow_mode(self):
+        base, trajs, dets, scores = _flippable_matching_inputs()
+        callback_calls = []
+        with patch.object(
+            matching,
+            "cost_calculate_general",
+            return_value=(base, np.array(["trailer"] * 2), np.array(["trailer"] * 2)),
+        ):
+            matches, _ = matching.match_trajs_and_dets(
+                trajs,
+                dets,
+                _matching_cfg(shadow_mode=True, audit_enabled=False),
+                association_scores=scores,
+                association_shadow_callback=callback_calls.append,
+            )
+
+        np.testing.assert_array_equal(matches, np.array([[1, 0], [0, 1]]))
+        self.assertEqual(callback_calls, [])
 
     def test_disabled_config_leaves_cost_matrix_unchanged(self):
         cost = np.array([[1.0, 1.5], [2.0, 0.5]], dtype=np.float32)

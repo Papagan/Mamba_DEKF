@@ -184,9 +184,29 @@ def _write_merged_association_head_audit(cfg, scene_assoc_states):
     if not audit_cfg.get("ENABLED", False):
         return
 
-    merged = AssociationHeadAuditAccumulator()
+    strict = bool(audit_cfg.get("STRICT", False))
+    merged = AssociationHeadAuditAccumulator(
+        max_samples_per_bucket=int(
+            audit_cfg.get("MAX_SAMPLES_PER_BUCKET", 0)
+        ),
+        runtime_manifest=cfg.get("_ASSOCIATION_AUDIT_RUNTIME_MANIFEST"),
+        strict_manifest=strict,
+    )
     for scene_id in sorted(scene_assoc_states.keys()):
-        merged.merge_state(scene_assoc_states[scene_id])
+        try:
+            merged.merge_state(scene_assoc_states[scene_id])
+        except Exception as exc:
+            if strict:
+                raise
+            merged.add_error(
+                stage="worker_merge",
+                error=exc,
+                context={"scene_id": scene_id},
+            )
+            print(
+                "[main] WARNING: failed to merge association head audit "
+                f"for scene {scene_id}: {exc}"
+            )
 
     output_path = audit_cfg.get(
         "INFER_OUTPUT_PATH",
@@ -195,7 +215,7 @@ def _write_merged_association_head_audit(cfg, scene_assoc_states):
     try:
         merged.write_json(output_path)
     except Exception as exc:
-        if audit_cfg.get("STRICT", False):
+        if strict:
             raise
         print(
             "[main] WARNING: failed to write merged association head audit "
