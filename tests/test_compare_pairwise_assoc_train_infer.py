@@ -157,7 +157,10 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
     def _complete_audit(self, decision_buckets=None, **overrides):
         audit = {
             "schema_version": 2,
-            "runtime_manifest": {"config_sha256": "test"},
+            "runtime_manifest": {
+                "config_sha256": "test",
+                "active_class_states": {2: ["matched"]},
+            },
             "manifest_initialized": True,
             "decision_evidence_available": True,
             "decision_evidence_complete": True,
@@ -371,15 +374,13 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
     def test_matched_and_unmatched_decisions_are_gated_independently(self):
         data = self._run_compare(
             self._complete_audit(
+                runtime_manifest={
+                    "config_sha256": "test",
+                    "active_class_states": {"2": ["matched", "unmatched"]},
+                },
                 decision_buckets=[
                     self._decision_bucket(
                         known_changed=100, improved=100, damaged=0, state="matched"
-                    ),
-                    self._decision_bucket(
-                        known_changed=20,
-                        improved=0,
-                        damaged=20,
-                        state="unmatched",
                     ),
                 ]
             )
@@ -391,23 +392,23 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
             bicycle["diagnosis_by_state"]["matched"],
         )
         self.assertIn(
-            "shadow_decisions_not_safe",
+            "insufficient_decision_evidence",
             bicycle["diagnosis_by_state"]["unmatched"],
         )
         self.assertEqual(
             bicycle["decision_evidence_by_state"]["matched"]["improved_count"],
             100,
         )
-        self.assertEqual(
-            bicycle["decision_evidence_by_state"]["unmatched"]["damaged_count"],
-            20,
-        )
-        self.assertIn("shadow_decisions_not_safe", bicycle["diagnosis"])
+        self.assertIn("insufficient_decision_evidence", bicycle["diagnosis"])
         self.assertFalse(any("candidate" in item for item in bicycle["diagnosis"]))
 
-    def test_class_candidate_requires_every_observed_state_to_be_candidate(self):
+    def test_class_candidate_requires_every_manifest_active_state_to_be_candidate(self):
         data = self._run_compare(
             self._complete_audit(
+                runtime_manifest={
+                    "config_sha256": "test",
+                    "active_class_states": {2: ["matched", "unmatched"]},
+                },
                 decision_buckets=[
                     self._decision_bucket(state="matched"),
                     self._decision_bucket(state="unmatched"),
@@ -417,6 +418,25 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
 
         bicycle = data["classes"]["2:bicycle"]
         self.assertIn("candidate_for_shadow_ab_activation", bicycle["diagnosis"])
+
+        unconfigured_observation = self._run_compare(
+            self._complete_audit(
+                decision_buckets=[
+                    self._decision_bucket(state="matched"),
+                    self._decision_bucket(
+                        known_changed=20,
+                        improved=0,
+                        damaged=20,
+                        state="unmatched",
+                    ),
+                ]
+            )
+        )["classes"]["2:bicycle"]
+        self.assertIn("unmatched", unconfigured_observation["diagnosis_by_state"])
+        self.assertIn(
+            "candidate_for_shadow_ab_activation",
+            unconfigured_observation["diagnosis"],
+        )
 
     def test_multiple_buckets_for_same_class_and_state_are_aggregated(self):
         data = self._run_compare(
@@ -548,6 +568,35 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
                 diagnosis = data["classes"]["2:bicycle"]["diagnosis"]
                 self.assertIn("insufficient_decision_evidence", diagnosis)
                 self.assertFalse(any("candidate" in item for item in diagnosis))
+
+        activation_cases = {
+            "missing_active_class_states": (
+                {"config_sha256": "test"},
+                "missing_active_class_states",
+            ),
+            "invalid_active_class_states": (
+                {
+                    "config_sha256": "test",
+                    "active_class_states": {"2": ["matched", "lost"]},
+                },
+                "invalid_active_class_states_state",
+            ),
+        }
+        for name, (runtime_manifest, reason) in activation_cases.items():
+            with self.subTest(name=name):
+                data = self._run_compare(
+                    self._complete_audit(runtime_manifest=runtime_manifest)
+                )
+                bicycle = data["classes"]["2:bicycle"]
+                activation = data["class_state_activation"]
+                self.assertFalse(activation["class_level_usable"])
+                self.assertIn(reason, activation["incomplete_reasons"])
+                self.assertIn(
+                    "candidate_for_shadow_ab_activation",
+                    bicycle["diagnosis_by_state"]["matched"],
+                )
+                self.assertIn("insufficient_decision_evidence", bicycle["diagnosis"])
+                self.assertFalse(any("candidate" in item for item in bicycle["diagnosis"]))
 
 
 if __name__ == "__main__":

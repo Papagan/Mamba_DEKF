@@ -92,11 +92,27 @@ are aggregated, then each state independently applies:
 - Any other complete schema v2 result: `shadow_decisions_not_safe`.
 
 The report exposes these results as `decision_evidence_by_state` and
-`diagnosis_by_state`. A class with one observed state may retain that state's
-class-level candidate diagnosis. A class with multiple observed states is a
-class-level candidate only when every state is a candidate; one unsafe or
-insufficient state prevents a class-level candidate. Class-level pooled counts
-remain descriptive and are never used to bypass a failed state gate.
+`diagnosis_by_state`. Class-level activation scope comes only from
+`runtime_manifest.active_class_states`; observed buckets do not define or
+expand production activation. Class IDs may be native non-negative integers or
+their canonical decimal string form. Each configured state must be exactly
+`matched` or `unmatched`.
+
+Every manifest-active state is required for a class-level candidate. A
+configured state with no observed decision bucket is added to
+`diagnosis_by_state` as `insufficient_decision_evidence`. The class is a
+candidate only when every configured active state independently reaches the
+known-changed minimum and is a candidate. An observed state that is not active
+in the manifest remains visible in the state-level report, but it neither
+blocks nor extends the configured production activation scope. Class-level
+pooled counts remain descriptive and are never used to bypass a failed state
+gate.
+
+Missing or malformed `active_class_states` fails closed only at class level:
+valid observed states may still retain state-level conclusions, but no class
+can be a candidate. Empty class state lists and classes omitted from the map
+also cannot produce a class-level candidate. The report records normalized
+scope and validation failures in `class_state_activation`.
 
 The 100 known-changed minimum is a hard safety floor. The
 `--min-known-changed` option may raise it for a stricter experiment but rejects
@@ -126,6 +142,17 @@ reported in `decision_evidence.incomplete_reasons`.
 Unknown GT identities are retained as unknown evidence and cannot count as
 `improved` or `damaged`, so sparse or unavailable GT can prevent the minimum
 known-changed gate from being reached.
+
+### Pending: audit-only GT enrichment
+
+Standard detection inference has no GT identity annotations, so its assignment
+changes normally remain unknown and `known_changed_count` stays at zero. Before
+using the decision gate, generate a separate GT-enriched audit input that labels
+the outcomes of already-recorded production and shadow decisions. This is an
+audit-only prerequisite; the enrichment path is not yet implemented by this
+tool. GT must never be supplied to candidate generation, scoring, matching, or
+assignment selection. It may only annotate outcomes after both production and
+shadow decisions have been made.
 
 A candidate authorizes only a separate A/B experiment, not default activation.
 Real assignment intervention requires another experimental config with

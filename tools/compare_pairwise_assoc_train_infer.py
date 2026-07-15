@@ -333,6 +333,70 @@ def _audit_errors_status(audit: Mapping[str, Any]) -> Dict[str, Any]:
     return {"valid": True, "count": count, "reason": None}
 
 
+def _active_class_states_status(
+    audit: Mapping[str, Any],
+) -> Tuple[Dict[str, Any], Dict[int, set]]:
+    reasons = []
+    runtime_manifest = audit.get("runtime_manifest")
+    if not isinstance(runtime_manifest, Mapping):
+        reasons.append("invalid_runtime_manifest")
+        active_class_states = None
+    elif "active_class_states" not in runtime_manifest:
+        reasons.append("missing_active_class_states")
+        active_class_states = None
+    else:
+        active_class_states = runtime_manifest["active_class_states"]
+        if not isinstance(active_class_states, Mapping):
+            reasons.append("invalid_active_class_states")
+
+    normalized = {}
+    if isinstance(active_class_states, Mapping):
+        for raw_class_id, raw_states in active_class_states.items():
+            if type(raw_class_id) is int:
+                class_id = raw_class_id
+            elif (
+                isinstance(raw_class_id, str)
+                and raw_class_id == raw_class_id.strip()
+                and raw_class_id
+                and all("0" <= char <= "9" for char in raw_class_id)
+            ):
+                class_id = int(raw_class_id)
+            else:
+                reasons.append("invalid_active_class_states_class_id")
+                continue
+            if class_id < 0 or str(class_id) != str(raw_class_id):
+                reasons.append("invalid_active_class_states_class_id")
+                continue
+            if class_id in normalized:
+                reasons.append("duplicate_active_class_states_class_id")
+                continue
+            if not isinstance(raw_states, list):
+                reasons.append("invalid_active_class_states_states")
+                continue
+            if any(
+                not isinstance(state, str) or state not in TRACK_STATE_BUCKETS
+                for state in raw_states
+            ):
+                reasons.append("invalid_active_class_states_state")
+                continue
+            normalized[class_id] = set(raw_states)
+
+    reasons = list(dict.fromkeys(reasons))
+    valid = not reasons
+    status = {
+        "valid": valid,
+        "class_level_usable": valid,
+        "incomplete_reasons": reasons,
+        "active_class_states": {
+            str(class_id): sorted(states)
+            for class_id, states in sorted(normalized.items())
+        }
+        if valid
+        else {},
+    }
+    return status, normalized if valid else {}
+
+
 def _decision_evidence_status(
     audit: Any,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
@@ -463,6 +527,7 @@ def _diagnose(
 def _class_diagnosis(
     train_summary: Dict[str, Any],
     diagnosis_by_state: Dict[str, List[str]],
+    active_states: Any,
 ) -> List[str]:
     diagnoses = []
     pos_ratio = float(train_summary.get("positive_ratio", 0.0))
@@ -483,9 +548,15 @@ def _class_diagnosis(
                 "shadow_decisions_not_safe",
             }
         )
-        for state_diagnoses in diagnosis_by_state.values()
+        for state, state_diagnoses in diagnosis_by_state.items()
+        if active_states is not None and state in active_states
     ]
-    if not state_gates or "insufficient_decision_evidence" in state_gates:
+    if (
+        active_states is None
+        or not active_states
+        or len(state_gates) != len(active_states)
+        or "insufficient_decision_evidence" in state_gates
+    ):
         diagnoses.append("insufficient_decision_evidence")
     elif all(gate == "candidate_for_shadow_ab_activation" for gate in state_gates):
         diagnoses.append("candidate_for_shadow_ab_activation")
@@ -520,6 +591,9 @@ def build_summary(
     audit_mapping = audit if isinstance(audit, Mapping) else {}
     track_state_scores = _summarize_track_state_scores(audit_mapping)
     evidence, validated_buckets = _decision_evidence_status(audit)
+    activation_status, active_class_states = _active_class_states_status(
+        audit_mapping
+    )
     decisions = _summarize_decisions(validated_buckets)
     keys = sorted(
         set(train.keys()) | set(track_state_scores.keys()) | set(decisions.keys())
@@ -532,14 +606,21 @@ def build_summary(
         decision_by_state = class_decisions.get(
             "decision_evidence_by_state", {}
         )
+        class_id = int(key.split(":", 1)[0])
+        active_states = (
+            active_class_states.get(class_id) if activation_status["valid"] else None
+        )
+        reported_states = set(decision_by_state)
+        if active_states is not None:
+            reported_states.update(active_states)
         diagnosis_by_state = {
             state: _diagnose(
                 train_summary,
-                state_summary,
+                decision_by_state.get(state, {}),
                 evidence_usable=evidence["usable"],
                 min_known_changed=min_known_changed,
             )
-            for state, state_summary in decision_by_state.items()
+            for state in sorted(reported_states)
         }
         classes[key] = {
             "train": train_summary,
@@ -548,7 +629,7 @@ def build_summary(
             "decision_evidence_by_state": decision_by_state,
             "diagnosis_by_state": diagnosis_by_state,
             "diagnosis": _class_diagnosis(
-                train_summary, diagnosis_by_state
+                train_summary, diagnosis_by_state, active_states
             ),
         }
     return _json_safe({
@@ -557,10 +638,12 @@ def build_summary(
         "train_cache": str(train_cache),
         "infer_audit": str(infer_audit),
         "decision_evidence": evidence,
+        "class_state_activation": activation_status,
         "decision_gates": {
             "min_known_changed": int(min_known_changed),
             "max_harm_precision": MAX_HARM_PRECISION,
             "require_improved_greater_than_damaged": True,
+            "class_candidate_requires_all_manifest_active_states": True,
         },
         "classes": classes,
     })
