@@ -14,6 +14,7 @@ class Frame:
         timestamp=None,
         transform_matrix=None,
         scene_id=None,
+        audit_gt_tokens=None,
     ):
 
         self.frame_id = frame_id
@@ -23,3 +24,5 @@ class Frame:
         self.transform_matrix = transform_matrix
 
         self.bboxes: List[BBox] = []
+        if audit_gt_tokens is not None:
+            self.audit_gt_tokens = list(audit_gt_tokens)

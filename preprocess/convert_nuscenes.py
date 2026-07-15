@@ -14,6 +14,7 @@ from pathlib import Path
 from pyquaternion import Quaternion
 from nuscenes.nuscenes import NuScenes
 from nuscenes.utils import splits
+from scipy.optimize import linear_sum_assignment
 from scipy.spatial.transform import Rotation as R
 from enum import IntEnum
 from typing import Tuple
@@ -492,20 +493,21 @@ def enrich_detections_with_gt_identity(
     split="val",
     distance_by_class=None,
 ):
-    """Attach GT identities for offline shadow-audit conversion only."""
-    if not enabled or split == "test" or not sample_info.get("anns"):
-        return list(detections)
-
-    if distance_by_class is None:
-        distance_by_class = AUDIT_GT_MATCH_DISTANCE_BY_CLASS
-    enriched = []
+    """Return clean detections and an optional aligned audit identity sidecar."""
+    cleaned = []
     for detection in detections:
         clean_detection = dict(detection)
         for token_name in ("gt_token", "instance_token", "annotation_token"):
             clean_detection.pop(token_name, None)
-        enriched.append(clean_detection)
+        cleaned.append(clean_detection)
+
+    if not enabled or split == "test" or not sample_info.get("anns"):
+        return cleaned, None
+
+    if distance_by_class is None:
+        distance_by_class = AUDIT_GT_MATCH_DISTANCE_BY_CLASS
     gt_annotations = []
-    for annotation_index, annotation_token in enumerate(sample_info["anns"]):
+    for annotation_token in sample_info["anns"]:
         annotation = nusc.get("sample_annotation", annotation_token)
         category = _tracking_category(annotation.get("category_name", ""))
         instance_token = annotation.get("instance_token")
@@ -513,46 +515,55 @@ def enrich_detections_with_gt_identity(
         if category is None or not instance_token or len(translation) < 2:
             continue
         gt_annotations.append(
-            (annotation_index, category, translation, instance_token)
+            (category, translation, instance_token)
         )
 
-    candidates = []
-    for detection_index, detection in enumerate(enriched):
-        category = detection.get("detection_name")
-        translation = detection.get("translation", ())
+    audit_gt_tokens = [None] * len(cleaned)
+    categories = sorted(
+        {
+            detection.get("detection_name")
+            for detection in cleaned
+            if detection.get("detection_name") in distance_by_class
+        }
+    )
+    for category in categories:
         gate = distance_by_class.get(category)
-        if gate is None or len(translation) < 2:
+        detection_indices = [
+            index
+            for index, detection in enumerate(cleaned)
+            if detection.get("detection_name") == category
+            and len(detection.get("translation", ())) >= 2
+        ]
+        category_annotations = [
+            annotation for annotation in gt_annotations if annotation[0] == category
+        ]
+        if not detection_indices or not category_annotations:
             continue
-        for (
-            annotation_index,
-            gt_category,
-            gt_translation,
-            instance_token,
-        ) in gt_annotations:
-            if gt_category != category:
-                continue
-            distance = math.hypot(
-                float(translation[0]) - float(gt_translation[0]),
-                float(translation[1]) - float(gt_translation[1]),
-            )
-            if math.isfinite(distance) and distance <= gate:
-                candidates.append(
-                    (distance, detection_index, annotation_index, instance_token)
+
+        cardinality_bound = min(len(detection_indices), len(category_annotations))
+        invalid_cost = (cardinality_bound + 1) * (float(gate) + 1.0)
+        distance_matrix = np.full(
+            (len(detection_indices), len(category_annotations)),
+            invalid_cost,
+            dtype=np.float64,
+        )
+        for row, detection_index in enumerate(detection_indices):
+            translation = cleaned[detection_index]["translation"]
+            for column, (_, gt_translation, _) in enumerate(category_annotations):
+                distance = math.hypot(
+                    float(translation[0]) - float(gt_translation[0]),
+                    float(translation[1]) - float(gt_translation[1]),
                 )
+                if math.isfinite(distance) and distance <= gate:
+                    distance_matrix[row, column] = distance
 
-    matched_detections = set()
-    matched_annotations = set()
-    for _, detection_index, annotation_index, instance_token in sorted(candidates):
-        if (
-            detection_index in matched_detections
-            or annotation_index in matched_annotations
-        ):
-            continue
-        enriched[detection_index]["instance_token"] = instance_token
-        matched_detections.add(detection_index)
-        matched_annotations.add(annotation_index)
+        rows, columns = linear_sum_assignment(distance_matrix)
+        for row, column in zip(rows.tolist(), columns.tolist()):
+            if distance_matrix[row, column] <= gate:
+                detection_index = detection_indices[row]
+                audit_gt_tokens[detection_index] = category_annotations[column][2]
 
-    return enriched
+    return cleaned, audit_gt_tokens
 
 
 def convert_baseversion_bboxes(bboxes, global2ego, cameras_transform_matrix):
@@ -579,9 +590,6 @@ def convert_baseversion_bboxes(bboxes, global2ego, cameras_transform_matrix):
                 "x1y1x2y2": x1y1x2y2,
             },
         }
-        for token_name in ("gt_token", "instance_token", "annotation_token"):
-            if token_name in bbox:
-                new_bbox[token_name] = bbox[token_name]
         new_bboxes.append(new_bbox)
     return new_bboxes
 
@@ -654,7 +662,7 @@ def nuscenes_main(
             lidar2global = ego2global.dot(lidar2ego)
             global2lidar = ego2lidar.dot(global2ego)
 
-            raw_dets = enrich_detections_with_gt_identity(
+            raw_dets, audit_gt_tokens = enrich_detections_with_gt_identity(
                 nusc,
                 sample_info,
                 dets_json["results"][cur_sample_token],
@@ -677,6 +685,8 @@ def nuscenes_main(
                     "cameras_transform_matrix": cameras_transform_matrix,
                 },
             }
+            if audit_gt_tokens is not None:
+                scene_data["audit_gt_tokens"] = audit_gt_tokens
             scene_datas.append(scene_data)
 
             cur_sample_token = sample_info["next"]

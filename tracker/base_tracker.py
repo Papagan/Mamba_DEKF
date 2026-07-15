@@ -521,6 +521,7 @@ class Base3DTracker:
             if bool(self.association_head_audit_cfg.get("ENABLED", False))
             else None
         )
+        self._association_track_gt_tokens: Dict[int, object] = {}
         self.pairwise_association_head = self._load_pairwise_association_head()
 
         print(
@@ -765,33 +766,41 @@ class Base3DTracker:
             return
         self.association_head_audit.add_error(record)
 
-    def _real_association_gt_token(self, obj):
-        if obj is None:
+    def _association_frame_gt_tokens(self, frame_info):
+        tokens = getattr(frame_info, "audit_gt_tokens", None)
+        if tokens is None:
             return None
-        candidates = [obj]
-        bboxes = getattr(obj, "bboxes", None)
-        if bboxes:
-            candidates.extend(
-                bbox
-                for bbox in reversed(bboxes)
-                if not bool(getattr(bbox, "is_fake", False))
-            )
-        for candidate in candidates:
-            if bool(getattr(candidate, "is_fake", False)):
-                continue
-            for attribute in ("gt_token", "instance_token"):
-                if not hasattr(candidate, attribute):
-                    continue
-                token = getattr(candidate, attribute)
-                if isinstance(token, np.generic):
-                    token = token.item()
-                if isinstance(token, str):
-                    token = token.strip()
-                    if token:
-                        return token
-                elif isinstance(token, int) and not isinstance(token, bool):
-                    return token
-        return None
+        if len(tokens) != len(frame_info.bboxes):
+            raise ValueError("frame audit_gt_tokens must align with frame bboxes")
+        return list(tokens)
+
+    def _association_det_gt_tokens(self, frame_info, dets) -> List:
+        frame_tokens = self._association_frame_gt_tokens(frame_info)
+        if frame_tokens is None:
+            return [None] * len(dets)
+        frame_index_by_id = {
+            id(det): index for index, det in enumerate(frame_info.bboxes)
+        }
+        return [
+            frame_tokens[frame_index_by_id[id(det)]]
+            if id(det) in frame_index_by_id
+            else None
+            for det in dets
+        ]
+
+    def _update_association_gt_sidecar(
+        self, track_id: int, frame_info, det_index: int
+    ) -> None:
+        if self.association_head_audit is None:
+            return
+        frame_tokens = self._association_frame_gt_tokens(frame_info)
+        if frame_tokens is None:
+            return
+        token = frame_tokens[int(det_index)]
+        if token is None:
+            self._association_track_gt_tokens.pop(int(track_id), None)
+        else:
+            self._association_track_gt_tokens[int(track_id)] = token
 
     def _association_shadow_options(self, frame_info, trajs, dets) -> Dict:
         if (
@@ -815,11 +824,10 @@ class Base3DTracker:
             "class_names": class_names,
             "state_buckets": state_buckets,
             "track_gt_tokens": [
-                self._real_association_gt_token(traj) for traj in trajs
+                self._association_track_gt_tokens.get(int(traj.track_id))
+                for traj in trajs
             ],
-            "det_gt_tokens": [
-                self._real_association_gt_token(det) for det in dets
-            ],
+            "det_gt_tokens": self._association_det_gt_tokens(frame_info, dets),
             "context": {
                 "scene_id": getattr(frame_info, "scene_id", None),
                 "sample_token": getattr(frame_info, "cur_sample_token", None),
@@ -2152,6 +2160,7 @@ class Base3DTracker:
             det_bbox = frame_info.bboxes[det_idx]
             match_cost = float(costs[match_idx]) if match_idx < len(costs) else float("inf")
             self.all_trajs[track_id].update(det_bbox, match_cost)
+            self._update_association_gt_sidecar(track_id, frame_info, det_idx)
             matched_track_ids.append(track_id)
             matched_bboxes.append(det_bbox)
             matched_traj_indices.add(traj_idx)
@@ -2192,6 +2201,7 @@ class Base3DTracker:
         if self.cfg.get("IS_RV_MATCHING", False):
             unmatched_trajs_inbev = self.get_trajectory_bbox(unmatched_trajs)
             dets_cnt_inbev = len(unmatched_det_indices)
+            unmatched_det_frame_indices = unmatched_det_indices.tolist()
             unmatched_dets_inbev = (
                 np.array(frame_info.bboxes, dtype=object)[unmatched_det_indices].tolist()
                 if dets_cnt_inbev > 0
@@ -2235,6 +2245,12 @@ class Base3DTracker:
                         continue
                     match_cost = float(cost_matrix_inbev[indexes][0])
                     self.all_trajs[track_id].update(det_bbox, match_cost)
+                    det_sub_idx = int(match_res_inbev[indexes, 1][0])
+                    self._update_association_gt_sidecar(
+                        track_id,
+                        frame_info,
+                        unmatched_det_frame_indices[det_sub_idx],
+                    )
                     matched_track_ids.append(track_id)
                     matched_bboxes.append(det_bbox)
                     rv_matched += 1
@@ -2277,6 +2293,14 @@ class Base3DTracker:
                 track_id=self.track_id_counter,
                 init_bbox=det_bbox,
                 cfg=self.cfg,
+            )
+            birth_det_index = (
+                unmatched_det_frame_indices[int(i)]
+                if self.cfg.get("IS_RV_MATCHING", False)
+                else int(i)
+            )
+            self._update_association_gt_sidecar(
+                self.track_id_counter, frame_info, birth_det_index
             )
             self._init_kf_state(self.track_id_counter, det_bbox)
             self.track_id_counter += 1
@@ -2486,6 +2510,7 @@ class Base3DTracker:
                 det_bbox = frame_info.bboxes[det_idx]
                 match_cost = float(costs[match_idx]) if match_idx < len(costs) else float("inf")
                 self.all_trajs[track_id].update(det_bbox, match_cost)
+                self._update_association_gt_sidecar(track_id, frame_info, det_idx)
                 matched_track_ids.append(track_id)
                 matched_bboxes.append(det_bbox)
                 matched_traj_indices.add(traj_idx)
@@ -2518,6 +2543,9 @@ class Base3DTracker:
                     traj_idx = remaining_traj_indices[traj_sub_idx]
                     track_id = trajs[traj_idx].track_id
                     self.all_trajs[track_id].update(det_bbox, match_cost)
+                    self._update_association_gt_sidecar(
+                        track_id, frame_info, det_global_idx
+                    )
                     matched_track_ids.append(track_id)
                     matched_bboxes.append(det_bbox)
                     matched_traj_indices.add(traj_idx)
@@ -2585,6 +2613,9 @@ class Base3DTracker:
                         cfg=self.cfg,
                     )
                     self.all_trajs[self.track_id_counter] = new_traj
+                    self._update_association_gt_sidecar(
+                        self.track_id_counter, frame_info, det_idx
+                    )
                     self._init_kf_state(self.track_id_counter, det_bbox)
                     self.track_id_counter += 1
                     if _dbg_small and det_bbox.category in birth_counts:
@@ -2603,6 +2634,7 @@ class Base3DTracker:
                 self.all_dead_trajs[track_id] = self.all_trajs[track_id]
                 del self.all_trajs[track_id]
                 self.kf_states.pop(track_id, None)
+                self._association_track_gt_tokens.pop(track_id, None)
                 self.original_motion.remove_track(track_id)
                 _n_dead += 1
 
