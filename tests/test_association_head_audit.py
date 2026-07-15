@@ -93,6 +93,7 @@ class SceneContextWiringTest(unittest.TestCase):
                         "timestamp": 12.5,
                         "cur_sample_token": "sample-real",
                         "transform_matrix": np.eye(4).tolist(),
+                        "audit_gt_tokens": ["det-instance-real"],
                         "bboxes": [
                             {
                                 "category": "trailer",
@@ -120,7 +121,8 @@ class SceneContextWiringTest(unittest.TestCase):
             frame = dataset[0]
         self.assertEqual(frame.scene_id, "scene-real")
         self.assertEqual(frame.cur_sample_token, "sample-real")
-        self.assertEqual(frame.bboxes[0].instance_token, "det-instance-real")
+        self.assertEqual(frame.audit_gt_tokens, ["det-instance-real"])
+        self.assertFalse(hasattr(frame.bboxes[0], "instance_token"))
 
     def test_tracker_accumulator_constructor_receives_runtime_contract(self):
         tree = ast.parse((ROOT / "tracker/base_tracker.py").read_text(encoding="utf-8"))
@@ -167,7 +169,8 @@ class SceneContextWiringTest(unittest.TestCase):
 
     def test_tracker_shadow_metadata_uses_real_lifecycle_and_context(self):
         methods = _load_base_tracker_methods(
-            "_real_association_gt_token",
+            "_association_frame_gt_tokens",
+            "_association_det_gt_tokens",
             "_association_shadow_options",
             "_record_association_shadow_decisions",
             "_record_association_shadow_error",
@@ -175,28 +178,29 @@ class SceneContextWiringTest(unittest.TestCase):
         tracker = types.SimpleNamespace(
             association_head_audit=AssociationHeadAuditAccumulator(),
             association_head_audit_cfg={"ENABLED": True, "SHADOW_MODE": True, "STRICT": False},
+            _association_track_gt_tokens={17: "track-gt"},
             cfg={"CATEGORY_MAP_TO_NUMBER": {"trailer": 5}},
-        )
-        traj_box = types.SimpleNamespace(
-            category="trailer", is_fake=False, instance_token="track-gt"
         )
         traj = types.SimpleNamespace(
             track_id=17,
             unmatch_length=2,
             status_flag=1,
-            bboxes=[traj_box],
+            bboxes=[types.SimpleNamespace(category="trailer", is_fake=False)],
         )
-        det = types.SimpleNamespace(
-            category="trailer", is_fake=False, instance_token="det-gt"
-        )
+        det = types.SimpleNamespace(category="trailer", is_fake=False)
         frame = types.SimpleNamespace(
             scene_id="scene-real",
             cur_sample_token="sample-real",
             frame_id=9,
+            bboxes=[det],
+            audit_gt_tokens=["det-gt"],
         )
 
-        tracker._real_association_gt_token = types.MethodType(
-            methods["_real_association_gt_token"], tracker
+        tracker._association_frame_gt_tokens = types.MethodType(
+            methods["_association_frame_gt_tokens"], tracker
+        )
+        tracker._association_det_gt_tokens = types.MethodType(
+            methods["_association_det_gt_tokens"], tracker
         )
         tracker._record_association_shadow_decisions = types.MethodType(
             methods["_record_association_shadow_decisions"], tracker

@@ -727,10 +727,9 @@ def build_arg_parser():
     return parser
 
 
-if __name__ == "__main__":
-    args = build_arg_parser().parse_args()
-
-    all_datas = nuscenes_main(
+def main(argv=None):
+    args = build_arg_parser().parse_args(argv)
+    return nuscenes_main(
         args.raw_data_path,
         args.dets_path,
         args.detector,
@@ -738,3 +737,7 @@ if __name__ == "__main__":
         args.split,
         audit_gt_enrichment=args.audit_gt_enrichment,
     )
+
+
+if __name__ == "__main__":
+    main()

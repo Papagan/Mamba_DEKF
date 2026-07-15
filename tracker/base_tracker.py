@@ -797,9 +797,10 @@ class Base3DTracker:
         if frame_tokens is None:
             return
         token = frame_tokens[int(det_index)]
-        if token is None:
-            self._association_track_gt_tokens.pop(int(track_id), None)
-        else:
+        if (
+            token is not None
+            and self._association_track_gt_tokens.get(int(track_id)) is None
+        ):
             self._association_track_gt_tokens[int(track_id)] = token
 
     def _association_shadow_options(self, frame_info, trajs, dets) -> Dict:

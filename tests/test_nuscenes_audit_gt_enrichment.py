@@ -201,6 +201,33 @@ class NuScenesAuditGtEnrichmentTest(unittest.TestCase):
         self.assertTrue(parser.parse_args(["--audit_gt_enrichment"]).audit_gt_enrichment)
         self.assertFalse(CONVERTER.nuscenes_main.__kwdefaults__["audit_gt_enrichment"])
 
+    def test_cli_main_passes_audit_switch_to_converter(self):
+        with mock.patch.object(CONVERTER, "nuscenes_main", return_value=None) as convert:
+            CONVERTER.main(
+                [
+                    "--raw_data_path",
+                    "raw",
+                    "--dets_path",
+                    "dets",
+                    "--detector",
+                    "centerpoint",
+                    "--save_path",
+                    "output",
+                    "--split",
+                    "val",
+                    "--audit_gt_enrichment",
+                ]
+            )
+
+        convert.assert_called_once_with(
+            "raw",
+            "dets",
+            "centerpoint",
+            "output",
+            "val",
+            audit_gt_enrichment=True,
+        )
+
 
 class ConverterMainIntegrationTest(unittest.TestCase):
     class _FakeNuScenes:
@@ -478,20 +505,21 @@ class TrackerAuditSidecarTest(unittest.TestCase):
         self.assertEqual(metadata["det_gt_tokens"], ["det-gt"])
         self.assertEqual(metadata["state_buckets"], ["unmatched"])
 
-    def test_matches_and_births_replace_track_sidecar_identity(self):
+    def test_matches_and_births_keep_first_known_track_identity(self):
         methods = _load_base_tracker_methods(*self.METHODS)
         tracker = self._tracker(methods)
         frame = types.SimpleNamespace(
-            bboxes=[object(), object()],
-            audit_gt_tokens=["matched-gt", "birth-gt"],
+            bboxes=[object(), object(), object()],
+            audit_gt_tokens=["wrong-match-gt", "birth-gt", None],
         )
 
         tracker._update_association_gt_sidecar(17, frame, 0)
         tracker._update_association_gt_sidecar(18, frame, 1)
+        tracker._update_association_gt_sidecar(17, frame, 2)
 
         self.assertEqual(
             tracker._association_track_gt_tokens,
-            {17: "matched-gt", 18: "birth-gt"},
+            {17: "track-gt", 18: "birth-gt"},
         )
 
     def test_missing_sidecar_never_falls_back_to_bbox_attributes(self):
