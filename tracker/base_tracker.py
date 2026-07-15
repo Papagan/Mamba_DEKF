@@ -41,6 +41,7 @@ from tracker.association_runtime_manifest import (
     preflight_association_checkpoint,
     resolve_association_head_parameters,
     sha256_file,
+    validate_association_runtime_contract,
 )
 from tracker.mctrack_motion import MCTrackOriginalPoseMotion
 from tracker.trajectory import Trajectory
@@ -963,6 +964,7 @@ class Base3DTracker:
                 normalized_ckpt_path,
                 head_cfg,
                 self.cfg.get("CATEGORY_MAP_TO_NUMBER", {}),
+                self.cfg,
             )
             preflight_snapshot = {
                 "association_checkpoint_loadable": checkpoint_preflight["loadable"],
@@ -971,6 +973,15 @@ class Base3DTracker:
                 ],
                 "association_checkpoint_validation_error": checkpoint_preflight[
                     "validation_error"
+                ],
+                "association_checkpoint_runtime_contract_expected": checkpoint_preflight[
+                    "runtime_contract_expected"
+                ],
+                "association_checkpoint_runtime_contract_actual": checkpoint_preflight[
+                    "runtime_contract_actual"
+                ],
+                "association_checkpoint_runtime_contract_validation_status": checkpoint_preflight[
+                    "runtime_contract_validation_status"
                 ],
             }
             preflight_mismatches = {
@@ -1010,6 +1021,26 @@ class Base3DTracker:
             return None
         try:
             ckpt = torch.load(ckpt_path, map_location=self.device)
+            if not isinstance(ckpt, Mapping):
+                raise TypeError("checkpoint payload must be a mapping")
+            contract_validation = validate_association_runtime_contract(
+                ckpt.get("runtime_contract"), self.cfg
+            )
+            if contract_validation["validation_error"] is not None:
+                self._record_association_checkpoint_error(
+                    "association checkpoint runtime_contract validation failed: "
+                    f"{contract_validation['validation_error']}. "
+                    "Association head disabled.",
+                    context={
+                        "checkpoint_path": str(ckpt_path),
+                        "runtime_contract_expected": contract_validation["expected"],
+                        "runtime_contract_actual": contract_validation["actual"],
+                        "runtime_contract_mismatches": contract_validation[
+                            "mismatches"
+                        ],
+                    },
+                )
+                return None
             state = ckpt.get("model_state_dict", ckpt)
             if not isinstance(state, Mapping):
                 raise TypeError("checkpoint state must be a mapping")

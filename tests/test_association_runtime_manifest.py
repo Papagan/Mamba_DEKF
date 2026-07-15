@@ -40,6 +40,7 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
                     "COST_MODE": {2: "RO_GDIOU_3D", 0: "IOU_3D"},
                 }
             },
+            "THRESHOLD": {"BEV": {"COST_MODE": "geometric"}},
             "MAMBA_ASSOCIATION_HEAD": {
                 "CHECKPOINT_PATH": "checkpoints/association.pt",
                 "HIDDEN_DIMS": [256, 128],
@@ -53,6 +54,16 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
                 "MAX_DELTA": 0.03,
             },
         }
+
+    def _runtime_contract(self, **overrides):
+        contract = {
+            "filter_mode": "mamba_multihead_closure",
+            "history_source": "fusion",
+            "tracker_compat_mode": "mctrack",
+            "expected_bev_cost_mode": "geometric",
+        }
+        contract.update(overrides)
+        return contract
 
     def test_manifest_normalizes_effective_association_contract(self):
         manifest = build_association_runtime_manifest(
@@ -78,6 +89,17 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
         self.assertEqual(manifest["association_checkpoint_head_key_count"], 0)
         self.assertIsInstance(
             manifest["association_checkpoint_validation_error"], str
+        )
+        self.assertEqual(
+            manifest["association_checkpoint_runtime_contract_expected"],
+            self._runtime_contract(),
+        )
+        self.assertEqual(
+            manifest["association_checkpoint_runtime_contract_actual"], {}
+        )
+        self.assertEqual(
+            manifest["association_checkpoint_runtime_contract_validation_status"],
+            "invalid",
         )
         self.assertIn("git_commit", manifest)
         self.assertIn("git_dirty", manifest)
@@ -110,7 +132,7 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
             manifest["bev_cost_modes"], {"0": "IOU_3D", "2": "RO_GDIOU_3D"}
         )
         self.assertEqual(manifest["process_count"], 12)
-        self.assertEqual(manifest["audit_schema_version"], 2)
+        self.assertEqual(manifest["audit_schema_version"], 3)
         self.assertEqual(len(manifest["config_sha256"]), 64)
         json.dumps(manifest, allow_nan=False)
 
@@ -121,7 +143,8 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
                     "association_heads.heads.0.0.weight": torch.ones(1, 2),
                     "association_heads.heads.0.0.bias": torch.zeros(1),
                     "temporal_encoder.weight": torch.ones(1),
-                }
+                },
+                "runtime_contract": self._runtime_contract(),
             },
             self.checkpoint_path,
         )
@@ -137,13 +160,24 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
         self.assertEqual(manifest["association_checkpoint_head_key_count"], 2)
         self.assertIsNone(manifest["association_checkpoint_validation_error"])
         self.assertEqual(
+            manifest["association_checkpoint_runtime_contract_actual"],
+            self._runtime_contract(),
+        )
+        self.assertEqual(
+            manifest["association_checkpoint_runtime_contract_validation_status"],
+            "valid",
+        )
+        self.assertEqual(
             json.loads(json.dumps(manifest))["association_checkpoint_head_key_count"],
             2,
         )
 
     def test_checkpoint_preflight_reports_missing_head_keys(self):
         torch.save(
-            {"model_state_dict": {"encoder.weight": torch.ones(1)}},
+            {
+                "model_state_dict": {"encoder.weight": torch.ones(1)},
+                "runtime_contract": self._runtime_contract(),
+            },
             self.checkpoint_path,
         )
 
@@ -168,6 +202,7 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
                     "association_heads.heads.0.weight": torch.ones(1)
                 },
                 "settings": [],
+                "runtime_contract": self._runtime_contract(),
             },
             self.checkpoint_path,
         )
@@ -228,7 +263,10 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
 
     def test_architecture_uses_checkpoint_settings_when_config_omits_them(self):
         torch.save(
-            {"settings": {"hidden_dims": [96, 48], "dropout": 0.25}},
+            {
+                "settings": {"hidden_dims": [96, 48], "dropout": 0.25},
+                "runtime_contract": self._runtime_contract(),
+            },
             self.checkpoint_path,
         )
         cfg = self._cfg()
@@ -250,7 +288,10 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
 
     def test_malformed_checkpoint_hidden_dims_are_preflight_validation_errors(self):
         torch.save(
-            {"settings": {"hidden_dims": "bad", "dropout": 0.25}},
+            {
+                "settings": {"hidden_dims": "bad", "dropout": 0.25},
+                "runtime_contract": self._runtime_contract(),
+            },
             self.checkpoint_path,
         )
         cfg = self._cfg()
@@ -270,7 +311,10 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
 
     def test_malformed_checkpoint_dropout_is_a_preflight_validation_error(self):
         torch.save(
-            {"settings": {"hidden_dims": [96, 48], "dropout": "bad"}},
+            {
+                "settings": {"hidden_dims": [96, 48], "dropout": "bad"},
+                "runtime_contract": self._runtime_contract(),
+            },
             self.checkpoint_path,
         )
         cfg = self._cfg()
@@ -293,7 +337,8 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
             {
                 "model_state_dict": {
                     "association_heads.heads.0.0.weight": torch.ones(1, 2)
-                }
+                },
+                "runtime_contract": self._runtime_contract(),
             },
             self.checkpoint_path,
         )
@@ -319,6 +364,76 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
                     expected,
                     manifest["association_checkpoint_validation_error"],
                 )
+
+    def test_checkpoint_preflight_rejects_incompatible_filter_and_history_contracts(self):
+        for field, value in [
+            ("filter_mode", "pure_dekf"),
+            ("history_source", "det"),
+        ]:
+            with self.subTest(field=field):
+                torch.save(
+                    {
+                        "model_state_dict": {
+                            "association_heads.heads.0.weight": torch.ones(1)
+                        },
+                        "runtime_contract": self._runtime_contract(**{field: value}),
+                    },
+                    self.checkpoint_path,
+                )
+
+                manifest = build_association_runtime_manifest(
+                    cfg=self._cfg(),
+                    config_path=str(self.config_path),
+                    process_count=1,
+                    git_root=self.root,
+                )
+
+                self.assertEqual(
+                    manifest["association_checkpoint_runtime_contract_expected"],
+                    self._runtime_contract(),
+                )
+                self.assertEqual(
+                    manifest["association_checkpoint_runtime_contract_actual"][field],
+                    value,
+                )
+                self.assertEqual(
+                    manifest[
+                        "association_checkpoint_runtime_contract_validation_status"
+                    ],
+                    "invalid",
+                )
+                self.assertIn(
+                    field, manifest["association_checkpoint_validation_error"]
+                )
+
+    def test_checkpoint_preflight_rejects_missing_runtime_contract(self):
+        torch.save(
+            {
+                "model_state_dict": {
+                    "association_heads.heads.0.weight": torch.ones(1)
+                }
+            },
+            self.checkpoint_path,
+        )
+
+        manifest = build_association_runtime_manifest(
+            cfg=self._cfg(),
+            config_path=str(self.config_path),
+            process_count=1,
+            git_root=self.root,
+        )
+
+        self.assertEqual(
+            manifest["association_checkpoint_runtime_contract_actual"], {}
+        )
+        self.assertEqual(
+            manifest["association_checkpoint_runtime_contract_validation_status"],
+            "invalid",
+        )
+        self.assertIn(
+            "runtime_contract is missing",
+            manifest["association_checkpoint_validation_error"],
+        )
 
     def test_category_map_is_strictly_reversed_for_diagnostics(self):
         cfg = self._cfg()

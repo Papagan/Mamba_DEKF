@@ -9,7 +9,13 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
-AUDIT_SCHEMA_VERSION = 2
+AUDIT_SCHEMA_VERSION = 3
+ASSOCIATION_RUNTIME_CONTRACT_FIELDS = (
+    "filter_mode",
+    "history_source",
+    "tracker_compat_mode",
+    "expected_bev_cost_mode",
+)
 
 
 def sha256_file(path: str | Path) -> str | None:
@@ -58,6 +64,129 @@ def _resolve_checkpoint_path(value: Any, git_root: Path) -> str | None:
 def _merge_validation_errors(*errors: str | None) -> str | None:
     messages = [str(error) for error in errors if error]
     return "; ".join(messages) if messages else None
+
+
+def _normalize_contract_field(
+    value: Any, *, field: str, source: str
+) -> tuple[str | None, str | None]:
+    if not isinstance(value, str):
+        return None, f"{source} {field} must be a string"
+    normalized = value.strip().lower()
+    if not normalized:
+        return None, f"{source} {field} must be non-empty"
+    return normalized, None
+
+
+def _expected_association_runtime_contract(
+    runtime_cfg: Mapping | None,
+) -> tuple[dict, str | None]:
+    if runtime_cfg is None:
+        runtime_cfg = {}
+    if not isinstance(runtime_cfg, Mapping):
+        return {}, "association runtime config must be a mapping"
+
+    errors = []
+    expected = {}
+    raw_fields = {
+        "filter_mode": runtime_cfg.get("FILTER_MODE", "mamba"),
+        "tracker_compat_mode": runtime_cfg.get("TRACKER_COMPAT_MODE", "default"),
+    }
+    for field, value in raw_fields.items():
+        normalized, error = _normalize_contract_field(
+            value, field=field, source="runtime config"
+        )
+        if error is not None:
+            errors.append(error)
+        else:
+            expected[field] = normalized
+
+    # This mirrors extract_bbox_history_fields(): mctrack consumes fused track
+    # states while the default compatibility path consumes detector states.
+    tracker_compat_mode = expected.get("tracker_compat_mode")
+    if tracker_compat_mode is not None:
+        expected["history_source"] = (
+            "fusion" if tracker_compat_mode == "mctrack" else "det"
+        )
+
+    threshold_cfg = runtime_cfg.get("THRESHOLD", {}) or {}
+    if not isinstance(threshold_cfg, Mapping):
+        errors.append("runtime config THRESHOLD must be a mapping")
+        bev_cfg = {}
+    else:
+        bev_cfg = threshold_cfg.get("BEV", {}) or {}
+        if not isinstance(bev_cfg, Mapping):
+            errors.append("runtime config THRESHOLD.BEV must be a mapping")
+            bev_cfg = {}
+    cost_mode, cost_error = _normalize_contract_field(
+        bev_cfg.get("COST_MODE", "geometric"),
+        field="expected_bev_cost_mode",
+        source="runtime config",
+    )
+    if cost_error is not None:
+        errors.append(cost_error)
+    else:
+        expected["expected_bev_cost_mode"] = cost_mode
+
+    ordered = {
+        field: expected[field]
+        for field in ASSOCIATION_RUNTIME_CONTRACT_FIELDS
+        if field in expected
+    }
+    return ordered, _merge_validation_errors(*errors)
+
+
+def validate_association_runtime_contract(
+    checkpoint_contract: Any,
+    runtime_cfg: Mapping | None,
+) -> dict:
+    """Normalize and compare the checkpoint's association feature contract."""
+    expected, expected_error = _expected_association_runtime_contract(runtime_cfg)
+    actual = {}
+    errors = []
+
+    if checkpoint_contract is None:
+        errors.append("association checkpoint runtime_contract is missing")
+    elif not isinstance(checkpoint_contract, Mapping):
+        errors.append("association checkpoint runtime_contract must be a mapping")
+    else:
+        for field in ASSOCIATION_RUNTIME_CONTRACT_FIELDS:
+            if field not in checkpoint_contract:
+                errors.append(
+                    f"association checkpoint runtime_contract is missing {field}"
+                )
+                continue
+            normalized, error = _normalize_contract_field(
+                checkpoint_contract[field],
+                field=field,
+                source="association checkpoint runtime_contract",
+            )
+            if error is not None:
+                errors.append(error)
+            else:
+                actual[field] = normalized
+
+    mismatches = {}
+    for field in ASSOCIATION_RUNTIME_CONTRACT_FIELDS:
+        if field not in expected or field not in actual:
+            continue
+        if expected[field] != actual[field]:
+            mismatches[field] = {
+                "expected": expected[field],
+                "actual": actual[field],
+            }
+            errors.append(
+                "association checkpoint runtime_contract mismatch for "
+                f"{field}: expected {expected[field]!r}, got {actual[field]!r}"
+            )
+
+    validation_error = _merge_validation_errors(expected_error, *errors)
+    return {
+        "expected": expected,
+        "actual": actual,
+        "mismatches": mismatches,
+        "validation_status": "valid" if validation_error is None else "invalid",
+        "validation_error": validation_error,
+    }
 
 
 def _parse_hidden_dims(value: Any) -> tuple[int, ...]:
@@ -136,27 +265,44 @@ def preflight_association_checkpoint(
     checkpoint_path: str | None,
     head_cfg: Mapping | None = None,
     category_map: Any = None,
+    runtime_cfg: Mapping | None = None,
 ) -> tuple[dict, dict]:
+    contract_validation = validate_association_runtime_contract(None, runtime_cfg)
     result = {
         "loadable": False,
         "head_key_count": 0,
         "validation_error": None,
+        "runtime_contract_expected": contract_validation["expected"],
+        "runtime_contract_actual": contract_validation["actual"],
+        "runtime_contract_validation_status": contract_validation[
+            "validation_status"
+        ],
     }
 
     def finalize(
         checkpoint_settings: Mapping | None = None,
         settings_error: str | None = None,
+        checkpoint_contract: Any = None,
     ) -> tuple[dict, dict]:
         normalized_settings = dict(checkpoint_settings or {})
         _, architecture_error = resolve_association_head_parameters(
             head_cfg or {}, normalized_settings
         )
         _, category_map_error = _canonical_class_id_to_name(category_map)
+        contract_validation = validate_association_runtime_contract(
+            checkpoint_contract, runtime_cfg
+        )
+        result["runtime_contract_expected"] = contract_validation["expected"]
+        result["runtime_contract_actual"] = contract_validation["actual"]
+        result["runtime_contract_validation_status"] = contract_validation[
+            "validation_status"
+        ]
         result["validation_error"] = _merge_validation_errors(
             result["validation_error"],
             settings_error,
             architecture_error,
             category_map_error,
+            contract_validation["validation_error"],
         )
         return result, normalized_settings
 
@@ -219,7 +365,11 @@ def preflight_association_checkpoint(
         checkpoint_settings = {}
         settings_error = "association checkpoint settings must be a mapping"
 
-    return finalize(checkpoint_settings, settings_error)
+    return finalize(
+        checkpoint_settings,
+        settings_error,
+        checkpoint.get("runtime_contract"),
+    )
 
 
 def _canonical_class_id_to_name(values: Any) -> tuple[dict, str | None]:
@@ -319,6 +469,7 @@ def build_association_runtime_manifest(
             checkpoint_path,
             head_cfg,
             cfg.get("CATEGORY_MAP_TO_NUMBER", {}),
+            cfg,
         )
     )
     architecture_parameters, _ = resolve_association_head_parameters(
@@ -344,6 +495,15 @@ def build_association_runtime_manifest(
         ],
         "association_checkpoint_validation_error": checkpoint_preflight[
             "validation_error"
+        ],
+        "association_checkpoint_runtime_contract_expected": checkpoint_preflight[
+            "runtime_contract_expected"
+        ],
+        "association_checkpoint_runtime_contract_actual": checkpoint_preflight[
+            "runtime_contract_actual"
+        ],
+        "association_checkpoint_runtime_contract_validation_status": checkpoint_preflight[
+            "runtime_contract_validation_status"
         ],
         "association_head_architecture": {
             "input_dim": embed_dim * 4 + 7,

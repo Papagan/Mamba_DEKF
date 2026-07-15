@@ -16,6 +16,7 @@ from tracker.association_runtime_manifest import (
     preflight_association_checkpoint,
     resolve_association_head_parameters,
     sha256_file,
+    validate_association_runtime_contract,
 )
 from training.association_model import ClassConditionedAssociationHeadBank
 
@@ -82,6 +83,7 @@ def _load_tracker_type(head_type=_StubHead):
         "resolve_association_head_parameters": resolve_association_head_parameters,
         "sha256_file": sha256_file,
         "torch": torch,
+        "validate_association_runtime_contract": validate_association_runtime_contract,
     }
     exec(
         compile(ast.Module(body=selected, type_ignores=[]), "tracker/base_tracker.py", "exec"),
@@ -124,7 +126,10 @@ class AssociationCheckpointAuditTest(unittest.TestCase):
             head_cfg["HIDDEN_DIMS"] = [2] if hidden_dims is None else hidden_dims
             head_cfg["DROPOUT"] = 0.0 if dropout is None else dropout
         tracker.cfg = {
+            "FILTER_MODE": "mamba_multihead_closure",
+            "TRACKER_COMPAT_MODE": "mctrack",
             "MAMBA": {"NUM_CLASSES": 1},
+            "THRESHOLD": {"BEV": {"COST_MODE": "geometric"}},
             "MAMBA_ASSOCIATION_HEAD": head_cfg,
             "ASSOCIATION_HEAD_AUDIT": {
                 "ENABLED": audit_enabled,
@@ -148,8 +153,25 @@ class AssociationCheckpointAuditTest(unittest.TestCase):
         tracker.embed_dim = 1
         return tracker
 
-    def _save_checkpoint(self, state):
-        torch.save({"model_state_dict": state}, self.checkpoint_path)
+    def _runtime_contract(self, **overrides):
+        contract = {
+            "filter_mode": "mamba_multihead_closure",
+            "history_source": "fusion",
+            "tracker_compat_mode": "mctrack",
+            "expected_bev_cost_mode": "geometric",
+        }
+        contract.update(overrides)
+        return contract
+
+    def _save_checkpoint(self, state, runtime_contract=None, *, omit_contract=False):
+        payload = {"model_state_dict": state}
+        if not omit_contract:
+            payload["runtime_contract"] = (
+                self._runtime_contract()
+                if runtime_contract is None
+                else runtime_contract
+            )
+        torch.save(payload, self.checkpoint_path)
 
     def _real_head_state(self):
         head = ClassConditionedAssociationHeadBank(
@@ -167,6 +189,11 @@ class AssociationCheckpointAuditTest(unittest.TestCase):
         preflight, _ = preflight_association_checkpoint(
             str(self.checkpoint_path),
             head_cfg or {"HIDDEN_DIMS": [2], "DROPOUT": 0.0},
+            runtime_cfg={
+                "FILTER_MODE": "mamba_multihead_closure",
+                "TRACKER_COMPAT_MODE": "mctrack",
+                "THRESHOLD": {"BEV": {"COST_MODE": "geometric"}},
+            },
         )
         return {
             "association_checkpoint_path": str(self.checkpoint_path.resolve()),
@@ -174,6 +201,15 @@ class AssociationCheckpointAuditTest(unittest.TestCase):
             "association_checkpoint_loadable": preflight["loadable"],
             "association_checkpoint_head_key_count": preflight["head_key_count"],
             "association_checkpoint_validation_error": preflight["validation_error"],
+            "association_checkpoint_runtime_contract_expected": preflight[
+                "runtime_contract_expected"
+            ],
+            "association_checkpoint_runtime_contract_actual": preflight[
+                "runtime_contract_actual"
+            ],
+            "association_checkpoint_runtime_contract_validation_status": preflight[
+                "runtime_contract_validation_status"
+            ],
         }
 
     def _assert_one_load_error(self, tracker):
@@ -267,6 +303,44 @@ class AssociationCheckpointAuditTest(unittest.TestCase):
         self.assertEqual(summary["audit_error_count"], 0)
         self.assertTrue(summary["decision_evidence_complete"])
 
+    def test_loader_rejects_incompatible_filter_and_history_contracts(self):
+        for field, value in [
+            ("filter_mode", "pure_dekf"),
+            ("history_source", "det"),
+        ]:
+            with self.subTest(field=field):
+                self._save_checkpoint(
+                    self._real_head_state(),
+                    self._runtime_contract(**{field: value}),
+                )
+
+                strict_tracker = self._tracker(
+                    checkpoint_path=str(self.checkpoint_path),
+                    strict=True,
+                    head_type=ClassConditionedAssociationHeadBank,
+                )
+                with self.assertRaisesRegex(RuntimeError, field):
+                    strict_tracker._load_pairwise_association_head()
+
+                non_strict_tracker = self._tracker(
+                    checkpoint_path=str(self.checkpoint_path),
+                    head_type=ClassConditionedAssociationHeadBank,
+                )
+                self.assertIsNone(
+                    non_strict_tracker._load_pairwise_association_head()
+                )
+                self._assert_one_load_error(non_strict_tracker)
+
+    def test_loader_rejects_missing_contract_even_when_audit_is_disabled(self):
+        self._save_checkpoint(self._real_head_state(), omit_contract=True)
+        tracker = self._tracker(
+            checkpoint_path=str(self.checkpoint_path),
+            audit_enabled=False,
+            head_type=ClassConditionedAssociationHeadBank,
+        )
+
+        self.assertIsNone(tracker._load_pairwise_association_head())
+
     def test_runtime_manifest_checkpoint_fields_are_verified_before_load(self):
         self._save_checkpoint(self._real_head_state())
         manifest = self._runtime_manifest()
@@ -280,6 +354,21 @@ class AssociationCheckpointAuditTest(unittest.TestCase):
                 "head_key_count",
             ),
             ("association_checkpoint_validation_error", "stale error", "validation_error"),
+            (
+                "association_checkpoint_runtime_contract_expected",
+                self._runtime_contract(filter_mode="pure_dekf"),
+                "runtime_contract_expected",
+            ),
+            (
+                "association_checkpoint_runtime_contract_actual",
+                self._runtime_contract(history_source="det"),
+                "runtime_contract_actual",
+            ),
+            (
+                "association_checkpoint_runtime_contract_validation_status",
+                "invalid",
+                "runtime_contract_validation_status",
+            ),
         ]
 
         for field, value, expected in cases:
@@ -399,6 +488,7 @@ class AssociationCheckpointAuditTest(unittest.TestCase):
             {
                 "model_state_dict": self._real_head_state(),
                 "settings": [],
+                "runtime_contract": self._runtime_contract(),
             },
             self.checkpoint_path,
         )
