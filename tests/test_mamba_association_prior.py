@@ -450,7 +450,7 @@ class MambaAssociationPriorTest(unittest.TestCase):
                 )
         self.assertEqual(errors, [])
 
-    def test_shadow_requires_both_enabled_and_shadow_mode(self):
+    def test_legacy_shadow_mode_without_enabled_keeps_production_unmodified(self):
         base, trajs, dets, scores = _flippable_matching_inputs()
         callback_calls = []
         with patch.object(
@@ -466,8 +466,52 @@ class MambaAssociationPriorTest(unittest.TestCase):
                 association_shadow_callback=callback_calls.append,
             )
 
-        np.testing.assert_array_equal(matches, np.array([[1, 0], [0, 1]]))
-        self.assertEqual(callback_calls, [])
+        np.testing.assert_array_equal(matches, np.array([[0, 0], [1, 1]]))
+        self.assertTrue(any(record["assignment_changed"] for record in callback_calls[0]))
+
+    def test_uncertainty_shadow_uses_actual_adaptive_thresholds(self):
+        base = np.array([[0.15]], dtype=np.float32)
+        trajs = [_Traj("trailer", track_id=23)]
+        dets = [_Box("trailer")]
+        cfg = _matching_cfg(shadow_mode=True)
+        cfg["THRESHOLD"]["BEV"]["COST_MODE"] = "full"
+        cfg["THRESHOLD"]["BEV"]["COST_THRE"] = {0: 0.10}
+        records = []
+        errors = []
+
+        with patch.object(
+            matching,
+            "cost_calculate_uncertainty_aware",
+            return_value=(
+                base,
+                np.array(["trailer"]),
+                np.array(["trailer"]),
+            ),
+        ), patch.object(
+            matching,
+            "compute_uncertainty_penalty",
+            return_value=np.array([2.0], dtype=np.float32),
+        ):
+            matches, costs = matching.match_trajs_and_dets_uncertainty_aware(
+                trajs,
+                dets,
+                cfg,
+                trk_embeddings=np.ones((1, 2), dtype=np.float32),
+                det_embeddings=np.ones((1, 2), dtype=np.float32),
+                trk_pos_P=[np.eye(6, dtype=np.float32)],
+                trk_ori_P=[np.eye(2, dtype=np.float32)],
+                association_scores=np.ones((1, 1), dtype=np.float32),
+                state_buckets=["unmatched"],
+                association_shadow_callback=records.extend,
+                association_shadow_error_callback=errors.append,
+                association_shadow_strict=True,
+            )
+
+        np.testing.assert_array_equal(matches, np.array([[0, 0]]))
+        np.testing.assert_allclose(costs, np.array([0.15]), rtol=1e-6)
+        self.assertEqual(errors, [])
+        self.assertEqual(len(records), 1)
+        self.assertFalse(records[0]["assignment_changed"])
 
     def test_disabled_config_leaves_cost_matrix_unchanged(self):
         cost = np.array([[1.0, 1.5], [2.0, 0.5]], dtype=np.float32)

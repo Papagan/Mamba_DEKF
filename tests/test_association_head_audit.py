@@ -8,6 +8,7 @@ import types
 import unittest
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -71,36 +72,53 @@ class SceneContextWiringTest(unittest.TestCase):
         nusc_stub = types.ModuleType("utils.nusc_utils")
         nusc_stub.obtain_box_bottom_corners = lambda *args, **kwargs: None
         nusc_stub.filter_bboxes_with_nms = lambda boxes, cfg: boxes
-        sys.modules.setdefault("utils.nusc_utils", nusc_stub)
-
         pyquaternion_stub = types.ModuleType("pyquaternion")
         pyquaternion_stub.Quaternion = object
-        sys.modules.setdefault("pyquaternion", pyquaternion_stub)
-        sys.modules.setdefault("cv2", types.ModuleType("cv2"))
-
-        module = importlib.import_module("dataset.baseversion_dataset")
-        dataset = module.BaseVersionTrackingDataset(
-            "scene-real",
-            [
-                {
-                    "frame_id": "3",
-                    "timestamp": 12.5,
-                    "cur_sample_token": "sample-real",
-                    "transform_matrix": np.eye(4).tolist(),
-                    "bboxes": [],
-                }
-            ],
-            cfg={
-                "CATEGORY_MAP_TO_NUMBER": {"trailer": 0},
-                "TRACKING_MODE": "ONLINE",
-                "THRESHOLD": {"INPUT_SCORE": {"ONLINE": {0: 0.0}}},
-                "DATASET": "kitti",
+        with patch.dict(
+            sys.modules,
+            {
+                "utils.nusc_utils": nusc_stub,
+                "pyquaternion": pyquaternion_stub,
+                "cv2": types.ModuleType("cv2"),
             },
-        )
+        ):
+            module = importlib.import_module("dataset.baseversion_dataset")
+            dataset = module.BaseVersionTrackingDataset(
+                "scene-real",
+                [
+                    {
+                        "frame_id": "3",
+                        "timestamp": 12.5,
+                        "cur_sample_token": "sample-real",
+                        "transform_matrix": np.eye(4).tolist(),
+                        "bboxes": [
+                            {
+                                "category": "trailer",
+                                "detection_score": 0.9,
+                                "instance_token": "det-instance-real",
+                                "lwh": [4.0, 2.0, 1.5],
+                                "global_xyz": [1.0, 2.0, 0.0],
+                                "global_orientation": [1.0, 0.0, 0.0, 0.0],
+                                "global_yaw": 0.0,
+                                "global_velocity": [0.0, 0.0],
+                                "global_acceleration": [0.0, 0.0],
+                                "bbox_image": {},
+                            }
+                        ],
+                    }
+                ],
+                cfg={
+                    "CATEGORY_MAP_TO_NUMBER": {"trailer": 0},
+                    "TRACKING_MODE": "ONLINE",
+                    "THRESHOLD": {"INPUT_SCORE": {"ONLINE": {0: 0.0}}},
+                    "DATASET": "kitti",
+                },
+            )
 
-        frame = dataset[0]
+            frame = dataset[0]
         self.assertEqual(frame.scene_id, "scene-real")
         self.assertEqual(frame.cur_sample_token, "sample-real")
+        self.assertEqual(frame.bboxes[0].instance_token, "det-instance-real")
 
     def test_tracker_accumulator_constructor_receives_runtime_contract(self):
         tree = ast.parse((ROOT / "tracker/base_tracker.py").read_text(encoding="utf-8"))

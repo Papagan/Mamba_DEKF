@@ -385,6 +385,7 @@ def _association_shadow_records(
     cfg,
     state_buckets,
     metadata,
+    class_thresholds=None,
 ):
     metadata = metadata if isinstance(metadata, dict) else {}
     track_count = len(trajs)
@@ -452,7 +453,11 @@ def _association_shadow_records(
         track_gt_tokens=metadata.get("track_gt_tokens"),
         det_gt_tokens=metadata.get("det_gt_tokens"),
         context=context,
-        class_thresholds=cfg["THRESHOLD"]["BEV"]["COST_THRE"],
+        class_thresholds=(
+            cfg["THRESHOLD"]["BEV"]["COST_THRE"]
+            if class_thresholds is None
+            else class_thresholds
+        ),
     )
 
 
@@ -526,7 +531,6 @@ def match_trajs_and_dets(
     audit_cfg = cfg.get("ASSOCIATION_HEAD_AUDIT", {}) or {}
     shadow_mode = bool(
         not is_rv
-        and audit_cfg.get("ENABLED", False)
         and audit_cfg.get("SHADOW_MODE", False)
     )
 
@@ -832,8 +836,7 @@ def match_trajs_and_dets_uncertainty_aware(
         cal_flag=cal_flag,
     )
     shadow_mode = bool(
-        (cfg.get("ASSOCIATION_HEAD_AUDIT", {}) or {}).get("ENABLED", False)
-        and (cfg.get("ASSOCIATION_HEAD_AUDIT", {}) or {}).get("SHADOW_MODE", False)
+        (cfg.get("ASSOCIATION_HEAD_AUDIT", {}) or {}).get("SHADOW_MODE", False)
     )
     base_cost_matrix = np.array(cost_matrix, copy=True)
     if not shadow_mode:
@@ -998,6 +1001,7 @@ def match_trajs_and_dets_uncertainty_aware(
                         cfg=cfg,
                         state_buckets=state_buckets,
                         metadata=association_shadow_metadata,
+                        class_thresholds=dict(enumerate(adaptive_thresholds)),
                     )
                     if records is not None:
                         shadow_stage = "decision_callback"
