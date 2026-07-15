@@ -1,8 +1,8 @@
 # Association Head Audit
 
-The frozen baseline keeps `MAMBA_ASSOCIATION_HEAD.ENABLED: false` to preserve
-the 0.740 AMOTA path. The learned association head must be audited before it is
-used in matching.
+The frozen baseline keeps `MAMBA_ASSOCIATION_HEAD.ENABLED: false` and must not
+be edited. The learned association head must first run in shadow mode, where it
+is scored and audited without changing production assignments.
 
 ## Why Audit First
 
@@ -12,9 +12,10 @@ features are not yet fully aligned. In particular, the old cache uses a
 future-detection to candidate-detection geometry, while inference applies the
 head to track-state to candidate-detection pairs.
 
-## Audit Run
+## Safe Shadow Run
 
-Enable both blocks only for an audit A/B run:
+Create a separate remote experimental YAML from the frozen evaluation YAML and
+add this block. Do not change the frozen YAML itself:
 
 ```yaml
 MAMBA_ASSOCIATION_HEAD:
@@ -22,28 +23,42 @@ MAMBA_ASSOCIATION_HEAD:
 
 ASSOCIATION_HEAD_AUDIT:
   ENABLED: true
-  INFER_OUTPUT_PATH: "debug/association_head_audit.json"
-  STRICT: false
+  SHADOW_MODE: true
+  INFER_OUTPUT_PATH: "debug/association_head_shadow_audit.json"
+  MAX_SAMPLES_PER_BUCKET: 32
+  STRICT: true
 ```
 
-Then run the normal evaluation command:
+Run the normal evaluation remotely with the separate shadow config:
 
 ```bash
 python main.py --dataset nuscenes --eval \
-  --config config/nuscenes_single_stage_mctrack_motion_residual_combo.yaml \
+  --config config/nuscenes_association_head_shadow_audit.yaml \
   -p 12
 ```
 
-Then compare the rebuilt training cache against the inference audit:
+With `SHADOW_MODE: true`, the produced `results.json` must reproduce the frozen
+0.740 baseline `results.json` byte-for-byte and therefore have the same hash.
+Check both before interpreting the audit:
+
+```bash
+cmp /path/to/frozen/results.json /path/to/shadow/results.json
+sha256sum /path/to/frozen/results.json /path/to/shadow/results.json
+```
+
+Copy the remote audit JSON and compare it with the rebuilt training cache:
 
 ```bash
 python tools/compare_pairwise_assoc_train_infer.py \
   --train-cache /root/autodl-tmp/data/training_cache/nuscenes/mini/train_pairwise_assoc.pkl \
-  --infer-audit debug/association_head_audit.json \
-  --output docs/pairwise_assoc_train_infer_compare.json
+  --infer-audit debug/association_head_shadow_audit.json \
+  --output docs/pairwise_assoc_train_infer_compare.json \
+  --min-known-changed 100
 ```
 
-The audit output contains per-class and per-state buckets:
+The compare report preserves train-cache class balance, hard-negative, and
+distance summaries. Its `track_state_scores` section reports per-class,
+per-track-state score and cost distributions only:
 
 - `pair_count`: same-class finite pairs scored by the head.
 - `active_pair_count`: pairs in configured active class/state buckets.
@@ -53,12 +68,35 @@ The audit output contains per-class and per-state buckets:
 - `avg_delta`: mean cost increase applied to the geometric cost.
 - `avg_cost_before` and `avg_cost_after`: cost shift caused by the head.
 
-## Decision Rule
+Track lifecycle states such as `matched` and `unmatched` are not positive or
+negative labels. `track_state_scores` must never be used to infer a distribution
+mismatch or to recommend activation.
 
-Do not enable the head by default if any stable class has a high penalized
-ratio or AMOTA drops versus the 0.740 baseline. The next valid step is to
-rebuild pairwise training samples so that pair geometry and history tokens match
-the exact inference path.
+## Schema v2 Decision Gates
+
+Activation diagnostics use only schema v2 `decision_buckets`. The report states
+the input `infer_audit_schema_version`, source evidence status, effective
+usability, manifest compatibility, audit error count, and configured gates.
+Per class, decision buckets are combined across track states before applying:
+
+- `known_changed_count == 0`: `insufficient_decision_evidence`.
+- Fewer than 100 known changed decisions: `shadow_decisions_not_safe`.
+- At least 100 known changed decisions, `improved_count > damaged_count`, and
+  `harm_precision <= 0.20`: `candidate_for_shadow_ab_activation`.
+- Any other complete schema v2 result: `shadow_decisions_not_safe`.
+
+Schema v1, `decision_evidence_available: false`, incomplete decision evidence,
+missing decision buckets, incompatible manifests, or any `audit_errors` fail
+closed as `insufficient_decision_evidence`; none can produce a candidate.
+Unknown GT identities are retained as unknown evidence and cannot count as
+`improved` or `damaged`, so sparse or unavailable GT can prevent the minimum
+known-changed gate from being reached.
+
+A candidate authorizes only a separate A/B experiment, not default activation.
+Real assignment intervention requires another experimental config with
+`ASSOCIATION_HEAD_AUDIT.SHADOW_MODE: false`. Compare that run against both the
+frozen 0.740 baseline and the byte-identical shadow run; never reuse or modify
+the frozen config for intervention.
 
 ## Rebuild Pairwise Cache After Audit Failure
 

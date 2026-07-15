@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import pickle
 from collections import defaultdict
 from pathlib import Path
@@ -13,8 +14,12 @@ from typing import Any, Dict, Iterable, List
 import numpy as np
 
 
+DEFAULT_MIN_KNOWN_CHANGED = 100
+MAX_HARM_PRECISION = 0.20
+
+
 def _quantiles(values: Iterable[float]) -> Dict[str, float]:
-    values = list(values)
+    values = [float(value) for value in values if math.isfinite(float(value))]
     if not values:
         return {"min": 0.0, "p10": 0.0, "p50": 0.0, "p90": 0.0, "max": 0.0}
     arr = np.asarray(values, dtype=np.float64)
@@ -80,9 +85,18 @@ def _summarize_train(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
     return out
 
 
-def _summarize_infer(audit: Dict[str, Any]) -> Dict[str, Any]:
+def _finite_float(value: Any, default: float = 0.0) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return default
+    return result if math.isfinite(result) else default
+
+
+def _summarize_track_state_scores(audit: Dict[str, Any]) -> Dict[str, Any]:
     out = defaultdict(dict)
-    for bucket in audit.get("buckets", []):
+    pair_buckets = audit.get("pair_buckets", audit.get("buckets", []))
+    for bucket in pair_buckets or []:
         class_id = int(bucket.get("class_id", -1))
         class_name = str(bucket.get("class_name", class_id))
         state_bucket = str(bucket.get("state_bucket", "unknown"))
@@ -91,10 +105,10 @@ def _summarize_infer(audit: Dict[str, Any]) -> Dict[str, Any]:
             "pair_count": int(bucket.get("pair_count", 0)),
             "active_pair_count": int(bucket.get("active_pair_count", 0)),
             "penalized_pair_count": int(bucket.get("penalized_pair_count", 0)),
-            "active_ratio": float(bucket.get("active_ratio", 0.0)),
-            "penalized_ratio": float(bucket.get("penalized_ratio", 0.0)),
-            "avg_score": float(bucket.get("avg_score", 0.0)),
-            "avg_delta": float(bucket.get("avg_delta", 0.0)),
+            "active_ratio": _finite_float(bucket.get("active_ratio", 0.0)),
+            "penalized_ratio": _finite_float(bucket.get("penalized_ratio", 0.0)),
+            "avg_score": _finite_float(bucket.get("avg_score", 0.0)),
+            "avg_delta": _finite_float(bucket.get("avg_delta", 0.0)),
             "score_quantiles": bucket.get("score_quantiles", {}),
             "delta_quantiles": bucket.get("delta_quantiles", {}),
             "sample_count": int(bucket.get("sample_count", 0)),
@@ -103,51 +117,171 @@ def _summarize_infer(audit: Dict[str, Any]) -> Dict[str, Any]:
     return dict(out)
 
 
-def _diagnose(train_summary: Dict[str, Any], infer_summary: Dict[str, Any]) -> List[str]:
+def _summarize_decisions(audit: Dict[str, Any]) -> Dict[str, Any]:
+    counters = defaultdict(
+        lambda: {
+            "decision_bucket_count": 0,
+            "total_decisions": 0,
+            "known_changed_count": 0,
+            "improved_count": 0,
+            "damaged_count": 0,
+        }
+    )
+    for bucket in audit.get("decision_buckets", []) or []:
+        class_id = int(bucket.get("class_id", -1))
+        class_name = str(bucket.get("class_name", class_id))
+        summary = counters[_class_key(class_id, class_name)]
+        summary["decision_bucket_count"] += 1
+        for field in (
+            "total_decisions",
+            "known_changed_count",
+            "improved_count",
+            "damaged_count",
+        ):
+            summary[field] += max(int(bucket.get(field, 0)), 0)
+
+    out = {}
+    for key, summary in counters.items():
+        known_changed = summary["known_changed_count"]
+        summary["net_improvement"] = (
+            summary["improved_count"] - summary["damaged_count"]
+        )
+        summary["harm_precision"] = float(
+            summary["damaged_count"] / max(known_changed, 1)
+        )
+        out[key] = summary
+    return out
+
+
+def _audit_error_count(audit: Dict[str, Any]) -> int:
+    errors = audit.get("audit_errors", {})
+    nested_count = errors.get("count", 0) if isinstance(errors, dict) else 0
+    try:
+        return max(int(audit.get("audit_error_count", 0)), int(nested_count), 0)
+    except (TypeError, ValueError):
+        return 1
+
+
+def _decision_evidence_status(audit: Dict[str, Any]) -> Dict[str, Any]:
+    schema_version = int(audit.get("schema_version", 1))
+    decision_buckets = audit.get("decision_buckets", [])
+    has_decision_buckets = isinstance(decision_buckets, list) and bool(
+        decision_buckets
+    )
+    available = bool(audit.get("decision_evidence_available", False))
+    complete = bool(audit.get("decision_evidence_complete", False))
+    manifest_compatible = audit.get("manifest_compatible") is True
+    audit_error_count = _audit_error_count(audit)
+    usable = bool(
+        schema_version == 2
+        and available
+        and complete
+        and manifest_compatible
+        and audit_error_count == 0
+        and has_decision_buckets
+    )
+    return {
+        "available": available,
+        "complete": complete,
+        "usable": usable,
+        "manifest_compatible": manifest_compatible,
+        "audit_error_count": audit_error_count,
+        "decision_bucket_count": len(decision_buckets)
+        if isinstance(decision_buckets, list)
+        else 0,
+        "incomplete_reasons": list(
+            audit.get("decision_evidence_incomplete_reasons", []) or []
+        ),
+    }
+
+
+def _diagnose(
+    train_summary: Dict[str, Any],
+    decision_summary: Dict[str, Any],
+    evidence_usable: bool,
+    min_known_changed: int,
+) -> List[str]:
     diagnoses = []
-    matched = infer_summary.get("matched", {})
-    unmatched = infer_summary.get("unmatched", {})
     pos_ratio = float(train_summary.get("positive_ratio", 0.0))
     hard_ratio = float(train_summary.get("hard_negative_ratio", 0.0))
-    matched_score = float(matched.get("avg_score", 0.0))
-    matched_penalty = float(matched.get("penalized_ratio", 0.0))
-    unmatched_score = float(unmatched.get("avg_score", 0.0))
 
     if pos_ratio < 0.10:
         diagnoses.append("train_positive_ratio_too_low")
     if hard_ratio < 0.10:
         diagnoses.append("hard_negative_ratio_too_low")
-    if matched and matched_score < 0.20 and matched_penalty > 0.60:
-        diagnoses.append("likely_distribution_mismatch")
-    if matched and unmatched and matched_score <= unmatched_score * 1.5:
-        diagnoses.append("weak_matched_unmatched_separation")
-    if matched and matched_score >= 0.50 and matched_penalty < 0.30:
-        diagnoses.append("candidate_for_safe_activation")
-    if not diagnoses:
-        diagnoses.append("needs_manual_review")
+
+    known_changed = int(decision_summary.get("known_changed_count", 0))
+    improved = int(decision_summary.get("improved_count", 0))
+    damaged = int(decision_summary.get("damaged_count", 0))
+    harm_precision = _finite_float(
+        decision_summary.get("harm_precision", 0.0)
+    )
+    if not evidence_usable or known_changed == 0:
+        diagnoses.append("insufficient_decision_evidence")
+    elif (
+        known_changed >= min_known_changed
+        and improved > damaged
+        and harm_precision <= MAX_HARM_PRECISION
+    ):
+        diagnoses.append("candidate_for_shadow_ab_activation")
+    else:
+        diagnoses.append("shadow_decisions_not_safe")
     return diagnoses
 
 
-def build_summary(train_cache: Path, infer_audit: Path) -> Dict[str, Any]:
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, np.generic):
+        return _json_safe(value.item())
+    return value
+
+
+def build_summary(
+    train_cache: Path,
+    infer_audit: Path,
+    min_known_changed: int = DEFAULT_MIN_KNOWN_CHANGED,
+) -> Dict[str, Any]:
     train = _summarize_train(_load_train_cache(train_cache))
     audit = json.loads(infer_audit.read_text(encoding="utf-8"))
-    infer = _summarize_infer(audit)
-    keys = sorted(set(train.keys()) | set(infer.keys()))
+    track_state_scores = _summarize_track_state_scores(audit)
+    decisions = _summarize_decisions(audit)
+    evidence = _decision_evidence_status(audit)
+    keys = sorted(
+        set(train.keys()) | set(track_state_scores.keys()) | set(decisions.keys())
+    )
     classes = {}
     for key in keys:
         train_summary = train.get(key, {})
-        infer_summary = infer.get(key, {})
+        decision_summary = decisions.get(key, {})
         classes[key] = {
             "train": train_summary,
-            "infer": infer_summary,
-            "diagnosis": _diagnose(train_summary, infer_summary),
+            "track_state_scores": track_state_scores.get(key, {}),
+            "decision_evidence": decision_summary,
+            "diagnosis": _diagnose(
+                train_summary,
+                decision_summary,
+                evidence_usable=evidence["usable"],
+                min_known_changed=min_known_changed,
+            ),
         }
-    return {
-        "schema_version": 1,
+    return _json_safe({
+        "schema_version": 2,
+        "infer_audit_schema_version": int(audit.get("schema_version", 1)),
         "train_cache": str(train_cache),
         "infer_audit": str(infer_audit),
+        "decision_evidence": evidence,
+        "decision_gates": {
+            "min_known_changed": int(min_known_changed),
+            "max_harm_precision": MAX_HARM_PRECISION,
+            "require_improved_greater_than_damaged": True,
+        },
         "classes": classes,
-    }
+    })
 
 
 def main() -> None:
@@ -155,9 +289,21 @@ def main() -> None:
     parser.add_argument("--train-cache", required=True, help="Pairwise association train cache pkl.")
     parser.add_argument("--infer-audit", required=True, help="Association head inference audit JSON.")
     parser.add_argument("--output", required=True, help="Output JSON summary path.")
+    parser.add_argument(
+        "--min-known-changed",
+        type=int,
+        default=DEFAULT_MIN_KNOWN_CHANGED,
+        help="Minimum known changed decisions required for a shadow A/B candidate.",
+    )
     args = parser.parse_args()
+    if args.min_known_changed < 1:
+        parser.error("--min-known-changed must be at least 1")
 
-    summary = build_summary(Path(args.train_cache), Path(args.infer_audit))
+    summary = build_summary(
+        Path(args.train_cache),
+        Path(args.infer_audit),
+        min_known_changed=args.min_known_changed,
+    )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(summary, indent=2, sort_keys=True, allow_nan=False), encoding="utf-8")
