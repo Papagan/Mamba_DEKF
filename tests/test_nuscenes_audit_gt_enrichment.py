@@ -16,6 +16,7 @@ if "shapely.geometry" not in sys.modules:
     sys.modules.setdefault("shapely", types.ModuleType("shapely"))
     shapely_geometry = types.ModuleType("shapely.geometry")
     shapely_geometry.MultiPoint = object
+    shapely_geometry.Polygon = object
     shapely_geometry.box = object
     sys.modules["shapely.geometry"] = shapely_geometry
 
