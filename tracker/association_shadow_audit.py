@@ -12,17 +12,10 @@ _THRESHOLD_RTOL = 1e-6
 _THRESHOLD_ATOL = 1e-8
 
 
-def _is_known_gt_token(token) -> bool:
-    if token is None:
-        return False
-    if isinstance(token, str):
-        return bool(token.strip())
-    if isinstance(token, (list, tuple, set, dict, np.ndarray)):
-        return False
-    try:
-        return not bool(np.isnan(token))
-    except (TypeError, ValueError):
-        return True
+def _canonical_gt_token(token):
+    if not isinstance(token, str) or not token or token.strip() != token:
+        return None
+    return str(token)
 
 
 def assignment_map(matches: np.ndarray, costs: np.ndarray) -> dict[int, dict]:
@@ -67,7 +60,8 @@ def classify_assignment_outcome(
     shadow_matched=None,
 ) -> str:
     """Classify correctness while distinguishing unmatched from unknown GT."""
-    if not _is_known_gt_token(track_gt_token):
+    track_gt_token = _canonical_gt_token(track_gt_token)
+    if track_gt_token is None:
         return "unknown"
 
     if production_matched is None:
@@ -81,22 +75,22 @@ def classify_assignment_outcome(
         if not isinstance(matched, (bool, np.bool_)):
             raise TypeError(f"{name} must be a boolean or None")
 
+    production_det_token = _canonical_gt_token(production_det_token)
+    shadow_det_token = _canonical_gt_token(shadow_det_token)
     production_correct = (
         False
         if not production_matched
         else (
-            production_det_token == track_gt_token
-            if _is_known_gt_token(production_det_token)
-            else None
+            None
+            if production_det_token is None
+            else production_det_token == track_gt_token
         )
     )
     shadow_correct = (
         False
         if not shadow_matched
         else (
-            shadow_det_token == track_gt_token
-            if _is_known_gt_token(shadow_det_token)
-            else None
+            None if shadow_det_token is None else shadow_det_token == track_gt_token
         )
     )
     if production_correct is None or shadow_correct is None:
@@ -151,6 +145,8 @@ def _normalize_track_ids(values, track_count):
                 raise ValueError("track_ids must not contain empty identifiers")
         if isinstance(value, float) and not np.isfinite(value):
             raise ValueError("track_ids must contain finite identifiers")
+        if isinstance(value, (int, float)) and value < 0:
+            raise ValueError("track_ids must contain non-negative identifiers")
         try:
             json.dumps(value, allow_nan=False)
         except (TypeError, ValueError) as exc:
@@ -209,21 +205,12 @@ def _normalize_gt_tokens(name, values, expected_count):
         if token is None:
             normalized.append(None)
             continue
-        if not isinstance(token, (str, int, float, bool)):
+        canonical_token = _canonical_gt_token(token)
+        if canonical_token is None:
             raise ValueError(
-                f"{name} must contain JSON-safe scalar tokens or None"
+                f"{name} must contain canonical non-empty string tokens or None"
             )
-        if isinstance(token, str):
-            token = token.strip()
-            if not token:
-                raise ValueError(f"{name} must not contain empty string tokens")
-        if isinstance(token, float) and not np.isfinite(token):
-            raise ValueError(f"{name} must contain finite numeric tokens")
-        try:
-            json.dumps(token, allow_nan=False)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"{name} tokens must be JSON serializable") from exc
-        normalized.append(token)
+        normalized.append(canonical_token)
     return normalized
 
 
@@ -248,7 +235,9 @@ def _candidate_rank(base_row: np.ndarray, det_index) -> int | None:
 def _pair_label(track_gt_token, det_gt_token, *, matched: bool):
     if not matched:
         return None
-    if not _is_known_gt_token(track_gt_token) or not _is_known_gt_token(det_gt_token):
+    track_gt_token = _canonical_gt_token(track_gt_token)
+    det_gt_token = _canonical_gt_token(det_gt_token)
+    if track_gt_token is None or det_gt_token is None:
         return None
     return int(track_gt_token == det_gt_token)
 

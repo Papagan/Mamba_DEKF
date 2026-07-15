@@ -104,6 +104,34 @@ class ClassifyAssignmentOutcomeTest(unittest.TestCase):
             "unknown",
         )
 
+    def test_noncanonical_track_gt_tokens_are_unknown(self):
+        invalid_tokens = (True, 1, 1.0, b"gt-b", "", "   ", " gt-b", "gt-b ")
+        for token in invalid_tokens:
+            with self.subTest(token=token):
+                self.assertEqual(
+                    classify_assignment_outcome(token, "gt-a", "gt-b"),
+                    "unknown",
+                )
+
+    def test_noncanonical_detection_tokens_cannot_change_outcome(self):
+        invalid_tokens = (True, 1, 1.0, b"gt-b", "", "   ", " gt-b", "gt-b ")
+        for token in invalid_tokens:
+            with self.subTest(token=token):
+                self.assertEqual(
+                    classify_assignment_outcome(
+                        "gt-b",
+                        "gt-a",
+                        token,
+                        production_matched=True,
+                        shadow_matched=True,
+                    ),
+                    "unknown",
+                )
+
+    def test_boolean_integer_alias_cannot_create_improved_or_damaged_outcome(self):
+        self.assertEqual(classify_assignment_outcome(1, "wrong", True), "unknown")
+        self.assertEqual(classify_assignment_outcome(True, 1, "wrong"), "unknown")
+
     def test_unknown_when_matched_detection_gt_identity_is_unavailable(self):
         self.assertEqual(
             classify_assignment_outcome(
@@ -486,11 +514,15 @@ class CompareAssignmentResultsTest(unittest.TestCase):
                 ):
                     self._compare(**{name: value})
 
-    def test_rejects_empty_or_nonfinite_gt_tokens(self):
-        with self.assertRaisesRegex(ValueError, "track_gt_tokens"):
-            self._compare(track_gt_tokens=["   "])
-        with self.assertRaisesRegex(ValueError, "det_gt_tokens"):
-            self._compare(det_gt_tokens=["gt-a", np.inf])
+    def test_rejects_noncanonical_gt_tokens(self):
+        invalid_tokens = (True, 1, 1.0, b"gt-a", "", "   ", " gt-a", "gt-a ")
+        for token in invalid_tokens:
+            with self.subTest(field="track_gt_tokens", token=token):
+                with self.assertRaisesRegex(ValueError, "track_gt_tokens"):
+                    self._compare(track_gt_tokens=[token])
+            with self.subTest(field="det_gt_tokens", token=token):
+                with self.assertRaisesRegex(ValueError, "det_gt_tokens"):
+                    self._compare(det_gt_tokens=[token, None])
 
     def test_normalizes_valid_track_metadata(self):
         record = self._compare(
@@ -517,7 +549,7 @@ class CompareAssignmentResultsTest(unittest.TestCase):
                 self._compare(**{name: value})
 
     def test_rejects_empty_duplicate_or_non_json_track_ids(self):
-        invalid_track_ids = ([""], [None], [np.nan], [{"id": 10}])
+        invalid_track_ids = ([""], [None], [np.nan], [-1], [{"id": 10}])
         for track_ids in invalid_track_ids:
             with self.subTest(track_ids=track_ids), self.assertRaisesRegex(
                 ValueError, "track_ids"

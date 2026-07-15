@@ -162,13 +162,58 @@ class MambaAssociationPriorTest(unittest.TestCase):
         np.testing.assert_array_equal(base, base_original)
         np.testing.assert_array_equal(scores, scores_original)
 
-    def test_shadow_without_real_track_ids_skips_callback_and_preserves_production(self):
-        base, _, dets, scores = _flippable_matching_inputs()
-        trajs = [
-            _Traj("trailer", unmatch_length=1),
-            _Traj("trailer", unmatch_length=1),
-        ]
-        callback_calls = []
+    def test_invalid_shadow_track_ids_fail_closed_and_preserve_production(self):
+        base, valid_trajs, dets, scores = _flippable_matching_inputs()
+        categories = np.array(["trailer", "trailer"])
+        cases = {
+            "missing": (
+                [_Traj("trailer", unmatch_length=1),
+                 _Traj("trailer", unmatch_length=1)],
+                None,
+            ),
+            "wrong_length": (valid_trajs, {"track_ids": [10]}),
+            "boolean": (valid_trajs, {"track_ids": [True, 11]}),
+            "negative": (valid_trajs, {"track_ids": [-1, 11]}),
+            "duplicate": (valid_trajs, {"track_ids": [10, 10]}),
+        }
+
+        with patch.object(
+            matching,
+            "cost_calculate_general",
+            return_value=(base, categories, categories),
+        ):
+            base_matches, base_costs = matching.match_trajs_and_dets(
+                valid_trajs,
+                dets,
+                _matching_cfg(shadow_mode=False, head_enabled=False),
+                association_scores=scores,
+            )
+
+            for name, (trajs, metadata) in cases.items():
+                callback_calls = []
+                error_calls = []
+                with self.subTest(name=name):
+                    production_matches, production_costs = matching.match_trajs_and_dets(
+                        trajs,
+                        dets,
+                        _matching_cfg(shadow_mode=True),
+                        association_scores=scores,
+                        association_shadow_callback=callback_calls.append,
+                        association_shadow_error_callback=error_calls.append,
+                        association_shadow_metadata=metadata,
+                    )
+
+                    self.assertEqual(callback_calls, [])
+                    self.assertEqual(len(error_calls), 1)
+                    self.assertEqual(error_calls[0]["stage"], "decision_records")
+                    self.assertEqual(error_calls[0]["type"], "ValueError")
+                    self.assertIn("track_ids", error_calls[0]["message"])
+                    np.testing.assert_array_equal(production_matches, base_matches)
+                    np.testing.assert_array_equal(production_costs, base_costs)
+
+    def test_invalid_shadow_track_ids_reraise_in_strict_mode(self):
+        base, trajs, dets, scores = _flippable_matching_inputs()
+        errors = []
 
         with patch.object(
             matching,
@@ -179,23 +224,51 @@ class MambaAssociationPriorTest(unittest.TestCase):
                 np.array(["trailer", "trailer"]),
             ),
         ):
-            production_matches, production_costs = matching.match_trajs_and_dets(
+            with self.assertRaisesRegex(ValueError, "track_ids"):
+                matching.match_trajs_and_dets(
+                    trajs,
+                    dets,
+                    _matching_cfg(shadow_mode=True),
+                    association_scores=scores,
+                    association_shadow_callback=lambda records: self.fail(
+                        "invalid metadata must not emit decision records"
+                    ),
+                    association_shadow_error_callback=errors.append,
+                    association_shadow_metadata={"track_ids": [10, 10]},
+                    association_shadow_strict=True,
+                )
+
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["stage"], "decision_records")
+
+    def test_shadow_metadata_is_not_validated_without_decision_callback(self):
+        base, trajs, dets, scores = _flippable_matching_inputs()
+
+        with patch.object(
+            matching,
+            "cost_calculate_general",
+            return_value=(
+                base,
+                np.array(["trailer", "trailer"]),
+                np.array(["trailer", "trailer"]),
+            ),
+        ):
+            matches, costs = matching.match_trajs_and_dets(
                 trajs,
                 dets,
                 _matching_cfg(shadow_mode=True),
                 association_scores=scores,
-                association_shadow_callback=callback_calls.append,
-            )
-            base_matches, base_costs = matching.match_trajs_and_dets(
-                trajs,
-                dets,
-                _matching_cfg(shadow_mode=False, head_enabled=False),
-                association_scores=scores,
+                association_shadow_metadata={"track_ids": [True, True]},
+                association_shadow_error_callback=lambda error: self.fail(
+                    f"metadata validation must be inactive without callback: {error}"
+                ),
+                association_shadow_strict=True,
             )
 
-        self.assertEqual(callback_calls, [])
-        np.testing.assert_array_equal(production_matches, base_matches)
-        np.testing.assert_array_equal(production_costs, base_costs)
+        np.testing.assert_array_equal(matches, np.array([[0, 0], [1, 1]]))
+        np.testing.assert_array_equal(
+            costs, np.array([0.10, 0.10], dtype=np.float32)
+        )
 
     def test_shadow_disabled_preserves_explicit_corrected_intervention(self):
         base, trajs, dets, scores = _flippable_matching_inputs()

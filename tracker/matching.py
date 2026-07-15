@@ -392,28 +392,6 @@ def _association_shadow_records(
     track_ids = metadata.get("track_ids")
     if track_ids is None:
         track_ids = [getattr(traj, "track_id", None) for traj in trajs]
-    try:
-        track_ids = list(track_ids)
-    except TypeError:
-        return None
-    if len(track_ids) != track_count:
-        return None
-
-    normalized_track_ids = []
-    for track_id in track_ids:
-        if isinstance(track_id, np.generic):
-            track_id = track_id.item()
-        if isinstance(track_id, bool) or not isinstance(track_id, (str, int, float)):
-            return None
-        if isinstance(track_id, str):
-            track_id = track_id.strip()
-            if not track_id:
-                return None
-        if isinstance(track_id, float) and not np.isfinite(track_id):
-            return None
-        normalized_track_ids.append(track_id)
-    if len(set(normalized_track_ids)) != track_count:
-        return None
 
     from tracker.association_shadow_audit import compare_assignment_results
 
@@ -446,7 +424,7 @@ def _association_shadow_records(
         base_cost_matrix=base_cost_matrix,
         corrected_cost_matrix=corrected_cost_matrix,
         association_scores=scores,
-        track_ids=normalized_track_ids,
+        track_ids=track_ids,
         class_ids=class_ids,
         class_names=class_names,
         state_buckets=shadow_states,
