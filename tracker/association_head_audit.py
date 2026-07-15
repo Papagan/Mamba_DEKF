@@ -1,9 +1,13 @@
 import json
+import math
 import os
+import shutil
+import stat
 import struct
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +25,8 @@ _UINT64_MASK = (1 << 64) - 1
 _FLOAT_SIGN_MASK = 1 << 63
 _QUANTILE_KEYS = ("min", "p10", "p50", "p90", "max")
 _PAIR_METRICS = ("score", "delta", "cost_before", "cost_after")
+_EXACT_SUM_UNIT = "2^-1074"
+_EXACT_SUM_DENOMINATOR = 1 << 1074
 _DECISION_COUNTER_FIELDS = (
     "total_decisions",
     "changed_decisions",
@@ -98,7 +104,7 @@ def _optional_finite_float(value, field_name):
     result = float(value)
     if not np.isfinite(result):
         raise ValueError(f"{field_name} must be finite")
-    return result
+    return 0.0 if result == 0.0 else result
 
 
 def _finite_float(value, field_name):
@@ -108,18 +114,38 @@ def _finite_float(value, field_name):
     return result
 
 
-def _finite_add(left, right, field_name):
-    result = float(left) + float(right)
-    if not np.isfinite(result):
-        raise ValueError(f"{field_name} aggregate must remain finite")
-    return result
+def _strict_int(value, field_name):
+    if isinstance(value, (bool, np.bool_)) or not isinstance(
+        value, (int, np.integer)
+    ):
+        raise TypeError(f"{field_name} must be an integer")
+    return int(value)
 
 
-def _finite_product(left, right, field_name):
-    result = float(left) * int(right)
+def _float_to_exact_units(value):
+    numerator, denominator = float(value).as_integer_ratio()
+    return numerator * (_EXACT_SUM_DENOMINATOR // denominator)
+
+
+def _exact_average(units, count, field_name):
+    if count == 0:
+        return 0.0
+    try:
+        result = float(Fraction(int(units), int(count) * _EXACT_SUM_DENOMINATOR))
+    except OverflowError as error:
+        raise ValueError(f"{field_name} average must remain finite") from error
     if not np.isfinite(result):
-        raise ValueError(f"{field_name} aggregate must remain finite")
-    return result
+        raise ValueError(f"{field_name} average must remain finite")
+    return 0.0 if result == 0.0 else result
+
+
+def _float_close(left, right):
+    return math.isclose(
+        float(left),
+        float(right),
+        rel_tol=1e-15,
+        abs_tol=float.fromhex("0x0.0000000000001p-1022"),
+    )
 
 
 def _float_bin(value):
@@ -129,6 +155,12 @@ def _float_bin(value):
     else:
         ordered = bits ^ _FLOAT_SIGN_MASK
     return ordered >> _HISTOGRAM_SHIFT
+
+
+def _bound_matches_histogram_bin(value, index):
+    if value == 0.0:
+        return index in {_float_bin(-0.0), _float_bin(0.0)}
+    return _float_bin(value) == index
 
 
 def _bin_midpoint(index):
@@ -358,6 +390,22 @@ def _validate_audit_errors(state):
     return {"count": count, "samples": normalized_samples}
 
 
+def _copy_xattrs_best_effort(source, destination):
+    if not all(
+        hasattr(os, name) for name in ("listxattr", "getxattr", "setxattr")
+    ):
+        return
+    try:
+        names = os.listxattr(source)
+    except OSError:
+        return
+    for name in names:
+        try:
+            os.setxattr(destination, name, os.getxattr(source, name))
+        except OSError:
+            continue
+
+
 @dataclass
 class _FixedFloatHistogram:
     count: int = 0
@@ -391,6 +439,10 @@ class _FixedFloatHistogram:
             if self.maximum is None
             else max(self.maximum, other.maximum)
         )
+        if self.minimum == 0.0:
+            self.minimum = 0.0
+        if self.maximum == 0.0:
+            self.maximum = 0.0
         for index, count in enumerate(other.counts):
             if count:
                 self.counts[index] += count
@@ -489,9 +541,9 @@ def _validate_histogram_state(value, field_name):
     histogram.maximum = _finite_float(value["max"], f"{field_name}.max")
     if histogram.minimum > histogram.maximum:
         raise ValueError(f"{field_name}.min cannot exceed max")
-    if _float_bin(histogram.minimum) != bins[0][0]:
+    if not _bound_matches_histogram_bin(histogram.minimum, bins[0][0]):
         raise ValueError(f"{field_name}.min does not match first occupied bin")
-    if _float_bin(histogram.maximum) != bins[-1][0]:
+    if not _bound_matches_histogram_bin(histogram.maximum, bins[-1][0]):
         raise ValueError(f"{field_name}.max does not match last occupied bin")
     return histogram
 
@@ -548,28 +600,33 @@ def _validate_pair_bucket_state(item, *, schema_version):
         normalized[field_name] = _finite_float(item[field_name], field_name)
 
     if schema_version == 2:
+        if item.get("aggregate_sum_unit") != _EXACT_SUM_UNIT:
+            raise ValueError(f"aggregate_sum_unit must be {_EXACT_SUM_UNIT}")
         aggregate_sums = item.get("aggregate_sums")
         if not isinstance(aggregate_sums, Mapping):
             raise TypeError("aggregate_sums must be a mapping")
         if set(aggregate_sums) != set(_PAIR_METRICS):
             raise ValueError("aggregate_sums must contain all pair metrics")
         normalized["aggregate_sums"] = {
-            metric: _finite_float(
+            metric: _strict_int(
                 aggregate_sums[metric], f"aggregate_sums.{metric}"
             )
             for metric in _PAIR_METRICS
         }
         for metric in _PAIR_METRICS:
-            expected_average = normalized["aggregate_sums"][metric] / max(
-                pair_count, 1
+            if pair_count == 0 and normalized["aggregate_sums"][metric] != 0:
+                raise ValueError(
+                    f"aggregate_sums.{metric} must be zero when pair_count is zero"
+                )
+            expected_average = _exact_average(
+                normalized["aggregate_sums"][metric], pair_count, metric
             )
-            if normalized[f"avg_{metric}"] != expected_average:
+            if not _float_close(normalized[f"avg_{metric}"], expected_average):
                 raise ValueError(f"avg_{metric} must match aggregate_sums.{metric}")
     else:
         normalized["aggregate_sums"] = {
-            metric: _finite_product(
-                normalized[f"avg_{metric}"], pair_count, metric
-            )
+            metric: _float_to_exact_units(normalized[f"avg_{metric}"])
+            * pair_count
             for metric in _PAIR_METRICS
         }
 
@@ -590,13 +647,26 @@ def _validate_pair_bucket_state(item, *, schema_version):
             )
             for metric in _PAIR_METRICS
         }
-        sketch_counts = {sketch.count for sketch in normalized_sketches.values()}
-        if len(sketch_counts) != 1 or next(iter(sketch_counts)) > pair_count:
+        for metric, sketch in normalized_sketches.items():
+            if sketch.count != pair_count:
+                raise ValueError(
+                    f"quantile_sketches.{metric}.count must equal pair_count"
+                )
+            if pair_count:
+                average = normalized[f"avg_{metric}"]
+                if average < sketch.minimum and not _float_close(
+                    average, sketch.minimum
+                ):
+                    raise ValueError(f"avg_{metric} cannot be below histogram min")
+                if average > sketch.maximum and not _float_close(
+                    average, sketch.maximum
+                ):
+                    raise ValueError(f"avg_{metric} cannot exceed histogram max")
+        if not complete:
             raise ValueError(
-                "quantile sketch counts must agree and not exceed pair_count"
+                "quantile_sketch_complete must be true when histogram counts "
+                "equal pair_count"
             )
-        if complete != (next(iter(sketch_counts)) == pair_count):
-            raise ValueError("quantile_sketch_complete does not match sketch counts")
         expected_semantics = (
             "approximate_fixed_histogram_with_exact_min_max"
             if complete
@@ -757,10 +827,10 @@ class _Bucket:
     finite_pair_count: int = 0
     active_pair_count: int = 0
     penalized_pair_count: int = 0
-    score_sum: float = 0.0
-    delta_sum: float = 0.0
-    cost_before_sum: float = 0.0
-    cost_after_sum: float = 0.0
+    score_sum: int = 0
+    delta_sum: int = 0
+    cost_before_sum: int = 0
+    cost_after_sum: int = 0
     histograms: dict = field(
         default_factory=lambda: {
             metric: _FixedFloatHistogram() for metric in _PAIR_METRICS
@@ -781,15 +851,6 @@ class _Bucket:
         sample=None,
         max_samples: int = 0,
     ) -> None:
-        score_sum = _finite_add(self.score_sum, score, "score")
-        delta_sum = _finite_add(self.delta_sum, delta, "delta")
-        cost_before_sum = _finite_add(
-            self.cost_before_sum, cost_before, "cost_before"
-        )
-        cost_after_sum = _finite_add(
-            self.cost_after_sum, cost_after, "cost_after"
-        )
-
         self.pair_count += 1
         if finite:
             self.finite_pair_count += 1
@@ -797,10 +858,10 @@ class _Bucket:
             self.active_pair_count += 1
         if delta > 0.0:
             self.penalized_pair_count += 1
-        self.score_sum = score_sum
-        self.delta_sum = delta_sum
-        self.cost_before_sum = cost_before_sum
-        self.cost_after_sum = cost_after_sum
+        self.score_sum += _float_to_exact_units(score)
+        self.delta_sum += _float_to_exact_units(delta)
+        self.cost_before_sum += _float_to_exact_units(cost_before)
+        self.cost_after_sum += _float_to_exact_units(cost_after)
         self.histograms["score"].add(score)
         self.histograms["delta"].add(delta)
         self.histograms["cost_before"].add(cost_before)
@@ -809,7 +870,8 @@ class _Bucket:
             self.samples.append(dict(sample))
 
     def to_summary(self):
-        pair_count = max(int(self.pair_count), 1)
+        pair_count = int(self.pair_count)
+        ratio_count = max(pair_count, 1)
         active_count = max(int(self.active_pair_count), 1)
         complete = bool(
             self.quantile_sketch_complete
@@ -826,17 +888,22 @@ class _Bucket:
             "finite_pair_count": int(self.finite_pair_count),
             "active_pair_count": int(self.active_pair_count),
             "penalized_pair_count": int(self.penalized_pair_count),
-            "active_ratio": float(self.active_pair_count / pair_count),
+            "active_ratio": float(self.active_pair_count / ratio_count),
             "penalized_ratio": float(self.penalized_pair_count / active_count),
-            "avg_score": float(self.score_sum / pair_count),
-            "avg_delta": float(self.delta_sum / pair_count),
-            "avg_cost_before": float(self.cost_before_sum / pair_count),
-            "avg_cost_after": float(self.cost_after_sum / pair_count),
+            "avg_score": _exact_average(self.score_sum, pair_count, "score"),
+            "avg_delta": _exact_average(self.delta_sum, pair_count, "delta"),
+            "avg_cost_before": _exact_average(
+                self.cost_before_sum, pair_count, "cost_before"
+            ),
+            "avg_cost_after": _exact_average(
+                self.cost_after_sum, pair_count, "cost_after"
+            ),
+            "aggregate_sum_unit": _EXACT_SUM_UNIT,
             "aggregate_sums": {
-                "score": float(self.score_sum),
-                "delta": float(self.delta_sum),
-                "cost_before": float(self.cost_before_sum),
-                "cost_after": float(self.cost_after_sum),
+                "score": int(self.score_sum),
+                "delta": int(self.delta_sum),
+                "cost_before": int(self.cost_before_sum),
+                "cost_after": int(self.cost_after_sum),
             },
             "quantile_method": _HISTOGRAM_TYPE,
             "quantile_semantics": (
@@ -1365,16 +1432,14 @@ class AssociationHeadAuditAccumulator:
             if key not in staged_sums:
                 bucket = self._buckets.get(key)
                 staged_sums[key] = {
-                    sum_name: 0.0 if bucket is None else getattr(bucket, sum_name)
+                    sum_name: 0 if bucket is None else getattr(bucket, sum_name)
                     for _, sum_name in aggregate_fields
                 }
 
             next_sums = dict(staged_sums[key])
             for label, sum_name in aggregate_fields:
                 increment = item["aggregate_sums"][label]
-                next_sums[sum_name] = _finite_add(
-                    next_sums[sum_name], increment, label
-                )
+                next_sums[sum_name] += increment
             staged_sums[key] = next_sums
             plan.append((item, next_sums))
         return plan
@@ -1499,6 +1564,10 @@ class AssociationHeadAuditAccumulator:
     def write_json(self, path):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            target_stat = path.stat()
+        except FileNotFoundError:
+            target_stat = None
         payload = json.dumps(
             self.to_summary(), indent=2, sort_keys=True, allow_nan=False
         )
@@ -1516,6 +1585,15 @@ class AssociationHeadAuditAccumulator:
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
+            if target_stat is not None:
+                try:
+                    shutil.copystat(path, temporary_path)
+                except OSError:
+                    pass
+                _copy_xattrs_best_effort(path, temporary_path)
+                os.chmod(temporary_path, stat.S_IMODE(target_stat.st_mode))
+                with temporary_path.open("rb") as handle:
+                    os.fsync(handle.fileno())
             os.replace(temporary_path, path)
             temporary_path = None
         finally:

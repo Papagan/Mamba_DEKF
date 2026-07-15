@@ -3,6 +3,7 @@ import copy
 import importlib
 import json
 import os
+import stat
 import sys
 import tempfile
 import types
@@ -481,24 +482,59 @@ class AssociationHeadAuditAccumulatorTest(unittest.TestCase):
                     audit.add_pair(**self._pair(), sample=sample)
                 self.assertEqual(audit.to_summary(), before)
 
-    def test_add_pair_rejects_aggregate_overflow_atomically(self):
+    def test_pair_exact_sums_and_averages_are_identical_across_merge_trees(self):
         max_float = np.finfo(np.float64).max
-        for field_name in ("score", "delta", "cost_before", "cost_after"):
-            with self.subTest(field=field_name):
-                audit = AssociationHeadAuditAccumulator(max_samples_per_bucket=2)
-                audit.add_pair(
-                    **self._pair(**{field_name: max_float}),
-                    sample={"call": 1},
-                )
-                before = copy.deepcopy(audit.to_summary())
 
-                with self.assertRaisesRegex(ValueError, field_name):
-                    audit.add_pair(
-                        **self._pair(**{field_name: max_float}),
-                        sample={"call": 2},
+        def state_for(value):
+            worker = AssociationHeadAuditAccumulator()
+            worker.add_pair(**self._pair(score=value))
+            return worker.export_state()
+
+        def merge(states):
+            result = AssociationHeadAuditAccumulator()
+            for state in states:
+                result.merge_state(copy.deepcopy(state))
+            return result
+
+        cases = (
+            ((1e16, -1e16, 1.0), 1.0 / 3.0),
+            ((max_float, max_float, -max_float), max_float / 3.0),
+        )
+        for values, expected_average in cases:
+            with self.subTest(values=values):
+                states = [state_for(value) for value in values]
+                direct_add = AssociationHeadAuditAccumulator()
+                for value in values:
+                    direct_add.add_pair(**self._pair(score=value))
+
+                direct_merge = merge(states)
+                left_merge = merge((merge(states[:2]).export_state(), states[2]))
+                right_merge = merge((states[0], merge(states[1:]).export_state()))
+                buckets = [
+                    audit.export_state()["pair_buckets"][0]
+                    for audit in (direct_add, direct_merge, left_merge, right_merge)
+                ]
+
+                self.assertTrue(
+                    all(
+                        isinstance(bucket["aggregate_sums"]["score"], int)
+                        for bucket in buckets
                     )
-
-                self.assertEqual(audit.to_summary(), before)
+                )
+                self.assertTrue(
+                    all(
+                        bucket["aggregate_sums"]["score"]
+                        == buckets[0]["aggregate_sums"]["score"]
+                        for bucket in buckets[1:]
+                    )
+                )
+                self.assertTrue(
+                    all(
+                        bucket["avg_score"] == buckets[0]["avg_score"]
+                        for bucket in buckets[1:]
+                    )
+                )
+                self.assertEqual(buckets[0]["avg_score"], expected_average)
 
     def test_extreme_quantiles_and_derived_summary_are_strict_json_safe(self):
         max_float = np.finfo(np.float64).max
@@ -515,36 +551,24 @@ class AssociationHeadAuditAccumulatorTest(unittest.TestCase):
         self.assertEqual(quantiles["p50"], 0.0)
         json.dumps(summary, allow_nan=False, sort_keys=True)
 
-    def test_merge_rejects_pair_aggregate_overflow_atomically(self):
+    def test_merge_rejects_nonrepresentable_pair_average_atomically(self):
         max_float = np.finfo(np.float64).max
         for field_name in ("score", "delta", "cost_before", "cost_after"):
             with self.subTest(field=field_name):
                 target = AssociationHeadAuditAccumulator(max_samples_per_bucket=2)
                 worker = AssociationHeadAuditAccumulator(max_samples_per_bucket=2)
-                target.add_pair(
-                    **self._pair(**{field_name: max_float}),
-                    sample={"source": "target"},
-                )
                 worker.add_pair(
                     **self._pair(**{field_name: max_float}),
                     sample={"source": "worker"},
                 )
+                malformed = worker.export_state()
+                malformed["pair_buckets"][0]["aggregate_sums"][field_name] *= 2
                 before = copy.deepcopy(target.to_summary())
 
                 with self.assertRaisesRegex(ValueError, field_name):
-                    target.merge_state(worker.export_state())
+                    target.merge_state(malformed)
 
                 self.assertEqual(target.to_summary(), before)
-
-        worker = AssociationHeadAuditAccumulator()
-        worker.add_pair(**self._pair(score=max_float))
-        overflow_product_state = worker.export_state()
-        overflow_product_state["pair_buckets"][0]["pair_count"] = 2
-        target = AssociationHeadAuditAccumulator()
-        before = copy.deepcopy(target.to_summary())
-        with self.assertRaisesRegex(ValueError, "score"):
-            target.merge_state(overflow_product_state)
-        self.assertEqual(target.to_summary(), before)
 
     def test_merges_exported_states_and_writes_json(self):
         first = AssociationHeadAuditAccumulator()
@@ -629,6 +653,50 @@ class AssociationHeadAuditAccumulatorTest(unittest.TestCase):
             target.merge_state(non_json_state)
         self.assertEqual(target.to_summary(), before)
 
+    def test_schema_v2_rejects_inconsistent_pair_aggregates_atomically(self):
+        worker = AssociationHeadAuditAccumulator()
+        worker.add_pair(**self._pair(score=1.0))
+        worker.add_pair(**self._pair(score=3.0))
+        baseline = worker.export_state()
+
+        def changed(callback):
+            state = copy.deepcopy(baseline)
+            callback(state["pair_buckets"][0])
+            return state
+
+        def empty_histograms(bucket):
+            bucket["quantile_sketch_complete"] = False
+            bucket["quantile_semantics"] = "unavailable_incomplete_sketch"
+            for metric, sketch in bucket["quantile_sketches"].items():
+                sketch.update({"count": 0, "min": None, "max": None, "bins": []})
+                bucket[f"{metric}_quantiles"] = {}
+
+        def average_above_maximum(bucket):
+            four_units = bucket["aggregate_sums"]["score"]
+            bucket["aggregate_sums"]["score"] = four_units * 2
+            bucket["avg_score"] = 4.0
+
+        def zero_count_with_nonzero_sum(bucket):
+            bucket["pair_count"] = 0
+            bucket["finite_pair_count"] = 0
+            bucket["active_pair_count"] = 0
+            bucket["penalized_pair_count"] = 0
+            empty_histograms(bucket)
+
+        malformed_states = (
+            ("avg_score", changed(lambda bucket: bucket.__setitem__("avg_score", 2.5))),
+            ("score", changed(average_above_maximum)),
+            ("count", changed(empty_histograms)),
+            ("zero", changed(zero_count_with_nonzero_sum)),
+        )
+        target = AssociationHeadAuditAccumulator()
+        before = copy.deepcopy(target.to_summary())
+        for expected, state in malformed_states:
+            with self.subTest(expected=expected):
+                with self.assertRaisesRegex((TypeError, ValueError), expected):
+                    target.merge_state(state)
+                self.assertEqual(target.to_summary(), before)
+
     def test_signed_zero_histogram_state_round_trips(self):
         worker = AssociationHeadAuditAccumulator()
         worker.add_pair(**self._pair(score=-0.0))
@@ -641,6 +709,38 @@ class AssociationHeadAuditAccumulatorTest(unittest.TestCase):
         self.assertEqual(bucket["pair_count"], 2)
         self.assertEqual(bucket["score_quantiles"]["min"], 0.0)
         self.assertEqual(bucket["score_quantiles"]["max"], 0.0)
+
+    def test_imported_signed_zero_bounds_are_canonical_across_merge_orders(self):
+        worker = AssociationHeadAuditAccumulator()
+        worker.add_pair(**self._pair(score=0.0))
+        positive = worker.export_state()
+        negative = copy.deepcopy(positive)
+        negative_bucket = negative["pair_buckets"][0]
+        negative_bucket["avg_score"] = -0.0
+        negative_bucket["quantile_sketches"]["score"]["min"] = -0.0
+        negative_bucket["quantile_sketches"]["score"]["max"] = -0.0
+        negative_bucket["quantile_sketches"]["score"]["bins"][0][0] = 2047
+        negative_bucket["score_quantiles"]["min"] = -0.0
+        negative_bucket["score_quantiles"]["p10"] = -0.0
+        negative_bucket["score_quantiles"]["p50"] = -0.0
+        negative_bucket["score_quantiles"]["p90"] = -0.0
+        negative_bucket["score_quantiles"]["max"] = -0.0
+
+        for states in ((negative, positive), (positive, negative)):
+            merged = AssociationHeadAuditAccumulator()
+            for state in states:
+                merged.merge_state(copy.deepcopy(state))
+            bucket = merged.export_state()["pair_buckets"][0]
+
+            self.assertFalse(np.signbit(bucket["avg_score"]))
+            self.assertFalse(np.signbit(bucket["score_quantiles"]["min"]))
+            self.assertFalse(np.signbit(bucket["score_quantiles"]["max"]))
+            self.assertFalse(
+                np.signbit(bucket["quantile_sketches"]["score"]["min"])
+            )
+            self.assertFalse(
+                np.signbit(bucket["quantile_sketches"]["score"]["max"])
+            )
 
     def test_schema_v1_merge_does_not_fabricate_quantiles(self):
         merged = AssociationHeadAuditAccumulator()
@@ -697,6 +797,38 @@ class AssociationHeadAuditAccumulatorTest(unittest.TestCase):
                     audit.write_json(path)
 
             self.assertEqual(path.read_text(encoding="utf-8"), "old-content")
+            self.assertEqual(list(path.parent.glob(f".{path.name}.*.tmp")), [])
+
+    def test_write_json_preserves_existing_mode_stat_and_xattrs(self):
+        audit = AssociationHeadAuditAccumulator()
+        audit.add_pair(**self._pair())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "audit.json"
+            path.write_text("old-content", encoding="utf-8")
+            path.chmod(0o644)
+            timestamp_ns = 1_650_000_000_123_456_789
+            os.utime(path, ns=(timestamp_ns, timestamp_ns))
+            xattr_name = b"user.association_head_audit_test"
+            xattr_value = b"preserve-me"
+            xattr_supported = False
+            if all(
+                hasattr(os, name)
+                for name in ("setxattr", "getxattr", "listxattr")
+            ):
+                try:
+                    os.setxattr(path, xattr_name, xattr_value)
+                    xattr_supported = True
+                except OSError:
+                    pass
+
+            audit.write_json(path)
+
+            target_stat = path.stat()
+            self.assertEqual(stat.S_IMODE(target_stat.st_mode), 0o644)
+            self.assertEqual(target_stat.st_mtime_ns, timestamp_ns)
+            if xattr_supported:
+                self.assertEqual(os.getxattr(path, xattr_name), xattr_value)
             self.assertEqual(list(path.parent.glob(f".{path.name}.*.tmp")), [])
 
     def test_schema_v2_includes_manifest_pair_buckets_and_improved_decision(self):
