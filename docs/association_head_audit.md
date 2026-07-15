@@ -67,6 +67,8 @@ per-track-state score and cost distributions only:
 - `avg_score`: mean association score.
 - `avg_delta`: mean cost increase applied to the geometric cost.
 - `avg_cost_before` and `avg_cost_after`: cost shift caused by the head.
+- `score_quantiles`, `delta_quantiles`, `cost_before_quantiles`, and
+  `cost_after_quantiles`: observed distribution summaries.
 
 Track lifecycle states such as `matched` and `unmatched` are not positive or
 negative labels. `track_state_scores` must never be used to infer a distribution
@@ -85,9 +87,16 @@ Per class, decision buckets are combined across track states before applying:
   `harm_precision <= 0.20`: `candidate_for_shadow_ab_activation`.
 - Any other complete schema v2 result: `shadow_decisions_not_safe`.
 
+The 100 known-changed minimum is a hard safety floor. The
+`--min-known-changed` option may raise it for a stricter experiment but rejects
+values below 100.
+
 Schema v1, `decision_evidence_available: false`, incomplete decision evidence,
 missing decision buckets, incompatible manifests, or any `audit_errors` fail
 closed as `insufficient_decision_evidence`; none can produce a candidate.
+`audit_errors` must be an object whose `count` is a non-negative integer.
+Malformed structures or counts set `audit_errors_valid: false`, add
+`invalid_audit_errors` to `incomplete_reasons`, and fail closed.
 Unknown GT identities are retained as unknown evidence and cannot count as
 `improved` or `damaged`, so sparse or unavailable GT can prevent the minimum
 known-changed gate from being reached.

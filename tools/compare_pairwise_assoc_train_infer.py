@@ -109,8 +109,14 @@ def _summarize_track_state_scores(audit: Dict[str, Any]) -> Dict[str, Any]:
             "penalized_ratio": _finite_float(bucket.get("penalized_ratio", 0.0)),
             "avg_score": _finite_float(bucket.get("avg_score", 0.0)),
             "avg_delta": _finite_float(bucket.get("avg_delta", 0.0)),
+            "avg_cost_before": _finite_float(
+                bucket.get("avg_cost_before", 0.0)
+            ),
+            "avg_cost_after": _finite_float(bucket.get("avg_cost_after", 0.0)),
             "score_quantiles": bucket.get("score_quantiles", {}),
             "delta_quantiles": bucket.get("delta_quantiles", {}),
+            "cost_before_quantiles": bucket.get("cost_before_quantiles", {}),
+            "cost_after_quantiles": bucket.get("cost_after_quantiles", {}),
             "sample_count": int(bucket.get("sample_count", 0)),
             "samples": bucket.get("samples", []),
         }
@@ -153,13 +159,24 @@ def _summarize_decisions(audit: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def _audit_error_count(audit: Dict[str, Any]) -> int:
-    errors = audit.get("audit_errors", {})
-    nested_count = errors.get("count", 0) if isinstance(errors, dict) else 0
-    try:
-        return max(int(audit.get("audit_error_count", 0)), int(nested_count), 0)
-    except (TypeError, ValueError):
-        return 1
+def _audit_errors_status(audit: Dict[str, Any]) -> Dict[str, Any]:
+    errors = audit.get("audit_errors")
+    if not isinstance(errors, dict):
+        return {"valid": False, "count": None}
+
+    count = errors.get("count")
+    if type(count) is not int or count < 0:
+        return {"valid": False, "count": None}
+
+    if "audit_error_count" in audit:
+        top_level_count = audit["audit_error_count"]
+        if (
+            type(top_level_count) is not int
+            or top_level_count < 0
+            or top_level_count != count
+        ):
+            return {"valid": False, "count": None}
+    return {"valid": True, "count": count}
 
 
 def _decision_evidence_status(audit: Dict[str, Any]) -> Dict[str, Any]:
@@ -171,13 +188,22 @@ def _decision_evidence_status(audit: Dict[str, Any]) -> Dict[str, Any]:
     available = bool(audit.get("decision_evidence_available", False))
     complete = bool(audit.get("decision_evidence_complete", False))
     manifest_compatible = audit.get("manifest_compatible") is True
-    audit_error_count = _audit_error_count(audit)
+    audit_errors = _audit_errors_status(audit)
+    incomplete_reasons = list(
+        audit.get("decision_evidence_incomplete_reasons", []) or []
+    )
+    if not audit_errors["valid"]:
+        if "invalid_audit_errors" not in incomplete_reasons:
+            incomplete_reasons.append("invalid_audit_errors")
+    elif audit_errors["count"] > 0 and "audit_errors" not in incomplete_reasons:
+        incomplete_reasons.append("audit_errors")
     usable = bool(
         schema_version == 2
         and available
         and complete
         and manifest_compatible
-        and audit_error_count == 0
+        and audit_errors["valid"]
+        and audit_errors["count"] == 0
         and has_decision_buckets
     )
     return {
@@ -185,13 +211,12 @@ def _decision_evidence_status(audit: Dict[str, Any]) -> Dict[str, Any]:
         "complete": complete,
         "usable": usable,
         "manifest_compatible": manifest_compatible,
-        "audit_error_count": audit_error_count,
+        "audit_errors_valid": audit_errors["valid"],
+        "audit_error_count": audit_errors["count"],
         "decision_bucket_count": len(decision_buckets)
         if isinstance(decision_buckets, list)
         else 0,
-        "incomplete_reasons": list(
-            audit.get("decision_evidence_incomplete_reasons", []) or []
-        ),
+        "incomplete_reasons": incomplete_reasons,
     }
 
 
@@ -246,6 +271,10 @@ def build_summary(
     infer_audit: Path,
     min_known_changed: int = DEFAULT_MIN_KNOWN_CHANGED,
 ) -> Dict[str, Any]:
+    if min_known_changed < DEFAULT_MIN_KNOWN_CHANGED:
+        raise ValueError(
+            f"min_known_changed must be at least {DEFAULT_MIN_KNOWN_CHANGED}"
+        )
     train = _summarize_train(_load_train_cache(train_cache))
     audit = json.loads(infer_audit.read_text(encoding="utf-8"))
     track_state_scores = _summarize_track_state_scores(audit)
@@ -296,8 +325,10 @@ def main() -> None:
         help="Minimum known changed decisions required for a shadow A/B candidate.",
     )
     args = parser.parse_args()
-    if args.min_known_changed < 1:
-        parser.error("--min-known-changed must be at least 1")
+    if args.min_known_changed < DEFAULT_MIN_KNOWN_CHANGED:
+        parser.error(
+            f"--min-known-changed must be at least {DEFAULT_MIN_KNOWN_CHANGED}"
+        )
 
     summary = build_summary(
         Path(args.train_cache),

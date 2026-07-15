@@ -34,7 +34,7 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
             },
         ]
 
-    def _run_compare(self, audit, *extra_args):
+    def _run_compare(self, audit, *extra_args, expect_success=True):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             train_path = tmp_path / "train.pkl"
@@ -63,6 +63,8 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
                 stderr=subprocess.PIPE,
             )
 
+            if not expect_success:
+                return result
             self.assertEqual(result.returncode, 0, result.stderr)
             return json.loads(output_path.read_text(encoding="utf-8"))
 
@@ -79,6 +81,8 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
             "penalized_ratio": 0.75,
             "avg_score": 0.1,
             "avg_delta": 0.01,
+            "avg_cost_before": 0.42,
+            "avg_cost_after": 0.43,
             "score_quantiles": {
                 "min": 0.0,
                 "p10": 0.01,
@@ -92,6 +96,20 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
                 "p50": 0.01,
                 "p90": 0.02,
                 "max": 0.03,
+            },
+            "cost_before_quantiles": {
+                "min": 0.1,
+                "p10": 0.2,
+                "p50": 0.4,
+                "p90": 0.7,
+                "max": 0.8,
+            },
+            "cost_after_quantiles": {
+                "min": 0.11,
+                "p10": 0.21,
+                "p50": 0.41,
+                "p90": 0.71,
+                "max": 0.81,
             },
         }
 
@@ -127,6 +145,24 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
         )
         self.assertEqual(
             bucket["track_state_scores"]["matched"]["penalized_ratio"], 0.75
+        )
+        self.assertEqual(
+            bucket["track_state_scores"]["matched"]["avg_cost_before"], 0.42
+        )
+        self.assertEqual(
+            bucket["track_state_scores"]["matched"]["avg_cost_after"], 0.43
+        )
+        self.assertEqual(
+            bucket["track_state_scores"]["matched"]["cost_before_quantiles"][
+                "p50"
+            ],
+            0.4,
+        )
+        self.assertEqual(
+            bucket["track_state_scores"]["matched"]["cost_after_quantiles"][
+                "p90"
+            ],
+            0.71,
         )
         self.assertNotIn("infer", bucket)
         self.assertIn("insufficient_decision_evidence", bucket["diagnosis"])
@@ -170,10 +206,19 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
         self.assertIn("shadow_decisions_not_safe", bucket["diagnosis"])
         self.assertFalse(any("candidate" in item for item in bucket["diagnosis"]))
 
-        configured = self._run_compare(audit, "--min-known-changed", "50")
+        low_gate = self._run_compare(
+            audit,
+            "--min-known-changed",
+            "50",
+            expect_success=False,
+        )
+        self.assertNotEqual(low_gate.returncode, 0)
+        self.assertIn("at least 100", low_gate.stderr)
+
+        raised_gate = self._run_compare(audit, "--min-known-changed", "121")
         self.assertIn(
-            "candidate_for_shadow_ab_activation",
-            configured["classes"]["2:bicycle"]["diagnosis"],
+            "shadow_decisions_not_safe",
+            raised_gate["classes"]["2:bicycle"]["diagnosis"],
         )
 
     def test_zero_known_changed_decisions_are_insufficient(self):
@@ -232,6 +277,32 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
                 diagnosis = data["classes"]["2:bicycle"]["diagnosis"]
                 self.assertIn("insufficient_decision_evidence", diagnosis)
                 self.assertNotIn("likely_distribution_mismatch", diagnosis)
+                self.assertFalse(any("candidate" in item for item in diagnosis))
+
+    def test_malformed_audit_errors_fail_closed_with_reason(self):
+        base = {
+            "schema_version": 2,
+            "decision_evidence_available": True,
+            "decision_evidence_complete": True,
+            "manifest_compatible": True,
+            "decision_buckets": [self._decision_bucket()],
+        }
+        malformed_values = {
+            "not_mapping": [],
+            "boolean_count": {"count": True},
+            "negative_count": {"count": -1},
+            "float_count": {"count": 1.5},
+            "string_count": {"count": "1"},
+        }
+
+        for name, audit_errors in malformed_values.items():
+            with self.subTest(name=name):
+                data = self._run_compare({**base, "audit_errors": audit_errors})
+                evidence = data["decision_evidence"]
+                diagnosis = data["classes"]["2:bicycle"]["diagnosis"]
+                self.assertFalse(evidence["usable"])
+                self.assertIn("invalid_audit_errors", evidence["incomplete_reasons"])
+                self.assertIn("insufficient_decision_evidence", diagnosis)
                 self.assertFalse(any("candidate" in item for item in diagnosis))
 
 
