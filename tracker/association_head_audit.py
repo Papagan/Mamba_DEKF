@@ -1,4 +1,7 @@
 import json
+import os
+import struct
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,6 +14,13 @@ from tracker.association_runtime_manifest import runtime_manifests_compatible
 _DECISION_OUTCOMES = {"improved", "damaged", "neutral", "unknown"}
 _TRACK_STATE_BUCKETS = {"matched", "unmatched"}
 _MANIFEST_UNSET = object()
+_HISTOGRAM_TYPE = "fixed_float_histogram_v1"
+_HISTOGRAM_BIN_COUNT = 4096
+_HISTOGRAM_SHIFT = 52
+_UINT64_MASK = (1 << 64) - 1
+_FLOAT_SIGN_MASK = 1 << 63
+_QUANTILE_KEYS = ("min", "p10", "p50", "p90", "max")
+_PAIR_METRICS = ("score", "delta", "cost_before", "cost_after")
 _DECISION_COUNTER_FIELDS = (
     "total_decisions",
     "changed_decisions",
@@ -110,6 +120,35 @@ def _finite_product(left, right, field_name):
     if not np.isfinite(result):
         raise ValueError(f"{field_name} aggregate must remain finite")
     return result
+
+
+def _float_bin(value):
+    bits = struct.unpack(">Q", struct.pack(">d", float(value)))[0]
+    if bits & _FLOAT_SIGN_MASK:
+        ordered = (~bits) & _UINT64_MASK
+    else:
+        ordered = bits ^ _FLOAT_SIGN_MASK
+    return ordered >> _HISTOGRAM_SHIFT
+
+
+def _bin_midpoint(index):
+    ordered = (int(index) << _HISTOGRAM_SHIFT) + (1 << (_HISTOGRAM_SHIFT - 1))
+    if ordered & _FLOAT_SIGN_MASK:
+        bits = ordered ^ _FLOAT_SIGN_MASK
+    else:
+        bits = (~ordered) & _UINT64_MASK
+    return struct.unpack(">d", struct.pack(">Q", bits))[0]
+
+
+def _finite_lerp(left, right, fraction):
+    scale = max(abs(float(left)), abs(float(right)))
+    if scale == 0.0:
+        return 0.0
+    normalized = (
+        (float(left) / scale) * (1.0 - float(fraction))
+        + (float(right) / scale) * float(fraction)
+    )
+    return _finite_float(normalized * scale, "quantile interpolation")
 
 
 def _optional_rank(value, field_name):
@@ -319,7 +358,145 @@ def _validate_audit_errors(state):
     return {"count": count, "samples": normalized_samples}
 
 
-def _validate_pair_bucket_state(item):
+@dataclass
+class _FixedFloatHistogram:
+    count: int = 0
+    minimum: float = None
+    maximum: float = None
+    counts: list = field(
+        default_factory=lambda: [0] * _HISTOGRAM_BIN_COUNT
+    )
+
+    def add(self, value):
+        value = float(value)
+        if value == 0.0:
+            value = 0.0
+        index = _float_bin(value)
+        self.count += 1
+        self.counts[index] += 1
+        self.minimum = value if self.minimum is None else min(self.minimum, value)
+        self.maximum = value if self.maximum is None else max(self.maximum, value)
+
+    def merge(self, other):
+        if other.count == 0:
+            return
+        self.count += other.count
+        self.minimum = (
+            other.minimum
+            if self.minimum is None
+            else min(self.minimum, other.minimum)
+        )
+        self.maximum = (
+            other.maximum
+            if self.maximum is None
+            else max(self.maximum, other.maximum)
+        )
+        for index, count in enumerate(other.counts):
+            if count:
+                self.counts[index] += count
+
+    def _value_at_rank(self, rank):
+        if rank <= 0:
+            return float(self.minimum)
+        if rank >= self.count - 1:
+            return float(self.maximum)
+        remaining = int(rank)
+        for index, count in enumerate(self.counts):
+            if remaining < count:
+                value = _bin_midpoint(index)
+                if not np.isfinite(value):
+                    return _finite_lerp(
+                        self.minimum,
+                        self.maximum,
+                        rank / max(self.count - 1, 1),
+                    )
+                return float(np.clip(value, self.minimum, self.maximum))
+            remaining -= count
+        raise ValueError("histogram rank exceeds count")
+
+    def quantiles(self):
+        if self.count == 0:
+            return {}
+        result = {"min": float(self.minimum), "max": float(self.maximum)}
+        for name, quantile in (("p10", 0.10), ("p50", 0.50), ("p90", 0.90)):
+            rank = quantile * (self.count - 1)
+            lower_rank = int(np.floor(rank))
+            upper_rank = int(np.ceil(rank))
+            lower = self._value_at_rank(lower_rank)
+            upper = self._value_at_rank(upper_rank)
+            result[name] = _finite_lerp(lower, upper, rank - lower_rank)
+        return {key: result[key] for key in _QUANTILE_KEYS}
+
+    def export_state(self):
+        return {
+            "type": _HISTOGRAM_TYPE,
+            "bin_count": _HISTOGRAM_BIN_COUNT,
+            "count": int(self.count),
+            "min": None if self.minimum is None else float(self.minimum),
+            "max": None if self.maximum is None else float(self.maximum),
+            "bins": [
+                [index, int(count)]
+                for index, count in enumerate(self.counts)
+                if count
+            ],
+        }
+
+
+def _validate_histogram_state(value, field_name):
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{field_name} must be a mapping")
+    required = {"type", "bin_count", "count", "min", "max", "bins"}
+    if set(value) != required:
+        raise ValueError(
+            f"{field_name} fields must be exactly {sorted(required)}"
+        )
+    if value["type"] != _HISTOGRAM_TYPE:
+        raise ValueError(f"{field_name}.type must be {_HISTOGRAM_TYPE}")
+    bin_count = _nonnegative_int(value["bin_count"], f"{field_name}.bin_count")
+    if bin_count != _HISTOGRAM_BIN_COUNT:
+        raise ValueError(
+            f"{field_name}.bin_count must be {_HISTOGRAM_BIN_COUNT}"
+        )
+    count = _nonnegative_int(value["count"], f"{field_name}.count")
+    bins = _list_field(value, "bins", required=True)
+    histogram = _FixedFloatHistogram(count=count)
+    previous_index = -1
+    bin_total = 0
+    for position, entry in enumerate(bins):
+        entry_name = f"{field_name}.bins[{position}]"
+        if not isinstance(entry, list) or len(entry) != 2:
+            raise TypeError(f"{entry_name} must be a two-item list")
+        index = _nonnegative_int(entry[0], f"{entry_name}[0]")
+        entry_count = _nonnegative_int(entry[1], f"{entry_name}[1]")
+        if index >= _HISTOGRAM_BIN_COUNT:
+            raise ValueError(f"{entry_name}[0] exceeds histogram capacity")
+        if index <= previous_index:
+            raise ValueError(f"{field_name}.bins must be strictly ordered")
+        if entry_count == 0:
+            raise ValueError(f"{entry_name}[1] must be positive")
+        histogram.counts[index] = entry_count
+        bin_total += entry_count
+        previous_index = index
+    if bin_total != count:
+        raise ValueError(f"{field_name}.bins counts must sum to count")
+
+    if count == 0:
+        if value["min"] is not None or value["max"] is not None or bins:
+            raise ValueError(f"{field_name} empty histogram must have null bounds")
+        return histogram
+
+    histogram.minimum = _finite_float(value["min"], f"{field_name}.min")
+    histogram.maximum = _finite_float(value["max"], f"{field_name}.max")
+    if histogram.minimum > histogram.maximum:
+        raise ValueError(f"{field_name}.min cannot exceed max")
+    if _float_bin(histogram.minimum) != bins[0][0]:
+        raise ValueError(f"{field_name}.min does not match first occupied bin")
+    if _float_bin(histogram.maximum) != bins[-1][0]:
+        raise ValueError(f"{field_name}.max does not match last occupied bin")
+    return histogram
+
+
+def _validate_pair_bucket_state(item, *, schema_version):
     if not isinstance(item, Mapping):
         raise TypeError("pair bucket state must be a mapping")
     for field_name in (
@@ -370,20 +547,82 @@ def _validate_pair_bucket_state(item):
     ):
         normalized[field_name] = _finite_float(item[field_name], field_name)
 
-    for field_name in (
-        "score_quantiles",
-        "delta_quantiles",
-        "cost_before_quantiles",
-        "cost_after_quantiles",
-    ):
-        quantiles = item.get(field_name, {}) or {}
-        if not isinstance(quantiles, Mapping):
-            raise TypeError(f"{field_name} must be a mapping")
-        quantiles = _json_safe(quantiles, path=field_name)
-        normalized[field_name] = {
-            key: _finite_float(value, f"{field_name}.{key}")
-            for key, value in quantiles.items()
+    if schema_version == 2:
+        aggregate_sums = item.get("aggregate_sums")
+        if not isinstance(aggregate_sums, Mapping):
+            raise TypeError("aggregate_sums must be a mapping")
+        if set(aggregate_sums) != set(_PAIR_METRICS):
+            raise ValueError("aggregate_sums must contain all pair metrics")
+        normalized["aggregate_sums"] = {
+            metric: _finite_float(
+                aggregate_sums[metric], f"aggregate_sums.{metric}"
+            )
+            for metric in _PAIR_METRICS
         }
+        for metric in _PAIR_METRICS:
+            expected_average = normalized["aggregate_sums"][metric] / max(
+                pair_count, 1
+            )
+            if normalized[f"avg_{metric}"] != expected_average:
+                raise ValueError(f"avg_{metric} must match aggregate_sums.{metric}")
+    else:
+        normalized["aggregate_sums"] = {
+            metric: _finite_product(
+                normalized[f"avg_{metric}"], pair_count, metric
+            )
+            for metric in _PAIR_METRICS
+        }
+
+    if schema_version == 2:
+        if item.get("quantile_method") != _HISTOGRAM_TYPE:
+            raise ValueError(f"quantile_method must be {_HISTOGRAM_TYPE}")
+        complete = _strict_bool(
+            item.get("quantile_sketch_complete"), "quantile_sketch_complete"
+        )
+        sketches = item.get("quantile_sketches")
+        if not isinstance(sketches, Mapping):
+            raise TypeError("quantile_sketches must be a mapping")
+        if set(sketches) != set(_PAIR_METRICS):
+            raise ValueError("quantile_sketches must contain all pair metrics")
+        normalized_sketches = {
+            metric: _validate_histogram_state(
+                sketches[metric], f"quantile_sketches.{metric}"
+            )
+            for metric in _PAIR_METRICS
+        }
+        sketch_counts = {sketch.count for sketch in normalized_sketches.values()}
+        if len(sketch_counts) != 1 or next(iter(sketch_counts)) > pair_count:
+            raise ValueError(
+                "quantile sketch counts must agree and not exceed pair_count"
+            )
+        if complete != (next(iter(sketch_counts)) == pair_count):
+            raise ValueError("quantile_sketch_complete does not match sketch counts")
+        expected_semantics = (
+            "approximate_fixed_histogram_with_exact_min_max"
+            if complete
+            else "unavailable_incomplete_sketch"
+        )
+        if item.get("quantile_semantics") != expected_semantics:
+            raise ValueError("quantile_semantics does not match sketch completeness")
+        normalized["quantile_sketch_complete"] = complete
+        normalized["quantile_sketches"] = normalized_sketches
+        for metric in _PAIR_METRICS:
+            field_name = f"{metric}_quantiles"
+            quantiles = item.get(field_name)
+            if not isinstance(quantiles, Mapping):
+                raise TypeError(f"{field_name} must be a mapping")
+            quantiles = _json_safe(quantiles, path=field_name)
+            expected = normalized_sketches[metric].quantiles() if complete else {}
+            if quantiles != expected:
+                raise ValueError(f"{field_name} must match its quantile sketch")
+            normalized[field_name] = dict(expected)
+    else:
+        normalized["quantile_sketch_complete"] = False
+        normalized["quantile_sketches"] = {
+            metric: _FixedFloatHistogram() for metric in _PAIR_METRICS
+        }
+        for metric in _PAIR_METRICS:
+            normalized[f"{metric}_quantiles"] = {}
 
     samples = _list_field(item, "samples")
     normalized["samples"] = []
@@ -522,10 +761,12 @@ class _Bucket:
     delta_sum: float = 0.0
     cost_before_sum: float = 0.0
     cost_after_sum: float = 0.0
-    scores: list = field(default_factory=list)
-    deltas: list = field(default_factory=list)
-    cost_befores: list = field(default_factory=list)
-    cost_afters: list = field(default_factory=list)
+    histograms: dict = field(
+        default_factory=lambda: {
+            metric: _FixedFloatHistogram() for metric in _PAIR_METRICS
+        }
+    )
+    quantile_sketch_complete: bool = True
     samples: list = field(default_factory=list)
 
     def add(
@@ -560,38 +801,23 @@ class _Bucket:
         self.delta_sum = delta_sum
         self.cost_before_sum = cost_before_sum
         self.cost_after_sum = cost_after_sum
-        self.scores.append(float(score))
-        self.deltas.append(float(delta))
-        self.cost_befores.append(float(cost_before))
-        self.cost_afters.append(float(cost_after))
+        self.histograms["score"].add(score)
+        self.histograms["delta"].add(delta)
+        self.histograms["cost_before"].add(cost_before)
+        self.histograms["cost_after"].add(cost_after)
         if sample is not None and len(self.samples) < int(max_samples):
             self.samples.append(dict(sample))
-
-    @staticmethod
-    def _quantiles(values):
-        if not values:
-            return {"min": 0.0, "p10": 0.0, "p50": 0.0, "p90": 0.0, "max": 0.0}
-        arr = np.asarray(values, dtype=np.float64)
-        scale = float(np.max(np.abs(arr)))
-
-        def scaled_quantile(q):
-            if scale == 0.0:
-                return 0.0
-            normalized = arr / scale
-            value = float(np.clip(np.quantile(normalized, q), -1.0, 1.0))
-            return _finite_float(value * scale, f"quantile[{q}]")
-
-        return {
-            "min": float(np.min(arr)),
-            "p10": scaled_quantile(0.10),
-            "p50": scaled_quantile(0.50),
-            "p90": scaled_quantile(0.90),
-            "max": float(np.max(arr)),
-        }
 
     def to_summary(self):
         pair_count = max(int(self.pair_count), 1)
         active_count = max(int(self.active_pair_count), 1)
+        complete = bool(
+            self.quantile_sketch_complete
+            and all(
+                histogram.count == self.pair_count
+                for histogram in self.histograms.values()
+            )
+        )
         return {
             "class_id": int(self.class_id),
             "class_name": str(self.class_name),
@@ -606,10 +832,35 @@ class _Bucket:
             "avg_delta": float(self.delta_sum / pair_count),
             "avg_cost_before": float(self.cost_before_sum / pair_count),
             "avg_cost_after": float(self.cost_after_sum / pair_count),
-            "score_quantiles": self._quantiles(self.scores),
-            "delta_quantiles": self._quantiles(self.deltas),
-            "cost_before_quantiles": self._quantiles(self.cost_befores),
-            "cost_after_quantiles": self._quantiles(self.cost_afters),
+            "aggregate_sums": {
+                "score": float(self.score_sum),
+                "delta": float(self.delta_sum),
+                "cost_before": float(self.cost_before_sum),
+                "cost_after": float(self.cost_after_sum),
+            },
+            "quantile_method": _HISTOGRAM_TYPE,
+            "quantile_semantics": (
+                "approximate_fixed_histogram_with_exact_min_max"
+                if complete
+                else "unavailable_incomplete_sketch"
+            ),
+            "quantile_sketch_complete": complete,
+            "quantile_sketches": {
+                metric: histogram.export_state()
+                for metric, histogram in self.histograms.items()
+            },
+            "score_quantiles": (
+                self.histograms["score"].quantiles() if complete else {}
+            ),
+            "delta_quantiles": (
+                self.histograms["delta"].quantiles() if complete else {}
+            ),
+            "cost_before_quantiles": (
+                self.histograms["cost_before"].quantiles() if complete else {}
+            ),
+            "cost_after_quantiles": (
+                self.histograms["cost_after"].quantiles() if complete else {}
+            ),
             "sample_count": int(len(self.samples)),
             "samples": list(self.samples),
         }
@@ -950,24 +1201,14 @@ class AssociationHeadAuditAccumulator:
             bucket.delta_sum = aggregate_sums["delta_sum"]
             bucket.cost_before_sum = aggregate_sums["cost_before_sum"]
             bucket.cost_after_sum = aggregate_sums["cost_after_sum"]
-            # Scene-level states are already summarized; keep bounded proxy
-            # points for merged quantiles instead of expanding millions of
-            # pairs back into memory.
-            for attr, field_name, avg_name in (
-                ("scores", "score_quantiles", "avg_score"),
-                ("deltas", "delta_quantiles", "avg_delta"),
-                ("cost_befores", "cost_before_quantiles", "avg_cost_before"),
-                ("cost_afters", "cost_after_quantiles", "avg_cost_after"),
-            ):
-                quantiles = item.get(field_name, {}) or {}
-                values = [
-                    quantiles.get("min", item.get(avg_name, 0.0)),
-                    quantiles.get("p10", item.get(avg_name, 0.0)),
-                    quantiles.get("p50", item.get(avg_name, 0.0)),
-                    quantiles.get("p90", item.get(avg_name, 0.0)),
-                    quantiles.get("max", item.get(avg_name, 0.0)),
-                ]
-                getattr(bucket, attr).extend(values)
+            for metric in _PAIR_METRICS:
+                bucket.histograms[metric].merge(
+                    item["quantile_sketches"][metric]
+                )
+            bucket.quantile_sketch_complete = bool(
+                bucket.quantile_sketch_complete
+                and item["quantile_sketch_complete"]
+            )
             _extend_bounded(
                 bucket.samples,
                 item["samples"],
@@ -996,6 +1237,7 @@ class AssociationHeadAuditAccumulator:
     def _validate_merge_state(self, state):
         if not isinstance(state, Mapping):
             raise TypeError("audit state must be a mapping")
+        state = _json_safe(state, path="audit_state")
         if "schema_version" not in state:
             raise ValueError("audit state is missing required schema_version")
         schema_version = _nonnegative_int(
@@ -1057,7 +1299,8 @@ class AssociationHeadAuditAccumulator:
         )
 
         pair_buckets = [
-            _validate_pair_bucket_state(item) for item in pair_items
+            _validate_pair_bucket_state(item, schema_version=schema_version)
+            for item in pair_items
         ]
         decision_buckets = [
             _validate_decision_bucket_state(item) for item in decision_items
@@ -1110,11 +1353,8 @@ class AssociationHeadAuditAccumulator:
     def _prepare_pair_merge(self, pair_items):
         staged_sums = {}
         plan = []
-        aggregate_fields = (
-            ("score", "avg_score", "score_sum"),
-            ("delta", "avg_delta", "delta_sum"),
-            ("cost_before", "avg_cost_before", "cost_before_sum"),
-            ("cost_after", "avg_cost_after", "cost_after_sum"),
+        aggregate_fields = tuple(
+            (metric, f"{metric}_sum") for metric in _PAIR_METRICS
         )
         for item in pair_items:
             key = (
@@ -1126,14 +1366,12 @@ class AssociationHeadAuditAccumulator:
                 bucket = self._buckets.get(key)
                 staged_sums[key] = {
                     sum_name: 0.0 if bucket is None else getattr(bucket, sum_name)
-                    for _, _, sum_name in aggregate_fields
+                    for _, sum_name in aggregate_fields
                 }
 
             next_sums = dict(staged_sums[key])
-            for label, average_name, sum_name in aggregate_fields:
-                increment = _finite_product(
-                    item[average_name], item["pair_count"], label
-                )
+            for label, sum_name in aggregate_fields:
+                increment = item["aggregate_sums"][label]
                 next_sums[sum_name] = _finite_add(
                     next_sums[sum_name], increment, label
                 )
@@ -1261,7 +1499,28 @@ class AssociationHeadAuditAccumulator:
     def write_json(self, path):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(self.to_summary(), indent=2, sort_keys=True, allow_nan=False),
-            encoding="utf-8",
+        payload = json.dumps(
+            self.to_summary(), indent=2, sort_keys=True, allow_nan=False
         )
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temporary_path = Path(handle.name)
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, path)
+            temporary_path = None
+        finally:
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink()
+                except FileNotFoundError:
+                    pass

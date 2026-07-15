@@ -2,6 +2,7 @@ import ast
 import copy
 import importlib
 import json
+import os
 import sys
 import tempfile
 import types
@@ -365,6 +366,94 @@ class AssociationHeadAuditAccumulatorTest(unittest.TestCase):
         self.assertEqual(bucket["samples"][0]["det_index"], 0)
         self.assertEqual(bucket["samples"][1]["det_index"], 1)
 
+    def test_pair_statistics_capacity_is_fixed_after_one_hundred_thousand_pairs(self):
+        audit = AssociationHeadAuditAccumulator()
+        for index in range(100_000):
+            value = float((index % 2001) - 1000) / 37.0
+            audit.add_pair(
+                **self._pair(
+                    score=value,
+                    delta=abs(value),
+                    cost_before=value + 30.0,
+                    cost_after=value + 31.0,
+                )
+            )
+
+        bucket = next(iter(audit._buckets.values()))
+        self.assertFalse(hasattr(bucket, "scores"))
+        self.assertEqual(
+            set(bucket.histograms),
+            {"score", "delta", "cost_before", "cost_after"},
+        )
+        self.assertTrue(
+            all(
+                len(histogram.counts) == 4096
+                for histogram in bucket.histograms.values()
+            )
+        )
+        state_bucket = audit.export_state()["pair_buckets"][0]
+        self.assertEqual(state_bucket["pair_count"], 100_000)
+        self.assertTrue(
+            all(
+                len(sketch["bins"]) <= 4096
+                for sketch in state_bucket["quantile_sketches"].values()
+            )
+        )
+
+    def test_pair_quantiles_and_counts_are_identical_across_merge_trees(self):
+        workers = []
+        for worker_index, values in enumerate(
+            (
+                (-10.0, -0.25, 0.0, 0.5),
+                (0.125, 0.25, 0.75, 8.0, 64.0),
+                (-4.0, -1.0, 0.0625, 1.0, 16.0, 128.0),
+            )
+        ):
+            worker = AssociationHeadAuditAccumulator()
+            for value in values:
+                worker.add_pair(
+                    **self._pair(
+                        score=value,
+                        delta=abs(value) / 10.0,
+                        cost_before=value + 20.0,
+                        cost_after=value + 21.0,
+                        active=worker_index != 1,
+                    )
+                )
+            workers.append(worker.export_state())
+
+        def merge(states):
+            result = AssociationHeadAuditAccumulator()
+            for state in states:
+                result.merge_state(copy.deepcopy(state))
+            return result
+
+        direct = merge(workers)
+        left_tree = merge((merge(workers[:2]).export_state(), workers[2]))
+        right_tree = merge((workers[0], merge(workers[1:]).export_state()))
+
+        expected = direct.export_state()["pair_buckets"][0]
+        for result in (left_tree, right_tree):
+            actual = result.export_state()["pair_buckets"][0]
+            self.assertEqual(actual["pair_count"], expected["pair_count"])
+            self.assertEqual(
+                actual["finite_pair_count"], expected["finite_pair_count"]
+            )
+            self.assertEqual(
+                actual["active_pair_count"], expected["active_pair_count"]
+            )
+            self.assertEqual(
+                actual["penalized_pair_count"], expected["penalized_pair_count"]
+            )
+            self.assertEqual(actual["quantile_sketches"], expected["quantile_sketches"])
+            for field_name in (
+                "score_quantiles",
+                "delta_quantiles",
+                "cost_before_quantiles",
+                "cost_after_quantiles",
+            ):
+                self.assertEqual(actual[field_name], expected[field_name])
+
     def test_add_pair_rejects_nonfinite_numeric_fields_without_mutation(self):
         for field_name in ("score", "delta", "cost_before", "cost_after"):
             for value in (float("nan"), float("inf"), float("-inf")):
@@ -497,6 +586,118 @@ class AssociationHeadAuditAccumulatorTest(unittest.TestCase):
             path = Path(tmp) / "audit.json"
             merged.write_json(path)
             self.assertTrue(path.exists())
+
+    def test_schema_v2_exports_verifiable_quantile_sketch_state(self):
+        worker = AssociationHeadAuditAccumulator()
+        for score in (-2.0, 0.0, 0.5, 4.0):
+            worker.add_pair(**self._pair(score=score))
+        state = worker.export_state()
+        bucket = state["pair_buckets"][0]
+
+        self.assertEqual(bucket["quantile_method"], "fixed_float_histogram_v1")
+        self.assertTrue(bucket["quantile_sketch_complete"])
+        self.assertEqual(
+            set(bucket["quantile_sketches"]),
+            {"score", "delta", "cost_before", "cost_after"},
+        )
+        for sketch in bucket["quantile_sketches"].values():
+            self.assertEqual(sketch["type"], "fixed_float_histogram_v1")
+            self.assertEqual(sketch["bin_count"], 4096)
+            self.assertEqual(sketch["count"], bucket["pair_count"])
+            self.assertEqual(
+                sum(count for _, count in sketch["bins"]), sketch["count"]
+            )
+
+        target = AssociationHeadAuditAccumulator()
+        before = copy.deepcopy(target.to_summary())
+        corruptions = (
+            lambda item: item["quantile_sketches"]["score"].__setitem__("count", 3),
+            lambda item: item["quantile_sketches"]["score"]["bins"][0].__setitem__(1, 0),
+            lambda item: item["score_quantiles"].__setitem__("p50", 123.0),
+        )
+        for corrupt in corruptions:
+            with self.subTest(corrupt=corrupt):
+                malformed = copy.deepcopy(state)
+                corrupt(malformed["pair_buckets"][0])
+                with self.assertRaises((TypeError, ValueError)):
+                    target.merge_state(malformed)
+                self.assertEqual(target.to_summary(), before)
+
+        non_json_state = copy.deepcopy(state)
+        non_json_state["ignored_extension"] = object()
+        with self.assertRaisesRegex(TypeError, "audit_state.ignored_extension"):
+            target.merge_state(non_json_state)
+        self.assertEqual(target.to_summary(), before)
+
+    def test_signed_zero_histogram_state_round_trips(self):
+        worker = AssociationHeadAuditAccumulator()
+        worker.add_pair(**self._pair(score=-0.0))
+        worker.add_pair(**self._pair(score=0.0))
+
+        merged = AssociationHeadAuditAccumulator()
+        merged.merge_state(worker.export_state())
+
+        bucket = merged.to_summary()["pair_buckets"][0]
+        self.assertEqual(bucket["pair_count"], 2)
+        self.assertEqual(bucket["score_quantiles"]["min"], 0.0)
+        self.assertEqual(bucket["score_quantiles"]["max"], 0.0)
+
+    def test_schema_v1_merge_does_not_fabricate_quantiles(self):
+        merged = AssociationHeadAuditAccumulator()
+        merged.merge_state(self._legacy_pair_state())
+
+        bucket = merged.to_summary()["pair_buckets"][0]
+        self.assertFalse(bucket["quantile_sketch_complete"])
+        self.assertEqual(bucket["score_quantiles"], {})
+        self.assertEqual(bucket["delta_quantiles"], {})
+        self.assertEqual(bucket["cost_before_quantiles"], {})
+        self.assertEqual(bucket["cost_after_quantiles"], {})
+        self.assertEqual(bucket["quantile_semantics"], "unavailable_incomplete_sketch")
+
+    def test_write_json_atomically_replaces_complete_file_in_same_directory(self):
+        audit = AssociationHeadAuditAccumulator()
+        audit.add_pair(**self._pair())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "audit.json"
+            path.write_text("old-content", encoding="utf-8")
+            real_replace = os.replace
+
+            def observe_replace(source, target):
+                self.assertEqual(Path(source).parent, path.parent)
+                self.assertEqual(Path(target), path)
+                self.assertEqual(path.read_text(encoding="utf-8"), "old-content")
+                json.loads(Path(source).read_text(encoding="utf-8"))
+                real_replace(source, target)
+
+            with patch(
+                "tracker.association_head_audit.os.replace",
+                side_effect=observe_replace,
+            ) as replace:
+                audit.write_json(path)
+
+            replace.assert_called_once()
+            self.assertEqual(
+                json.loads(path.read_text(encoding="utf-8")), audit.to_summary()
+            )
+            self.assertEqual(list(path.parent.glob(f".{path.name}.*.tmp")), [])
+
+    def test_write_json_failure_preserves_target_and_removes_temp_file(self):
+        audit = AssociationHeadAuditAccumulator()
+        audit.add_pair(**self._pair())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "audit.json"
+            path.write_text("old-content", encoding="utf-8")
+            with patch(
+                "tracker.association_head_audit.os.replace",
+                side_effect=OSError("replace failed"),
+            ):
+                with self.assertRaisesRegex(OSError, "replace failed"):
+                    audit.write_json(path)
+
+            self.assertEqual(path.read_text(encoding="utf-8"), "old-content")
+            self.assertEqual(list(path.parent.glob(f".{path.name}.*.tmp")), [])
 
     def test_schema_v2_includes_manifest_pair_buckets_and_improved_decision(self):
         audit = AssociationHeadAuditAccumulator(
