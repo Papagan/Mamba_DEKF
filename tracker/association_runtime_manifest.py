@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import subprocess
+from numbers import Integral
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -53,25 +55,122 @@ def _resolve_checkpoint_path(value: Any, git_root: Path) -> str | None:
         return None
 
 
-def _preflight_association_checkpoint(
+def _merge_validation_errors(*errors: str | None) -> str | None:
+    messages = [str(error) for error in errors if error]
+    return "; ".join(messages) if messages else None
+
+
+def _parse_hidden_dims(value: Any) -> tuple[int, ...]:
+    if value is None:
+        raw_dims = [256, 128]
+    elif isinstance(value, (list, tuple)):
+        raw_dims = value
+    elif isinstance(value, Integral) and not isinstance(value, bool):
+        raw_dims = [value]
+    elif isinstance(value, str):
+        raw_dims = [item.strip() for item in value.split(",") if item.strip()]
+    else:
+        raise ValueError("hidden_dims must be a sequence or comma-separated string")
+
+    if not raw_dims:
+        raise ValueError("hidden_dims must contain at least one dimension")
+    try:
+        hidden_dims = tuple(int(item) for item in raw_dims)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("hidden_dims must contain only integers") from exc
+    if any(isinstance(item, bool) for item in raw_dims) or any(
+        dimension <= 0 for dimension in hidden_dims
+    ):
+        raise ValueError("hidden_dims must contain only positive integers")
+    return hidden_dims
+
+
+def resolve_association_head_parameters(
+    head_cfg: Mapping, checkpoint_settings: Mapping
+) -> tuple[dict, str | None]:
+    """Resolve loader architecture settings without silently accepting bad values."""
+    if "HIDDEN_DIMS" in head_cfg:
+        hidden_value = head_cfg["HIDDEN_DIMS"]
+        hidden_source = "config"
+    elif "hidden_dims" in checkpoint_settings:
+        hidden_value = checkpoint_settings["hidden_dims"]
+        hidden_source = "checkpoint"
+    else:
+        hidden_value = [256, 128]
+        hidden_source = "default"
+
+    if "DROPOUT" in head_cfg:
+        dropout_value = head_cfg["DROPOUT"]
+        dropout_source = "config"
+    elif "dropout" in checkpoint_settings:
+        dropout_value = checkpoint_settings["dropout"]
+        dropout_source = "checkpoint"
+    else:
+        dropout_value = 0.1
+        dropout_source = "default"
+
+    errors = []
+    try:
+        hidden_dims = _parse_hidden_dims(hidden_value)
+    except (TypeError, ValueError) as exc:
+        hidden_dims = None
+        errors.append(f"invalid {hidden_source} hidden_dims: {exc}")
+
+    try:
+        dropout = float(dropout_value)
+        if not math.isfinite(dropout) or not 0.0 <= dropout <= 1.0:
+            raise ValueError("dropout must be finite and between 0 and 1")
+    except (TypeError, ValueError) as exc:
+        dropout = None
+        errors.append(f"invalid {dropout_source} dropout: {exc}")
+
+    return {
+        "hidden_dims": hidden_dims,
+        "hidden_dims_source": hidden_source,
+        "dropout": dropout,
+        "dropout_source": dropout_source,
+    }, _merge_validation_errors(*errors)
+
+
+def preflight_association_checkpoint(
     checkpoint_path: str | None,
+    head_cfg: Mapping | None = None,
+    category_map: Any = None,
 ) -> tuple[dict, dict]:
     result = {
         "loadable": False,
         "head_key_count": 0,
         "validation_error": None,
     }
+
+    def finalize(
+        checkpoint_settings: Mapping | None = None,
+        settings_error: str | None = None,
+    ) -> tuple[dict, dict]:
+        normalized_settings = dict(checkpoint_settings or {})
+        _, architecture_error = resolve_association_head_parameters(
+            head_cfg or {}, normalized_settings
+        )
+        _, category_map_error = _canonical_class_id_to_name(category_map)
+        result["validation_error"] = _merge_validation_errors(
+            result["validation_error"],
+            settings_error,
+            architecture_error,
+            category_map_error,
+        )
+        return result, normalized_settings
+
     if checkpoint_path is None:
         result["validation_error"] = "association checkpoint path is empty"
-        return result, {}
+        return finalize()
 
     path = Path(checkpoint_path)
     if not path.exists():
         result["validation_error"] = "association checkpoint does not exist"
-        return result, {}
+        return finalize()
     if not path.is_file():
         result["validation_error"] = "association checkpoint path is not a file"
-        return result, {}
+        return finalize()
 
     try:
         import torch
@@ -83,11 +182,11 @@ def _preflight_association_checkpoint(
             "failed to load association checkpoint: "
             f"{type(exc).__name__}: {exc}"
         )
-        return result, {}
+        return finalize()
 
     if not isinstance(checkpoint, Mapping):
         result["validation_error"] = "association checkpoint payload is not a mapping"
-        return result, {}
+        return finalize()
 
     state = checkpoint.get("model_state_dict", checkpoint)
     if not isinstance(state, Mapping):
@@ -103,14 +202,49 @@ def _preflight_association_checkpoint(
                 "association checkpoint has no association_heads.* keys"
             )
 
-    try:
-        settings = checkpoint.get("settings", {}) or {}
-        checkpoint_settings = (
-            dict(settings) if isinstance(settings, Mapping) else {}
-        )
-    except Exception:
+    settings = checkpoint.get("settings", {})
+    settings_error = None
+    if settings is None:
         checkpoint_settings = {}
-    return result, checkpoint_settings
+    elif isinstance(settings, Mapping):
+        try:
+            checkpoint_settings = dict(settings)
+        except Exception as exc:
+            checkpoint_settings = {}
+            settings_error = (
+                "association checkpoint settings could not be copied: "
+                f"{type(exc).__name__}: {exc}"
+            )
+    else:
+        checkpoint_settings = {}
+        settings_error = "association checkpoint settings must be a mapping"
+
+    return finalize(checkpoint_settings, settings_error)
+
+
+def _canonical_class_id_to_name(values: Any) -> tuple[dict, str | None]:
+    if values is None:
+        return {}, None
+    if not isinstance(values, Mapping):
+        return {}, "CATEGORY_MAP_TO_NUMBER must be a mapping"
+
+    reversed_mapping = {}
+    normalized_names = set()
+    for raw_name, raw_class_id in values.items():
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            return {}, "CATEGORY_MAP_TO_NUMBER requires a non-empty class name"
+        class_name = raw_name.strip().lower()
+        if class_name in normalized_names:
+            return {}, f"CATEGORY_MAP_TO_NUMBER has duplicate class name {class_name!r}"
+        if not isinstance(raw_class_id, Integral) or isinstance(raw_class_id, bool):
+            return {}, "CATEGORY_MAP_TO_NUMBER requires an integer class id"
+        class_id = int(raw_class_id)
+        class_id_key = str(class_id)
+        if class_id_key in reversed_mapping:
+            return {}, f"CATEGORY_MAP_TO_NUMBER has duplicate class id {class_id}"
+        normalized_names.add(class_name)
+        reversed_mapping[class_id_key] = class_name
+    return dict(sorted(reversed_mapping.items(), key=lambda item: int(item[0]))), None
 
 
 def _normalize_string_mapping(values: Any) -> dict:
@@ -160,46 +294,6 @@ def _normalize_active_class_states(values: Any) -> dict:
     return normalized
 
 
-def _parse_hidden_dims(value: Any) -> list:
-    if isinstance(value, (list, tuple)):
-        return [int(item) for item in value]
-    if value is None:
-        return [256, 128]
-    return [int(item) for item in str(value).split(",") if str(item).strip()]
-
-
-def _effective_hidden_dims(head_cfg: Mapping, checkpoint_settings: Mapping) -> tuple:
-    if "HIDDEN_DIMS" in head_cfg:
-        value = head_cfg["HIDDEN_DIMS"]
-        source = "config"
-    elif "hidden_dims" in checkpoint_settings:
-        value = checkpoint_settings["hidden_dims"]
-        source = "checkpoint"
-    else:
-        value = [256, 128]
-        source = "default"
-    try:
-        return _parse_hidden_dims(value), source
-    except Exception:
-        return [256, 128], "default"
-
-
-def _effective_dropout(head_cfg: Mapping, checkpoint_settings: Mapping) -> tuple:
-    if "DROPOUT" in head_cfg:
-        value = head_cfg["DROPOUT"]
-        source = "config"
-    elif "dropout" in checkpoint_settings:
-        value = checkpoint_settings["dropout"]
-        source = "checkpoint"
-    else:
-        value = 0.1
-        source = "default"
-    try:
-        return float(value), source
-    except Exception:
-        return 0.1, "default"
-
-
 def build_association_runtime_manifest(
     *, cfg: dict, config_path: str, process_count: int, git_root: str | Path
 ) -> dict:
@@ -221,12 +315,18 @@ def build_association_runtime_manifest(
     embed_dim = int(mamba_cfg.get("EMBED_DIM", 32))
     num_classes = int(head_cfg.get("NUM_CLASSES", mamba_cfg.get("NUM_CLASSES", 7)))
     checkpoint_preflight, checkpoint_settings = (
-        _preflight_association_checkpoint(checkpoint_path)
+        preflight_association_checkpoint(
+            checkpoint_path,
+            head_cfg,
+            cfg.get("CATEGORY_MAP_TO_NUMBER", {}),
+        )
     )
-    hidden_dims, hidden_dims_source = _effective_hidden_dims(
+    architecture_parameters, _ = resolve_association_head_parameters(
         head_cfg, checkpoint_settings
     )
-    dropout, dropout_source = _effective_dropout(head_cfg, checkpoint_settings)
+    class_id_to_name, _ = _canonical_class_id_to_name(
+        cfg.get("CATEGORY_MAP_TO_NUMBER", {})
+    )
 
     return {
         "audit_schema_version": AUDIT_SCHEMA_VERSION,
@@ -247,12 +347,17 @@ def build_association_runtime_manifest(
         ],
         "association_head_architecture": {
             "input_dim": embed_dim * 4 + 7,
-            "hidden_dims": hidden_dims,
-            "hidden_dims_source": hidden_dims_source,
-            "dropout": dropout,
-            "dropout_source": dropout_source,
+            "hidden_dims": (
+                list(architecture_parameters["hidden_dims"])
+                if architecture_parameters["hidden_dims"] is not None
+                else None
+            ),
+            "hidden_dims_source": architecture_parameters["hidden_dims_source"],
+            "dropout": architecture_parameters["dropout"],
+            "dropout_source": architecture_parameters["dropout_source"],
             "num_classes": num_classes,
         },
+        "class_id_to_name": class_id_to_name,
         "active_class_states": _normalize_active_class_states(
             head_cfg.get("ACTIVE_CLASS_STATES", {})
         ),

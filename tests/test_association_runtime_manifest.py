@@ -32,6 +32,7 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
         return {
             "FILTER_MODE": "mamba_multihead_closure",
             "TRACKER_COMPAT_MODE": "mctrack",
+            "CATEGORY_MAP_TO_NUMBER": {"pedestrian": 2, "car": 0},
             "MAMBA": {"EMBED_DIM": 64, "NUM_CLASSES": 7},
             "MATCHING": {
                 "BEV": {
@@ -94,6 +95,9 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
         self.assertEqual(
             manifest["active_class_states"], {"2": ["matched", "unmatched"]}
         )
+        self.assertEqual(
+            manifest["class_id_to_name"], {"0": "car", "2": "pedestrian"}
+        )
         self.assertEqual(manifest["apply_mode"], "margin_tiebreak")
         self.assertEqual(manifest["cost_margin_eps"], 0.05)
         self.assertEqual(manifest["min_score"], 0.6)
@@ -154,6 +158,29 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
         self.assertEqual(manifest["association_checkpoint_head_key_count"], 0)
         self.assertIn(
             "association_heads.*",
+            manifest["association_checkpoint_validation_error"],
+        )
+
+    def test_checkpoint_preflight_rejects_non_mapping_settings(self):
+        torch.save(
+            {
+                "model_state_dict": {
+                    "association_heads.heads.0.weight": torch.ones(1)
+                },
+                "settings": [],
+            },
+            self.checkpoint_path,
+        )
+
+        manifest = build_association_runtime_manifest(
+            cfg=self._cfg(),
+            config_path=str(self.config_path),
+            process_count=1,
+            git_root=self.root,
+        )
+
+        self.assertIn(
+            "settings must be a mapping",
             manifest["association_checkpoint_validation_error"],
         )
 
@@ -221,7 +248,7 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
         self.assertEqual(architecture["dropout"], 0.25)
         self.assertEqual(architecture["dropout_source"], "checkpoint")
 
-    def test_malformed_checkpoint_hidden_dims_fall_back_safely(self):
+    def test_malformed_checkpoint_hidden_dims_are_preflight_validation_errors(self):
         torch.save(
             {"settings": {"hidden_dims": "bad", "dropout": 0.25}},
             self.checkpoint_path,
@@ -237,13 +264,11 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
             git_root=self.root,
         )
 
-        architecture = manifest["association_head_architecture"]
-        self.assertEqual(architecture["hidden_dims"], [256, 128])
-        self.assertEqual(architecture["hidden_dims_source"], "default")
-        self.assertEqual(architecture["dropout"], 0.25)
-        self.assertEqual(architecture["dropout_source"], "checkpoint")
+        self.assertIn(
+            "hidden_dims", manifest["association_checkpoint_validation_error"]
+        )
 
-    def test_malformed_checkpoint_dropout_falls_back_safely(self):
+    def test_malformed_checkpoint_dropout_is_a_preflight_validation_error(self):
         torch.save(
             {"settings": {"hidden_dims": [96, 48], "dropout": "bad"}},
             self.checkpoint_path,
@@ -259,11 +284,81 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
             git_root=self.root,
         )
 
-        architecture = manifest["association_head_architecture"]
-        self.assertEqual(architecture["hidden_dims"], [96, 48])
-        self.assertEqual(architecture["hidden_dims_source"], "checkpoint")
-        self.assertEqual(architecture["dropout"], 0.1)
-        self.assertEqual(architecture["dropout_source"], "default")
+        self.assertIn(
+            "dropout", manifest["association_checkpoint_validation_error"]
+        )
+
+    def test_malformed_config_architecture_is_a_preflight_validation_error(self):
+        torch.save(
+            {
+                "model_state_dict": {
+                    "association_heads.heads.0.0.weight": torch.ones(1, 2)
+                }
+            },
+            self.checkpoint_path,
+        )
+        cases = [
+            ("HIDDEN_DIMS", "bad", "hidden_dims"),
+            ("HIDDEN_DIMS", [0], "hidden_dims"),
+            ("DROPOUT", "bad", "dropout"),
+            ("DROPOUT", 1.5, "dropout"),
+        ]
+
+        for key, value, expected in cases:
+            with self.subTest(key=key, value=value):
+                cfg = self._cfg()
+                cfg["MAMBA_ASSOCIATION_HEAD"][key] = value
+                manifest = build_association_runtime_manifest(
+                    cfg=cfg,
+                    config_path=str(self.config_path),
+                    process_count=1,
+                    git_root=self.root,
+                )
+
+                self.assertIn(
+                    expected,
+                    manifest["association_checkpoint_validation_error"],
+                )
+
+    def test_category_map_is_strictly_reversed_for_diagnostics(self):
+        cfg = self._cfg()
+        cfg["CATEGORY_MAP_TO_NUMBER"] = {" pedestrian ": 2, "CAR": 0}
+
+        manifest = build_association_runtime_manifest(
+            cfg=cfg,
+            config_path=str(self.config_path),
+            process_count=1,
+            git_root=self.root,
+        )
+
+        self.assertEqual(
+            manifest["class_id_to_name"], {"0": "car", "2": "pedestrian"}
+        )
+
+    def test_conflicting_or_malformed_category_maps_fail_preflight_validation(self):
+        cases = [
+            ({"car": 0, "truck": 0}, "duplicate class id"),
+            ({"car": "zero"}, "integer class id"),
+            ({"": 0}, "non-empty class name"),
+            (["car", 0], "mapping"),
+        ]
+
+        for category_map, expected in cases:
+            with self.subTest(category_map=category_map):
+                cfg = self._cfg()
+                cfg["CATEGORY_MAP_TO_NUMBER"] = category_map
+                manifest = build_association_runtime_manifest(
+                    cfg=cfg,
+                    config_path=str(self.config_path),
+                    process_count=1,
+                    git_root=self.root,
+                )
+
+                self.assertEqual(manifest["class_id_to_name"], {})
+                self.assertIn(
+                    expected,
+                    manifest["association_checkpoint_validation_error"],
+                )
 
     def test_manifest_compatibility_rejects_changed_active_classes(self):
         left = {"config_sha256": "a", "active_class_states": {"2": ["matched"]}}

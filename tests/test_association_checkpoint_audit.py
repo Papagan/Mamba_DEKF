@@ -12,6 +12,12 @@ from unittest.mock import patch
 import torch
 
 from tracker.association_head_audit import AssociationHeadAuditAccumulator
+from tracker.association_runtime_manifest import (
+    preflight_association_checkpoint,
+    resolve_association_head_parameters,
+    sha256_file,
+)
+from training.association_model import ClassConditionedAssociationHeadBank
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,7 +46,7 @@ class _StubHead:
         return self
 
 
-def _load_tracker_type():
+def _load_tracker_type(head_type=_StubHead):
     tree = ast.parse((ROOT / "tracker/base_tracker.py").read_text(encoding="utf-8"))
     tracker_class = next(
         node
@@ -65,12 +71,16 @@ def _load_tracker_type():
         raise AssertionError(f"Missing Base3DTracker methods: {sorted(missing)}")
     namespace = {
         "AssociationHeadAuditAccumulator": AssociationHeadAuditAccumulator,
-        "ClassConditionedAssociationHeadBank": _StubHead,
+        "ClassConditionedAssociationHeadBank": head_type,
         "Dict": dict,
         "Mapping": Mapping,
         "Optional": Optional,
+        "Path": Path,
         "Tuple": Tuple,
         "os": os,
+        "preflight_association_checkpoint": preflight_association_checkpoint,
+        "resolve_association_head_parameters": resolve_association_head_parameters,
+        "sha256_file": sha256_file,
         "torch": torch,
     }
     exec(
@@ -98,18 +108,24 @@ class AssociationCheckpointAuditTest(unittest.TestCase):
         strict=False,
         head_enabled=True,
         runtime_manifest=None,
+        head_type=_StubHead,
+        include_architecture_config=True,
+        hidden_dims=None,
+        dropout=None,
     ):
-        tracker_type = _load_tracker_type()
+        tracker_type = _load_tracker_type(head_type=head_type)
         tracker = tracker_type()
+        head_cfg = {
+            "ENABLED": head_enabled,
+            "CHECKPOINT_PATH": checkpoint_path,
+            "NUM_CLASSES": 1,
+        }
+        if include_architecture_config:
+            head_cfg["HIDDEN_DIMS"] = [2] if hidden_dims is None else hidden_dims
+            head_cfg["DROPOUT"] = 0.0 if dropout is None else dropout
         tracker.cfg = {
             "MAMBA": {"NUM_CLASSES": 1},
-            "MAMBA_ASSOCIATION_HEAD": {
-                "ENABLED": head_enabled,
-                "CHECKPOINT_PATH": checkpoint_path,
-                "HIDDEN_DIMS": [2],
-                "DROPOUT": 0.0,
-                "NUM_CLASSES": 1,
-            },
+            "MAMBA_ASSOCIATION_HEAD": head_cfg,
             "ASSOCIATION_HEAD_AUDIT": {
                 "ENABLED": audit_enabled,
                 "SHADOW_MODE": shadow_mode,
@@ -134,6 +150,31 @@ class AssociationCheckpointAuditTest(unittest.TestCase):
 
     def _save_checkpoint(self, state):
         torch.save({"model_state_dict": state}, self.checkpoint_path)
+
+    def _real_head_state(self):
+        head = ClassConditionedAssociationHeadBank(
+            input_dim=11,
+            num_classes=1,
+            hidden_dims=(2,),
+            dropout=0.0,
+        )
+        return {
+            f"association_heads.{key}": value.detach().clone()
+            for key, value in head.state_dict().items()
+        }
+
+    def _runtime_manifest(self, head_cfg=None):
+        preflight, _ = preflight_association_checkpoint(
+            str(self.checkpoint_path),
+            head_cfg or {"HIDDEN_DIMS": [2], "DROPOUT": 0.0},
+        )
+        return {
+            "association_checkpoint_path": str(self.checkpoint_path.resolve()),
+            "association_checkpoint_sha256": sha256_file(self.checkpoint_path),
+            "association_checkpoint_loadable": preflight["loadable"],
+            "association_checkpoint_head_key_count": preflight["head_key_count"],
+            "association_checkpoint_validation_error": preflight["validation_error"],
+        }
 
     def _assert_one_load_error(self, tracker):
         summary = tracker.association_head_audit.to_summary()
@@ -212,12 +253,7 @@ class AssociationCheckpointAuditTest(unittest.TestCase):
 
     def test_complete_load_records_no_error_and_does_not_mutate_manifest(self):
         self._save_checkpoint({"association_heads.heads.0.weight": torch.ones(1)})
-        manifest = {
-            "association_checkpoint_path": str(self.checkpoint_path.resolve()),
-            "association_checkpoint_loadable": True,
-            "association_checkpoint_head_key_count": 1,
-            "association_checkpoint_validation_error": None,
-        }
+        manifest = self._runtime_manifest()
         expected_manifest = copy.deepcopy(manifest)
         tracker = self._tracker(
             checkpoint_path="relative/path.pt", runtime_manifest=manifest
@@ -230,6 +266,149 @@ class AssociationCheckpointAuditTest(unittest.TestCase):
         summary = tracker.association_head_audit.to_summary()
         self.assertEqual(summary["audit_error_count"], 0)
         self.assertTrue(summary["decision_evidence_complete"])
+
+    def test_runtime_manifest_checkpoint_fields_are_verified_before_load(self):
+        self._save_checkpoint(self._real_head_state())
+        manifest = self._runtime_manifest()
+        cases = [
+            ("association_checkpoint_path", f"{self.root}/./association.pt", "path"),
+            ("association_checkpoint_sha256", "0" * 64, "sha256"),
+            ("association_checkpoint_loadable", False, "loadable"),
+            (
+                "association_checkpoint_head_key_count",
+                manifest["association_checkpoint_head_key_count"] + 1,
+                "head_key_count",
+            ),
+            ("association_checkpoint_validation_error", "stale error", "validation_error"),
+        ]
+
+        for field, value, expected in cases:
+            with self.subTest(field=field):
+                stale_manifest = copy.deepcopy(manifest)
+                stale_manifest[field] = value
+                tracker = self._tracker(
+                    checkpoint_path=str(self.checkpoint_path),
+                    strict=True,
+                    runtime_manifest=stale_manifest,
+                    head_type=ClassConditionedAssociationHeadBank,
+                )
+
+                with self.assertRaisesRegex(RuntimeError, expected):
+                    tracker._load_pairwise_association_head()
+
+    def test_real_head_checkpoint_complete_missing_and_unexpected_states(self):
+        complete_state = self._real_head_state()
+        missing_key = next(iter(complete_state))
+        cases = [
+            ("complete", complete_state, None),
+            (
+                "missing",
+                {key: value for key, value in complete_state.items() if key != missing_key},
+                "missing keys",
+            ),
+            (
+                "unexpected",
+                {
+                    **complete_state,
+                    "association_heads.unexpected.weight": torch.ones(1),
+                },
+                "unexpected keys",
+            ),
+        ]
+
+        for label, state, expected_error in cases:
+            with self.subTest(label=label):
+                self._save_checkpoint(state)
+                manifest = self._runtime_manifest()
+                tracker = self._tracker(
+                    checkpoint_path=str(self.checkpoint_path),
+                    strict=True,
+                    runtime_manifest=manifest,
+                    head_type=ClassConditionedAssociationHeadBank,
+                )
+
+                if expected_error is None:
+                    head = tracker._load_pairwise_association_head()
+                    self.assertIsInstance(head, ClassConditionedAssociationHeadBank)
+                    self.assertEqual(
+                        tracker.association_head_audit.to_summary()["audit_error_count"],
+                        0,
+                    )
+                else:
+                    with self.assertRaisesRegex(RuntimeError, expected_error):
+                        tracker._load_pairwise_association_head()
+
+    def test_replaced_real_checkpoint_fails_strict_and_marks_non_strict_incomplete(self):
+        original_state = self._real_head_state()
+        self._save_checkpoint(original_state)
+        manifest = self._runtime_manifest()
+        expected_manifest = copy.deepcopy(manifest)
+
+        replacement_state = {
+            key: value + 1.0 for key, value in original_state.items()
+        }
+        self._save_checkpoint(replacement_state)
+
+        strict_tracker = self._tracker(
+            checkpoint_path=str(self.checkpoint_path),
+            strict=True,
+            runtime_manifest=manifest,
+            head_type=ClassConditionedAssociationHeadBank,
+        )
+        with patch.object(torch, "load", wraps=torch.load) as load_mock:
+            with self.assertRaisesRegex(RuntimeError, "sha256"):
+                strict_tracker._load_pairwise_association_head()
+        self.assertEqual(load_mock.call_count, 0)
+
+        non_strict_tracker = self._tracker(
+            checkpoint_path=str(self.checkpoint_path),
+            runtime_manifest=manifest,
+            head_type=ClassConditionedAssociationHeadBank,
+        )
+        head = non_strict_tracker._load_pairwise_association_head()
+
+        self.assertIsInstance(head, ClassConditionedAssociationHeadBank)
+        self._assert_one_load_error(non_strict_tracker)
+        self.assertEqual(manifest, expected_manifest)
+
+    def test_invalid_checkpoint_architecture_matches_manifest_and_loader_failure(self):
+        self._save_checkpoint(self._real_head_state())
+        checkpoint = torch.load(self.checkpoint_path, map_location="cpu")
+        checkpoint["settings"] = {"hidden_dims": "bad", "dropout": 0.0}
+        torch.save(checkpoint, self.checkpoint_path)
+        head_cfg = {"NUM_CLASSES": 1}
+        manifest = self._runtime_manifest(head_cfg=head_cfg)
+
+        self.assertIn(
+            "invalid checkpoint hidden_dims",
+            manifest["association_checkpoint_validation_error"],
+        )
+        tracker = self._tracker(
+            checkpoint_path=str(self.checkpoint_path),
+            strict=True,
+            runtime_manifest=manifest,
+            head_type=ClassConditionedAssociationHeadBank,
+            include_architecture_config=False,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "invalid checkpoint hidden_dims"):
+            tracker._load_pairwise_association_head()
+
+    def test_actual_loader_rejects_falsey_non_mapping_checkpoint_settings(self):
+        torch.save(
+            {
+                "model_state_dict": self._real_head_state(),
+                "settings": [],
+            },
+            self.checkpoint_path,
+        )
+        tracker = self._tracker(
+            checkpoint_path=str(self.checkpoint_path),
+            audit_enabled=False,
+            head_type=ClassConditionedAssociationHeadBank,
+        )
+
+        self.assertIsNone(tracker._load_pairwise_association_head())
 
     def test_disabled_audit_or_non_shadow_mode_keeps_compatibility_behavior(self):
         for audit_enabled, shadow_mode in [(False, True), (True, False)]:

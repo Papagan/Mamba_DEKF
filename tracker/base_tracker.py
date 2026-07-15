@@ -17,6 +17,7 @@ import copy
 import numpy as np
 import torch
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
 from tracker.matching import (
@@ -36,6 +37,11 @@ from tracker.compat_utils import (
 )
 from tracker.dirty_suppressor_audit import DirtySuppressorAuditAccumulator
 from tracker.association_head_audit import AssociationHeadAuditAccumulator
+from tracker.association_runtime_manifest import (
+    preflight_association_checkpoint,
+    resolve_association_head_parameters,
+    sha256_file,
+)
 from tracker.mctrack_motion import MCTrackOriginalPoseMotion
 from tracker.trajectory import Trajectory
 from tracker.bbox import BBox
@@ -886,11 +892,12 @@ class Base3DTracker:
 
     @staticmethod
     def _parse_hidden_dims(raw_value) -> Tuple[int, ...]:
-        if isinstance(raw_value, (list, tuple)):
-            return tuple(int(value) for value in raw_value)
-        if raw_value is None:
-            return (256, 128)
-        return tuple(int(value) for value in str(raw_value).split(",") if str(value).strip())
+        parameters, validation_error = resolve_association_head_parameters(
+            {"HIDDEN_DIMS": raw_value}, {}
+        )
+        if validation_error is not None:
+            raise ValueError(validation_error)
+        return parameters["hidden_dims"]
 
     def _load_pairwise_association_head(self):
         head_cfg = self._pairwise_association_head_cfg()
@@ -909,6 +916,82 @@ class Base3DTracker:
                 "MAMBA_ASSOCIATION_HEAD enabled but CHECKPOINT_PATH is empty."
             )
             return None
+
+        if self._association_checkpoint_audit_enabled() and isinstance(
+            runtime_manifest, Mapping
+        ):
+            try:
+                normalized_ckpt_path = str(Path(ckpt_path).expanduser().resolve())
+            except (OSError, RuntimeError, TypeError, ValueError):
+                normalized_ckpt_path = None
+            identity_snapshot = {
+                "association_checkpoint_path": normalized_ckpt_path,
+                "association_checkpoint_sha256": (
+                    sha256_file(normalized_ckpt_path)
+                    if normalized_ckpt_path is not None
+                    else None
+                ),
+            }
+            identity_mismatches = {
+                field: {
+                    "manifest": runtime_manifest.get(field),
+                    "runtime": runtime_value,
+                }
+                for field, runtime_value in identity_snapshot.items()
+                if runtime_manifest.get(field) != runtime_value
+            }
+            if identity_mismatches:
+                self._record_association_checkpoint_error(
+                    "association checkpoint runtime manifest mismatch for "
+                    + ", ".join(sorted(identity_mismatches)),
+                    context={
+                        "checkpoint_path": str(ckpt_path),
+                        "manifest_mismatches": identity_mismatches,
+                    },
+                )
+
+            checkpoint_preflight, _ = preflight_association_checkpoint(
+                normalized_ckpt_path,
+                head_cfg,
+                self.cfg.get("CATEGORY_MAP_TO_NUMBER", {}),
+            )
+            preflight_snapshot = {
+                "association_checkpoint_loadable": checkpoint_preflight["loadable"],
+                "association_checkpoint_head_key_count": checkpoint_preflight[
+                    "head_key_count"
+                ],
+                "association_checkpoint_validation_error": checkpoint_preflight[
+                    "validation_error"
+                ],
+            }
+            preflight_mismatches = {
+                field: {
+                    "manifest": runtime_manifest.get(field),
+                    "runtime": runtime_value,
+                }
+                for field, runtime_value in preflight_snapshot.items()
+                if runtime_manifest.get(field) != runtime_value
+            }
+            if preflight_mismatches:
+                self._record_association_checkpoint_error(
+                    "association checkpoint runtime manifest mismatch for "
+                    + ", ".join(sorted(preflight_mismatches)),
+                    context={
+                        "checkpoint_path": str(ckpt_path),
+                        "manifest_mismatches": preflight_mismatches,
+                    },
+                )
+            if checkpoint_preflight["validation_error"] is not None:
+                self._record_association_checkpoint_error(
+                    "association checkpoint preflight validation failed: "
+                    f"{checkpoint_preflight['validation_error']}",
+                    context={
+                        "checkpoint_path": str(ckpt_path),
+                        "checkpoint_preflight": checkpoint_preflight,
+                    },
+                )
+                return None
+
         if not os.path.exists(ckpt_path):
             self._record_association_checkpoint_error(
                 "MAMBA_ASSOCIATION_HEAD checkpoint not found: "
@@ -944,11 +1027,18 @@ class Base3DTracker:
             return None
 
         try:
-            settings = ckpt.get("settings", {}) or {}
-            hidden_dims = self._parse_hidden_dims(
-                head_cfg.get("HIDDEN_DIMS", settings.get("hidden_dims", [256, 128]))
+            settings = ckpt.get("settings", {})
+            if settings is None:
+                settings = {}
+            if not isinstance(settings, Mapping):
+                raise TypeError("association checkpoint settings must be a mapping")
+            architecture_parameters, validation_error = (
+                resolve_association_head_parameters(head_cfg, settings)
             )
-            dropout = float(head_cfg.get("DROPOUT", settings.get("dropout", 0.1)))
+            if validation_error is not None:
+                raise ValueError(validation_error)
+            hidden_dims = architecture_parameters["hidden_dims"]
+            dropout = architecture_parameters["dropout"]
             num_classes = int(head_cfg.get("NUM_CLASSES", self.cfg.get("MAMBA", {}).get("NUM_CLASSES", 7)))
             input_dim = self.embed_dim * 4 + 7
             head = ClassConditionedAssociationHeadBank(
