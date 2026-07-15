@@ -24,7 +24,7 @@ class BBox:
         self.det_score = bbox["detection_score"]
         self.raw_det_score = bbox["detection_score"]
         # Preserve only explicit source identities for audit; never infer GT IDs.
-        for token_name in ("gt_token", "instance_token"):
+        for token_name in ("gt_token", "instance_token", "annotation_token"):
             if token_name in bbox:
                 setattr(self, token_name, bbox[token_name])
         self.lwh = bbox["lwh"]

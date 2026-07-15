@@ -22,6 +22,17 @@ from typing import List, Tuple, Union
 from shapely.geometry import MultiPoint, box
 
 
+AUDIT_GT_MATCH_DISTANCE_BY_CLASS = {
+    "bicycle": 1.2,
+    "bus": 3.0,
+    "car": 2.0,
+    "motorcycle": 1.5,
+    "pedestrian": 1.0,
+    "trailer": 3.0,
+    "truck": 3.0,
+}
+
+
 def load_file(file_path):
     file_path = os.path.join(file_path)
     print(f"Parsing {file_path}")
@@ -457,6 +468,93 @@ def load_camera_info(nusc, sample_info):
     return all_cam_info
 
 
+def _tracking_category(category_name):
+    category_map = {
+        "vehicle.bicycle": "bicycle",
+        "vehicle.bus.bendy": "bus",
+        "vehicle.bus.rigid": "bus",
+        "vehicle.car": "car",
+        "vehicle.motorcycle": "motorcycle",
+        "vehicle.trailer": "trailer",
+        "vehicle.truck": "truck",
+    }
+    if isinstance(category_name, str) and category_name.startswith("human.pedestrian"):
+        return "pedestrian"
+    return category_map.get(category_name)
+
+
+def enrich_detections_with_gt_identity(
+    nusc,
+    sample_info,
+    detections,
+    *,
+    enabled=False,
+    split="val",
+    distance_by_class=None,
+):
+    """Attach GT identities for offline shadow-audit conversion only."""
+    if not enabled or split == "test" or not sample_info.get("anns"):
+        return list(detections)
+
+    if distance_by_class is None:
+        distance_by_class = AUDIT_GT_MATCH_DISTANCE_BY_CLASS
+    enriched = []
+    for detection in detections:
+        clean_detection = dict(detection)
+        for token_name in ("gt_token", "instance_token", "annotation_token"):
+            clean_detection.pop(token_name, None)
+        enriched.append(clean_detection)
+    gt_annotations = []
+    for annotation_index, annotation_token in enumerate(sample_info["anns"]):
+        annotation = nusc.get("sample_annotation", annotation_token)
+        category = _tracking_category(annotation.get("category_name", ""))
+        instance_token = annotation.get("instance_token")
+        translation = annotation.get("translation", ())
+        if category is None or not instance_token or len(translation) < 2:
+            continue
+        gt_annotations.append(
+            (annotation_index, category, translation, instance_token)
+        )
+
+    candidates = []
+    for detection_index, detection in enumerate(enriched):
+        category = detection.get("detection_name")
+        translation = detection.get("translation", ())
+        gate = distance_by_class.get(category)
+        if gate is None or len(translation) < 2:
+            continue
+        for (
+            annotation_index,
+            gt_category,
+            gt_translation,
+            instance_token,
+        ) in gt_annotations:
+            if gt_category != category:
+                continue
+            distance = math.hypot(
+                float(translation[0]) - float(gt_translation[0]),
+                float(translation[1]) - float(gt_translation[1]),
+            )
+            if math.isfinite(distance) and distance <= gate:
+                candidates.append(
+                    (distance, detection_index, annotation_index, instance_token)
+                )
+
+    matched_detections = set()
+    matched_annotations = set()
+    for _, detection_index, annotation_index, instance_token in sorted(candidates):
+        if (
+            detection_index in matched_detections
+            or annotation_index in matched_annotations
+        ):
+            continue
+        enriched[detection_index]["instance_token"] = instance_token
+        matched_detections.add(detection_index)
+        matched_annotations.add(annotation_index)
+
+    return enriched
+
+
 def convert_baseversion_bboxes(bboxes, global2ego, cameras_transform_matrix):
     new_bboxes = []
     for bbox in bboxes:
@@ -481,11 +579,22 @@ def convert_baseversion_bboxes(bboxes, global2ego, cameras_transform_matrix):
                 "x1y1x2y2": x1y1x2y2,
             },
         }
+        for token_name in ("gt_token", "instance_token", "annotation_token"):
+            if token_name in bbox:
+                new_bbox[token_name] = bbox[token_name]
         new_bboxes.append(new_bbox)
     return new_bboxes
 
 
-def nuscenes_main(raw_data_path, dets_path, detector, save_path, split):
+def nuscenes_main(
+    raw_data_path,
+    dets_path,
+    detector,
+    save_path,
+    split,
+    *,
+    audit_gt_enrichment=False,
+):
     start_time = time.time()
     dets_path = os.path.join(dets_path, detector, split + ".json")
     dets_json = load_file(dets_path)
@@ -545,7 +654,13 @@ def nuscenes_main(raw_data_path, dets_path, detector, save_path, split):
             lidar2global = ego2global.dot(lidar2ego)
             global2lidar = ego2lidar.dot(global2ego)
 
-            raw_dets = dets_json["results"][cur_sample_token]
+            raw_dets = enrich_detections_with_gt_identity(
+                nusc,
+                sample_info,
+                dets_json["results"][cur_sample_token],
+                enabled=audit_gt_enrichment,
+                split=split,
+            )
             bboxes = convert_baseversion_bboxes(
                 raw_dets, global2ego, cameras_transform_matrix
             )
@@ -583,7 +698,7 @@ def nuscenes_main(raw_data_path, dets_path, detector, save_path, split):
     print("Data format conversion is complete, please enjoy the tracking!!!!!")
 
 
-if __name__ == "__main__":
+def build_arg_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--raw_data_path",
@@ -594,8 +709,22 @@ if __name__ == "__main__":
     parser.add_argument("--save_path", type=str, default="data/base_version/nuscenes")
     parser.add_argument("--detector", type=str, default="centerpoint")
     parser.add_argument("--split", type=str, default="val", help="test/val")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--audit_gt_enrichment",
+        action="store_true",
+        help="Attach detection-to-GT identities for offline shadow audit only.",
+    )
+    return parser
+
+
+if __name__ == "__main__":
+    args = build_arg_parser().parse_args()
 
     all_datas = nuscenes_main(
-        args.raw_data_path, args.dets_path, args.detector, args.save_path, args.split
+        args.raw_data_path,
+        args.dets_path,
+        args.detector,
+        args.save_path,
+        args.split,
+        audit_gt_enrichment=args.audit_gt_enrichment,
     )
