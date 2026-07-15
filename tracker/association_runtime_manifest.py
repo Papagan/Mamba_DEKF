@@ -53,20 +53,64 @@ def _resolve_checkpoint_path(value: Any, git_root: Path) -> str | None:
         return None
 
 
-def _load_checkpoint_settings(checkpoint_path: str | None) -> dict:
+def _preflight_association_checkpoint(
+    checkpoint_path: str | None,
+) -> tuple[dict, dict]:
+    result = {
+        "loadable": False,
+        "head_key_count": 0,
+        "validation_error": None,
+    }
     if checkpoint_path is None:
-        return {}
+        result["validation_error"] = "association checkpoint path is empty"
+        return result, {}
+
+    path = Path(checkpoint_path)
+    if not path.exists():
+        result["validation_error"] = "association checkpoint does not exist"
+        return result, {}
+    if not path.is_file():
+        result["validation_error"] = "association checkpoint path is not a file"
+        return result, {}
+
     try:
         import torch
 
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
-        if not isinstance(checkpoint, Mapping):
-            return {}
+        result["loadable"] = True
+    except Exception as exc:
+        result["validation_error"] = (
+            "failed to load association checkpoint: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return result, {}
+
+    if not isinstance(checkpoint, Mapping):
+        result["validation_error"] = "association checkpoint payload is not a mapping"
+        return result, {}
+
+    state = checkpoint.get("model_state_dict", checkpoint)
+    if not isinstance(state, Mapping):
+        result["validation_error"] = "association checkpoint state is not a mapping"
+    else:
+        result["head_key_count"] = sum(
+            1
+            for key in state
+            if str(key).startswith("association_heads.")
+        )
+        if result["head_key_count"] == 0:
+            result["validation_error"] = (
+                "association checkpoint has no association_heads.* keys"
+            )
+
+    try:
         settings = checkpoint.get("settings", {}) or {}
-        return dict(settings) if isinstance(settings, Mapping) else {}
+        checkpoint_settings = (
+            dict(settings) if isinstance(settings, Mapping) else {}
+        )
     except Exception:
-        # Checkpoint metadata is audit-only and must never prevent tracking.
-        return {}
+        checkpoint_settings = {}
+    return result, checkpoint_settings
 
 
 def _normalize_string_mapping(values: Any) -> dict:
@@ -176,13 +220,8 @@ def build_association_runtime_manifest(
 
     embed_dim = int(mamba_cfg.get("EMBED_DIM", 32))
     num_classes = int(head_cfg.get("NUM_CLASSES", mamba_cfg.get("NUM_CLASSES", 7)))
-    needs_checkpoint_settings = (
-        "HIDDEN_DIMS" not in head_cfg or "DROPOUT" not in head_cfg
-    )
-    checkpoint_settings = (
-        _load_checkpoint_settings(checkpoint_path)
-        if needs_checkpoint_settings
-        else {}
+    checkpoint_preflight, checkpoint_settings = (
+        _preflight_association_checkpoint(checkpoint_path)
     )
     hidden_dims, hidden_dims_source = _effective_hidden_dims(
         head_cfg, checkpoint_settings
@@ -199,6 +238,13 @@ def build_association_runtime_manifest(
         "association_checkpoint_sha256": (
             sha256_file(checkpoint_path) if checkpoint_path is not None else None
         ),
+        "association_checkpoint_loadable": checkpoint_preflight["loadable"],
+        "association_checkpoint_head_key_count": checkpoint_preflight[
+            "head_key_count"
+        ],
+        "association_checkpoint_validation_error": checkpoint_preflight[
+            "validation_error"
+        ],
         "association_head_architecture": {
             "input_dim": embed_dim * 4 + 7,
             "hidden_dims": hidden_dims,

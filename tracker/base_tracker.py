@@ -16,7 +16,7 @@ import os
 import copy
 import numpy as np
 import torch
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Dict, List, Tuple, Optional
 
 from tracker.matching import (
@@ -495,6 +495,26 @@ class Base3DTracker:
                   "Running with RANDOM Mamba weights — set CHECKPOINT_PATH to load trained weights.")
 
         self.mamba_ekf.eval()
+        self.association_head_audit_cfg = (
+            (self.cfg.get("ASSOCIATION_HEAD_AUDIT", {}) or {})
+        )
+        self.association_head_audit = (
+            AssociationHeadAuditAccumulator(
+                max_samples_per_bucket=int(
+                    self.association_head_audit_cfg.get(
+                        "MAX_SAMPLES_PER_BUCKET", 0
+                    )
+                ),
+                runtime_manifest=self.cfg.get(
+                    "_ASSOCIATION_AUDIT_RUNTIME_MANIFEST"
+                ),
+                strict_manifest=bool(
+                    self.association_head_audit_cfg.get("STRICT", False)
+                ),
+            )
+            if bool(self.association_head_audit_cfg.get("ENABLED", False))
+            else None
+        )
         self.pairwise_association_head = self._load_pairwise_association_head()
 
         print(
@@ -520,27 +540,6 @@ class Base3DTracker:
             if bool(self.dirty_suppressor_audit_cfg.get("ENABLED", False))
             else None
         )
-        self.association_head_audit_cfg = (
-            (self.cfg.get("ASSOCIATION_HEAD_AUDIT", {}) or {})
-        )
-        self.association_head_audit = (
-            AssociationHeadAuditAccumulator(
-                max_samples_per_bucket=int(
-                    self.association_head_audit_cfg.get(
-                        "MAX_SAMPLES_PER_BUCKET", 0
-                    )
-                ),
-                runtime_manifest=self.cfg.get(
-                    "_ASSOCIATION_AUDIT_RUNTIME_MANIFEST"
-                ),
-                strict_manifest=bool(
-                    self.association_head_audit_cfg.get("STRICT", False)
-                ),
-            )
-            if bool(self.association_head_audit_cfg.get("ENABLED", False))
-            else None
-        )
-
     def _normalize_delta_t(self, dt_raw: float) -> float:
         """
         Normalize raw timestamp delta to seconds with unit auto-detection.
@@ -839,6 +838,49 @@ class Base3DTracker:
     def _pairwise_association_head_cfg(self) -> Dict:
         return (self.cfg.get("MAMBA_ASSOCIATION_HEAD", {}) or {})
 
+    def _association_checkpoint_audit_enabled(self) -> bool:
+        audit_cfg = (self.cfg.get("ASSOCIATION_HEAD_AUDIT", {}) or {})
+        return bool(
+            self._pairwise_association_head_cfg().get("ENABLED", False)
+            and audit_cfg.get("ENABLED", False)
+            and audit_cfg.get("SHADOW_MODE", False)
+        )
+
+    def _association_checkpoint_audit_strict(self) -> bool:
+        audit_cfg = (self.cfg.get("ASSOCIATION_HEAD_AUDIT", {}) or {})
+        return bool(
+            self._association_checkpoint_audit_enabled()
+            and audit_cfg.get("STRICT", False)
+        )
+
+    def _record_association_checkpoint_error(
+        self,
+        message: str,
+        *,
+        error: Optional[BaseException] = None,
+        context: Optional[Dict] = None,
+    ) -> None:
+        if self._association_checkpoint_audit_strict():
+            raise RuntimeError(
+                f"association checkpoint audit strict failure: {message}"
+            ) from error
+
+        if (
+            self._association_checkpoint_audit_enabled()
+            and self.association_head_audit is not None
+        ):
+            self.association_head_audit.add_error(
+                stage="association_checkpoint_load",
+                error_type=(
+                    type(error).__name__
+                    if error is not None
+                    else "RuntimeError"
+                ),
+                message=message,
+                context={} if context is None else context,
+            )
+        print(f"[Base3DTracker] WARNING: {message}")
+
     def _pairwise_association_head_enabled(self) -> bool:
         return bool(self._pairwise_association_head_cfg().get("ENABLED", False))
 
@@ -855,29 +897,53 @@ class Base3DTracker:
         if not bool(head_cfg.get("ENABLED", False)):
             return None
         ckpt_path = head_cfg.get("CHECKPOINT_PATH", None)
+        runtime_manifest = self.cfg.get("_ASSOCIATION_AUDIT_RUNTIME_MANIFEST")
+        if (
+            self._association_checkpoint_audit_enabled()
+            and isinstance(runtime_manifest, Mapping)
+            and runtime_manifest.get("association_checkpoint_path")
+        ):
+            ckpt_path = runtime_manifest["association_checkpoint_path"]
         if not ckpt_path:
-            print("[Base3DTracker] WARNING: MAMBA_ASSOCIATION_HEAD enabled but CHECKPOINT_PATH is empty.")
+            self._record_association_checkpoint_error(
+                "MAMBA_ASSOCIATION_HEAD enabled but CHECKPOINT_PATH is empty."
+            )
             return None
         if not os.path.exists(ckpt_path):
-            print(
-                "[Base3DTracker] WARNING: MAMBA_ASSOCIATION_HEAD checkpoint not found: "
-                f"{ckpt_path}. Association head disabled."
+            self._record_association_checkpoint_error(
+                "MAMBA_ASSOCIATION_HEAD checkpoint not found: "
+                f"{ckpt_path}. Association head disabled.",
+                context={"checkpoint_path": str(ckpt_path)},
             )
             return None
         try:
             ckpt = torch.load(ckpt_path, map_location=self.device)
             state = ckpt.get("model_state_dict", ckpt)
+            if not isinstance(state, Mapping):
+                raise TypeError("checkpoint state must be a mapping")
             head_state = {
                 key[len("association_heads."):]: value
                 for key, value in state.items()
                 if str(key).startswith("association_heads.")
             }
-            if not head_state:
-                print(
-                    "[Base3DTracker] WARNING: MAMBA_ASSOCIATION_HEAD checkpoint has no "
-                    "association_heads.* keys. Association head disabled."
-                )
-                return None
+        except Exception as exc:
+            self._record_association_checkpoint_error(
+                "failed to load MAMBA_ASSOCIATION_HEAD "
+                f"from {ckpt_path}: {exc}. Association head disabled.",
+                error=exc,
+                context={"checkpoint_path": str(ckpt_path)},
+            )
+            return None
+
+        if not head_state:
+            self._record_association_checkpoint_error(
+                "MAMBA_ASSOCIATION_HEAD checkpoint has no association_heads.* "
+                "keys. Association head disabled.",
+                context={"checkpoint_path": str(ckpt_path)},
+            )
+            return None
+
+        try:
             settings = ckpt.get("settings", {}) or {}
             hidden_dims = self._parse_hidden_dims(
                 head_cfg.get("HIDDEN_DIMS", settings.get("hidden_dims", [256, 128]))
@@ -894,22 +960,35 @@ class Base3DTracker:
                 dropout=dropout,
             ).to(self.device)
             missing, unexpected = head.load_state_dict(head_state, strict=False)
-            if missing:
-                print(f"[Base3DTracker] WARNING: association head missing keys: {missing}")
-            if unexpected:
-                print(f"[Base3DTracker] WARNING: association head unexpected keys: {unexpected}")
             head.eval()
-            print(
-                "[Base3DTracker] Loaded pairwise association head from "
-                f"{ckpt_path} (hidden_dims={hidden_dims}, dropout={dropout})"
-            )
-            return head
         except Exception as exc:
-            print(
-                "[Base3DTracker] WARNING: failed to load MAMBA_ASSOCIATION_HEAD "
-                f"from {ckpt_path}: {exc}. Association head disabled."
+            self._record_association_checkpoint_error(
+                "failed to load MAMBA_ASSOCIATION_HEAD "
+                f"from {ckpt_path}: {exc}. Association head disabled.",
+                error=exc,
+                context={"checkpoint_path": str(ckpt_path)},
             )
             return None
+
+        if missing or unexpected:
+            details = []
+            if missing:
+                details.append(f"missing keys: {list(missing)}")
+            if unexpected:
+                details.append(f"unexpected keys: {list(unexpected)}")
+            self._record_association_checkpoint_error(
+                "association head checkpoint state mismatch; " + "; ".join(details),
+                context={
+                    "checkpoint_path": str(ckpt_path),
+                    "missing_keys": [str(key) for key in missing],
+                    "unexpected_keys": [str(key) for key in unexpected],
+                },
+            )
+        print(
+            "[Base3DTracker] Loaded pairwise association head from "
+            f"{ckpt_path} (hidden_dims={hidden_dims}, dropout={dropout})"
+        )
+        return head
 
     @staticmethod
     def _bbox_center_distance_xy(a, b) -> float:

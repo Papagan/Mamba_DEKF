@@ -1,4 +1,5 @@
 import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -72,6 +73,11 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
             manifest["association_checkpoint_sha256"],
             hashlib.sha256(self.checkpoint_bytes).hexdigest(),
         )
+        self.assertFalse(manifest["association_checkpoint_loadable"])
+        self.assertEqual(manifest["association_checkpoint_head_key_count"], 0)
+        self.assertIsInstance(
+            manifest["association_checkpoint_validation_error"], str
+        )
         self.assertIn("git_commit", manifest)
         self.assertIn("git_dirty", manifest)
         self.assertEqual(
@@ -102,6 +108,54 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
         self.assertEqual(manifest["process_count"], 12)
         self.assertEqual(manifest["audit_schema_version"], 2)
         self.assertEqual(len(manifest["config_sha256"]), 64)
+        json.dumps(manifest, allow_nan=False)
+
+    def test_checkpoint_preflight_reports_loadable_head_state(self):
+        torch.save(
+            {
+                "model_state_dict": {
+                    "association_heads.heads.0.0.weight": torch.ones(1, 2),
+                    "association_heads.heads.0.0.bias": torch.zeros(1),
+                    "temporal_encoder.weight": torch.ones(1),
+                }
+            },
+            self.checkpoint_path,
+        )
+
+        manifest = build_association_runtime_manifest(
+            cfg=self._cfg(),
+            config_path=str(self.config_path),
+            process_count=1,
+            git_root=self.root,
+        )
+
+        self.assertTrue(manifest["association_checkpoint_loadable"])
+        self.assertEqual(manifest["association_checkpoint_head_key_count"], 2)
+        self.assertIsNone(manifest["association_checkpoint_validation_error"])
+        self.assertEqual(
+            json.loads(json.dumps(manifest))["association_checkpoint_head_key_count"],
+            2,
+        )
+
+    def test_checkpoint_preflight_reports_missing_head_keys(self):
+        torch.save(
+            {"model_state_dict": {"encoder.weight": torch.ones(1)}},
+            self.checkpoint_path,
+        )
+
+        manifest = build_association_runtime_manifest(
+            cfg=self._cfg(),
+            config_path=str(self.config_path),
+            process_count=1,
+            git_root=self.root,
+        )
+
+        self.assertTrue(manifest["association_checkpoint_loadable"])
+        self.assertEqual(manifest["association_checkpoint_head_key_count"], 0)
+        self.assertIn(
+            "association_heads.*",
+            manifest["association_checkpoint_validation_error"],
+        )
 
     def test_hash_failures_return_none(self):
         self.assertIsNone(sha256_file(self.root / "missing.yaml"))
@@ -120,6 +174,11 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
             str((self.root / "missing.pt").resolve()),
         )
         self.assertIsNone(manifest["association_checkpoint_sha256"])
+        self.assertFalse(manifest["association_checkpoint_loadable"])
+        self.assertEqual(manifest["association_checkpoint_head_key_count"], 0)
+        self.assertIn(
+            "does not exist", manifest["association_checkpoint_validation_error"]
+        )
 
     def test_cyclic_checkpoint_path_does_not_escape_manifest_builder(self):
         (self.root / "loop-a").symlink_to("loop-b")
@@ -136,6 +195,9 @@ class AssociationRuntimeManifestTest(unittest.TestCase):
 
         self.assertIsNone(manifest["association_checkpoint_path"])
         self.assertIsNone(manifest["association_checkpoint_sha256"])
+        self.assertFalse(manifest["association_checkpoint_loadable"])
+        self.assertEqual(manifest["association_checkpoint_head_key_count"], 0)
+        self.assertIn("path", manifest["association_checkpoint_validation_error"])
 
     def test_architecture_uses_checkpoint_settings_when_config_omits_them(self):
         torch.save(
