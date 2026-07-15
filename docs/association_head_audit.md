@@ -142,6 +142,47 @@ list. `audit_errors` must contain non-negative native integer `count` and
 `sample_count == len(samples) <= count`; an optional top-level
 `audit_error_count` must agree. Any recorded audit error also fails closed.
 
+Before decision evidence is usable, `runtime_manifest` must also prove the
+runtime that produced it. Its `audit_schema_version` must be native integer
+`3`, while the enclosing decision audit remains schema `2`. `config_sha256`
+must be a non-empty string. The manifest must contain native boolean `true` values for
+`association_head_enabled`, `association_head_audit_enabled`, and
+`association_head_audit_shadow_mode`. If any of these flags is missing,
+malformed, or false, the report is not candidate evidence. Checkpoint fields
+are required only when all three flags prove that the association head was
+actually enabled in a shadow audit; an inactive/non-shadow report is still
+insufficient evidence but is not diagnosed as a missing-checkpoint report.
+
+An enabled shadow audit requires this complete checkpoint contract:
+
+- `association_checkpoint_configured` and `association_checkpoint_loaded` are
+  native boolean `true`.
+- `association_checkpoint_path` is a non-empty normalized absolute resolved
+  path, and `association_checkpoint_sha256` is a 64-digit hexadecimal digest.
+- `association_checkpoint_loadable` is native boolean `true`,
+  `association_checkpoint_head_key_count` is a positive native integer, and
+  `association_checkpoint_key_validation_status` is `valid`.
+- `association_checkpoint_validation_error` is exactly `null`.
+- `association_checkpoint_runtime_contract_expected` and
+  `association_checkpoint_runtime_contract_actual` are non-empty mappings
+  with identical JSON values and types, and
+  `association_checkpoint_runtime_contract_validation_status` is `valid`.
+
+Missing fields are recorded as explicit
+`missing_runtime_manifest_field:<field>` entries in
+`decision_evidence.incomplete_reasons`. A null checkpoint hash, false
+loadability, configured-but-not-loaded state, non-`valid` validation status,
+or expected/actual mismatch also makes evidence unusable. The comparator
+recursively rejects every present `*_validation_error` that is not `null`,
+every present `*_validation_status` that is not `valid`, and every future
+`*_expected`/`*_actual` pair that differs. These rules prevent schema v1 or a
+partially extended schema v2 manifest from becoming a candidate by omission.
+
+The CLI writes the comparison report through a temporary file in the output
+directory, flushes and `fsync`s it, preserves an existing report's permission
+mode, and publishes it with `os.replace`. A failed write therefore does not
+expose a partially written JSON report.
+
 Each decision bucket requires a bounded non-negative native integer `class_id`,
 the exact canonical `class_name`, a `matched` or `unmatched` state, and every
 production counter as a non-negative native integer. Outcome counts, known-GT

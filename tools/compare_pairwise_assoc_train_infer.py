@@ -6,7 +6,10 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import pickle
+import stat
+import tempfile
 from collections import defaultdict
 from collections.abc import Mapping
 from pathlib import Path
@@ -18,6 +21,7 @@ import numpy as np
 DEFAULT_MIN_KNOWN_CHANGED = 100
 MAX_HARM_PRECISION = 0.20
 MAX_CLASS_ID = 2**31 - 1
+RUNTIME_MANIFEST_SCHEMA_VERSION = 3
 TRACK_STATE_BUCKETS = {"matched", "unmatched"}
 DECISION_COUNTER_FIELDS = (
     "total_decisions",
@@ -78,6 +82,41 @@ def _load_audit_json(path: Path) -> Tuple[Any, List[str]]:
     except (OSError, UnicodeError, json.JSONDecodeError):
         return {}, ["invalid_audit_json"]
     return data, ["duplicate_json_key"] if duplicate_keys else []
+
+
+def _atomic_write_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        existing_mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        existing_mode = None
+
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as file_obj:
+            json.dump(
+                value,
+                file_obj,
+                indent=2,
+                sort_keys=True,
+                allow_nan=False,
+            )
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
+        if existing_mode is not None:
+            os.chmod(temporary_path, existing_mode)
+        os.replace(temporary_path, path)
+    except BaseException:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def _class_key(class_id: int, class_name: str) -> str:
@@ -172,6 +211,207 @@ def _canonical_class_identity_status(
         },
     }
     return status, normalized
+
+
+def _strict_json_equal(left: Any, right: Any) -> bool:
+    try:
+        return json.dumps(
+            left,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ) == json.dumps(
+            right,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _runtime_manifest_status(audit: Mapping[str, Any]) -> Dict[str, Any]:
+    reasons = []
+
+    def reject(reason: str) -> None:
+        if reason not in reasons:
+            reasons.append(reason)
+
+    runtime_manifest = audit.get("runtime_manifest")
+    if not isinstance(runtime_manifest, Mapping):
+        return {
+            "valid": False,
+            "checkpoint_required": False,
+            "association_shadow_audit_enabled": False,
+            "incomplete_reasons": ["invalid_runtime_manifest"],
+        }
+
+    def require_field(field: str) -> Any:
+        if field not in runtime_manifest:
+            reject(f"missing_runtime_manifest_field:{field}")
+            return None
+        return runtime_manifest[field]
+
+    manifest_schema_version = require_field("audit_schema_version")
+    if (
+        type(manifest_schema_version) is not int
+        or manifest_schema_version != RUNTIME_MANIFEST_SCHEMA_VERSION
+    ):
+        reject("invalid_runtime_manifest_field:audit_schema_version")
+
+    config_sha256 = require_field("config_sha256")
+    if not isinstance(config_sha256, str) or not config_sha256.strip():
+        reject("invalid_runtime_manifest_field:config_sha256")
+
+    context_fields = (
+        "association_head_enabled",
+        "association_head_audit_enabled",
+        "association_head_audit_shadow_mode",
+    )
+    context_values = {}
+    for field in context_fields:
+        value = require_field(field)
+        if type(value) is not bool:
+            reject(f"invalid_runtime_manifest_field:{field}")
+        else:
+            context_values[field] = value
+
+    shadow_audit_enabled = (
+        len(context_values) == len(context_fields)
+        and all(context_values.values())
+    )
+    if len(context_values) == len(context_fields) and not shadow_audit_enabled:
+        reject("association_shadow_audit_not_enabled")
+
+    if shadow_audit_enabled:
+        checkpoint_fields = (
+            "association_checkpoint_configured",
+            "association_checkpoint_path",
+            "association_checkpoint_sha256",
+            "association_checkpoint_loadable",
+            "association_checkpoint_head_key_count",
+            "association_checkpoint_key_validation_status",
+            "association_checkpoint_validation_error",
+            "association_checkpoint_runtime_contract_expected",
+            "association_checkpoint_runtime_contract_actual",
+            "association_checkpoint_runtime_contract_validation_status",
+            "association_checkpoint_loaded",
+        )
+        checkpoint = {
+            field: require_field(field) for field in checkpoint_fields
+        }
+
+        if checkpoint["association_checkpoint_configured"] is not True:
+            reject(
+                "invalid_runtime_manifest_field:association_checkpoint_configured"
+            )
+
+        checkpoint_path = checkpoint["association_checkpoint_path"]
+        if not isinstance(checkpoint_path, str) or not checkpoint_path.strip():
+            reject("invalid_runtime_manifest_field:association_checkpoint_path")
+        else:
+            try:
+                path = Path(checkpoint_path).expanduser()
+                if not path.is_absolute() or str(path.resolve()) != checkpoint_path:
+                    reject(
+                        "invalid_runtime_manifest_field:association_checkpoint_path"
+                    )
+            except (OSError, RuntimeError, TypeError, ValueError):
+                reject("invalid_runtime_manifest_field:association_checkpoint_path")
+
+        checkpoint_sha256 = checkpoint["association_checkpoint_sha256"]
+        if (
+            not isinstance(checkpoint_sha256, str)
+            or len(checkpoint_sha256) != 64
+            or any(char not in "0123456789abcdefABCDEF" for char in checkpoint_sha256)
+        ):
+            reject(
+                "invalid_runtime_manifest_field:association_checkpoint_sha256"
+            )
+
+        if checkpoint["association_checkpoint_loadable"] is not True:
+            reject(
+                "invalid_runtime_manifest_field:association_checkpoint_loadable"
+            )
+
+        head_key_count = checkpoint["association_checkpoint_head_key_count"]
+        if type(head_key_count) is not int or head_key_count <= 0:
+            reject(
+                "invalid_runtime_manifest_field:association_checkpoint_head_key_count"
+            )
+        if checkpoint["association_checkpoint_key_validation_status"] != "valid":
+            reject(
+                "invalid_runtime_manifest_field:association_checkpoint_key_validation_status"
+            )
+
+        expected_contract = checkpoint[
+            "association_checkpoint_runtime_contract_expected"
+        ]
+        actual_contract = checkpoint[
+            "association_checkpoint_runtime_contract_actual"
+        ]
+        if not isinstance(expected_contract, Mapping) or not expected_contract:
+            reject(
+                "invalid_runtime_manifest_field:association_checkpoint_runtime_contract_expected"
+            )
+        if not isinstance(actual_contract, Mapping) or not actual_contract:
+            reject(
+                "invalid_runtime_manifest_field:association_checkpoint_runtime_contract_actual"
+            )
+        if not _strict_json_equal(expected_contract, actual_contract):
+            reject("association_checkpoint_runtime_contract_mismatch")
+        if (
+            checkpoint[
+                "association_checkpoint_runtime_contract_validation_status"
+            ]
+            != "valid"
+        ):
+            reject(
+                "invalid_runtime_manifest_field:association_checkpoint_runtime_contract_validation_status"
+            )
+
+        if checkpoint["association_checkpoint_loaded"] is not True:
+            if checkpoint["association_checkpoint_configured"] is True:
+                reject("configured_association_checkpoint_not_loaded")
+            else:
+                reject(
+                    "invalid_runtime_manifest_field:association_checkpoint_loaded"
+                )
+
+        def inspect_extensions(value: Mapping[str, Any], prefix: str = "") -> None:
+            for key, item in value.items():
+                if not isinstance(key, str):
+                    continue
+                field_path = f"{prefix}.{key}" if prefix else key
+                if key.endswith("_validation_error") and item is not None:
+                    reject(f"runtime_manifest_validation_error:{field_path}")
+                if key.endswith("_validation_status") and not (
+                    item is True or item == "valid"
+                ):
+                    reject(f"invalid_runtime_manifest_field:{field_path}")
+                if key.endswith("_expected"):
+                    actual_key = f"{key[:-len('_expected')]}_actual"
+                    actual_path = (
+                        f"{prefix}.{actual_key}" if prefix else actual_key
+                    )
+                    if actual_key not in value:
+                        reject(f"missing_runtime_manifest_field:{actual_path}")
+                    elif not _strict_json_equal(item, value[actual_key]):
+                        reject(
+                            "runtime_manifest_expected_actual_mismatch:"
+                            f"{field_path[:-len('_expected')]}"
+                        )
+                if isinstance(item, Mapping):
+                    inspect_extensions(item, field_path)
+
+        inspect_extensions(runtime_manifest)
+
+    return {
+        "valid": not reasons,
+        "checkpoint_required": shadow_audit_enabled,
+        "association_shadow_audit_enabled": shadow_audit_enabled,
+        "incomplete_reasons": reasons,
+    }
 
 
 def _bucket_class_identity(
@@ -816,6 +1056,11 @@ def build_summary(
     evidence, validated_buckets, decision_identity_reasons = (
         _decision_evidence_status(audit, canonical_classes)
     )
+    manifest_status = _runtime_manifest_status(audit_mapping)
+    for reason in manifest_status["incomplete_reasons"]:
+        if reason not in evidence["incomplete_reasons"]:
+            evidence["incomplete_reasons"].append(reason)
+    evidence["usable"] = not evidence["incomplete_reasons"]
     activation_status, active_class_states = _active_class_states_status(
         audit_mapping, canonical_classes
     )
@@ -905,6 +1150,7 @@ def build_summary(
             "train_cache": str(train_cache),
             "infer_audit": str(infer_audit),
             "decision_evidence": evidence,
+            "runtime_manifest_validation": manifest_status,
             "class_identity_validation": identity_status,
             "class_state_activation": activation_status,
             "decision_gates": {
@@ -941,8 +1187,7 @@ def main() -> None:
         min_known_changed=args.min_known_changed,
     )
     output = Path(args.output)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(summary, indent=2, sort_keys=True, allow_nan=False), encoding="utf-8")
+    _atomic_write_json(output, summary)
     print(f"Wrote pairwise association train/infer comparison to {output}")
 
 

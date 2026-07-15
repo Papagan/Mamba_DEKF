@@ -1,13 +1,16 @@
 import copy
 import json
+import os
 import pickle
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from tracker.association_head_audit import AssociationHeadAuditAccumulator
+import tools.compare_pairwise_assoc_train_infer as comparator
 
 
 class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
@@ -44,6 +47,7 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
         expect_success=True,
         samples=None,
         audit_text=None,
+        existing_output_mode=None,
     ):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -56,6 +60,9 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
                 json.dumps(audit) if audit_text is None else audit_text,
                 encoding="utf-8",
             )
+            if existing_output_mode is not None:
+                output_path.write_text("stale report", encoding="utf-8")
+                output_path.chmod(existing_output_mode)
 
             result = subprocess.run(
                 [
@@ -79,7 +86,10 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
             if not expect_success:
                 return result
             self.assertEqual(result.returncode, 0, result.stderr)
-            return json.loads(output_path.read_text(encoding="utf-8"))
+            data = json.loads(output_path.read_text(encoding="utf-8"))
+            if existing_output_mode is not None:
+                return data, output_path.stat().st_mode & 0o777
+            return data
 
     @staticmethod
     def _pair_bucket():
@@ -167,11 +177,7 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
     def _complete_audit(self, decision_buckets=None, **overrides):
         audit = {
             "schema_version": 2,
-            "runtime_manifest": {
-                "config_sha256": "test",
-                "class_id_to_name": {"2": "bicycle"},
-                "active_class_states": {2: ["matched"]},
-            },
+            "runtime_manifest": self._valid_runtime_manifest(),
             "manifest_initialized": True,
             "decision_evidence_available": True,
             "decision_evidence_complete": True,
@@ -185,6 +191,40 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
         }
         audit.update(overrides)
         return audit
+
+    @staticmethod
+    def _valid_runtime_manifest(**overrides):
+        head_keys = ["heads.2.0.weight", "heads.2.0.bias"]
+        runtime_contract = {
+            "input_dim": 135,
+            "hidden_dims": [256, 128],
+            "dropout": 0.1,
+            "num_classes": 7,
+        }
+        manifest = {
+            "audit_schema_version": 3,
+            "config_sha256": "a" * 64,
+            "class_id_to_name": {"2": "bicycle"},
+            "active_class_states": {"2": ["matched"]},
+            "association_head_enabled": True,
+            "association_head_audit_enabled": True,
+            "association_head_audit_shadow_mode": True,
+            "association_checkpoint_configured": True,
+            "association_checkpoint_path": "/tmp/association.pt",
+            "association_checkpoint_sha256": "b" * 64,
+            "association_checkpoint_loadable": True,
+            "association_checkpoint_head_key_count": len(head_keys),
+            "association_checkpoint_key_validation_status": "valid",
+            "association_checkpoint_validation_error": None,
+            "association_checkpoint_runtime_contract_expected": runtime_contract,
+            "association_checkpoint_runtime_contract_actual": copy.deepcopy(
+                runtime_contract
+            ),
+            "association_checkpoint_runtime_contract_validation_status": "valid",
+            "association_checkpoint_loaded": True,
+        }
+        manifest.update(overrides)
+        return manifest
 
     def test_schema_v1_track_state_scores_are_observational_and_fail_closed(self):
         data = self._run_compare(
@@ -251,12 +291,13 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
         self.assertIn("candidate_for_shadow_ab_activation", bucket["diagnosis"])
 
     def test_complete_production_v2_bucket_is_accepted(self):
+        runtime_manifest = self._valid_runtime_manifest(
+            config_sha256="producer",
+            class_id_to_name={"2": "bicycle", "5": "trailer"},
+            active_class_states={"5": ["unmatched"]},
+        )
         audit = AssociationHeadAuditAccumulator(
-            runtime_manifest={
-                "config_sha256": "producer",
-                "class_id_to_name": {"2": "bicycle", "5": "trailer"},
-                "active_class_states": {"5": ["unmatched"]},
-            }
+            runtime_manifest=runtime_manifest
         )
         audit.add_decision(
             {
@@ -389,11 +430,9 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
     def test_matched_and_unmatched_decisions_are_gated_independently(self):
         data = self._run_compare(
             self._complete_audit(
-                runtime_manifest={
-                    "config_sha256": "test",
-                    "class_id_to_name": {"2": "bicycle"},
-                    "active_class_states": {"2": ["matched", "unmatched"]},
-                },
+                runtime_manifest=self._valid_runtime_manifest(
+                    active_class_states={"2": ["matched", "unmatched"]}
+                ),
                 decision_buckets=[
                     self._decision_bucket(
                         known_changed=100, improved=100, damaged=0, state="matched"
@@ -421,11 +460,9 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
     def test_class_candidate_requires_every_manifest_active_state_to_be_candidate(self):
         data = self._run_compare(
             self._complete_audit(
-                runtime_manifest={
-                    "config_sha256": "test",
-                    "class_id_to_name": {"2": "bicycle"},
-                    "active_class_states": {2: ["matched", "unmatched"]},
-                },
+                runtime_manifest=self._valid_runtime_manifest(
+                    active_class_states={2: ["matched", "unmatched"]}
+                ),
                 decision_buckets=[
                     self._decision_bucket(state="matched"),
                     self._decision_bucket(state="unmatched"),
@@ -588,21 +625,19 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
 
         activation_cases = {
             "missing_active_class_states": (
-                {
-                    "config_sha256": "test",
-                    "class_id_to_name": {"2": "bicycle"},
-                },
+                self._valid_runtime_manifest(),
                 "missing_active_class_states",
             ),
             "invalid_active_class_states": (
-                {
-                    "config_sha256": "test",
-                    "class_id_to_name": {"2": "bicycle"},
-                    "active_class_states": {"2": ["matched", "lost"]},
-                },
+                self._valid_runtime_manifest(
+                    active_class_states={"2": ["matched", "lost"]}
+                ),
                 "invalid_active_class_states_state",
             ),
         }
+        activation_cases["missing_active_class_states"][0].pop(
+            "active_class_states"
+        )
         for name, (runtime_manifest, reason) in activation_cases.items():
             with self.subTest(name=name):
                 data = self._run_compare(
@@ -748,14 +783,13 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
     def test_unobserved_manifest_active_classes_and_states_are_insufficient(self):
         data = self._run_compare(
             self._complete_audit(
-                runtime_manifest={
-                    "config_sha256": "test",
-                    "class_id_to_name": {"2": "bicycle", "5": "trailer"},
-                    "active_class_states": {
+                runtime_manifest=self._valid_runtime_manifest(
+                    class_id_to_name={"2": "bicycle", "5": "trailer"},
+                    active_class_states={
                         "2": ["matched"],
                         "5": ["matched", "unmatched"],
                     },
-                }
+                )
             )
         )
 
@@ -780,15 +814,14 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
     def test_valid_active_scope_remains_visible_when_another_key_is_invalid(self):
         invalid_key = "9" * 5000
         audit = self._complete_audit(
-            runtime_manifest={
-                "config_sha256": "test",
-                "class_id_to_name": {"2": "bicycle", "5": "trailer"},
-                "active_class_states": {
+            runtime_manifest=self._valid_runtime_manifest(
+                class_id_to_name={"2": "bicycle", "5": "trailer"},
+                active_class_states={
                     "2": ["matched"],
                     "5": ["unmatched"],
                     invalid_key: ["matched"],
                 },
-            }
+            )
         )
 
         data = self._run_compare(audit)
@@ -827,15 +860,14 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
 
     def test_valid_mapping_class_remains_visible_with_invalid_mapping_key(self):
         audit = self._complete_audit(
-            runtime_manifest={
-                "config_sha256": "test",
-                "class_id_to_name": {
+            runtime_manifest=self._valid_runtime_manifest(
+                class_id_to_name={
                     "2": "bicycle",
                     "5": "trailer",
                     str(10**100): "invalid",
                 },
-                "active_class_states": {"5": ["unmatched"]},
-            }
+                active_class_states={"5": ["unmatched"]},
+            )
         )
 
         data = self._run_compare(audit)
@@ -864,6 +896,186 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
                 for diagnosis in data["classes"]["2:bicycle"]["diagnosis"]
             )
         )
+
+    def test_runtime_manifest_safety_fields_are_required(self):
+        required_fields = (
+            "audit_schema_version",
+            "config_sha256",
+            "association_head_enabled",
+            "association_head_audit_enabled",
+            "association_head_audit_shadow_mode",
+            "association_checkpoint_configured",
+            "association_checkpoint_path",
+            "association_checkpoint_sha256",
+            "association_checkpoint_loadable",
+            "association_checkpoint_head_key_count",
+            "association_checkpoint_key_validation_status",
+            "association_checkpoint_validation_error",
+            "association_checkpoint_runtime_contract_expected",
+            "association_checkpoint_runtime_contract_actual",
+            "association_checkpoint_runtime_contract_validation_status",
+            "association_checkpoint_loaded",
+        )
+
+        for field in required_fields:
+            with self.subTest(field=field):
+                manifest = self._valid_runtime_manifest()
+                manifest.pop(field)
+
+                data = self._run_compare(
+                    self._complete_audit(runtime_manifest=manifest)
+                )
+
+                evidence = data["decision_evidence"]
+                self.assertFalse(evidence["usable"])
+                self.assertIn(
+                    f"missing_runtime_manifest_field:{field}",
+                    evidence["incomplete_reasons"],
+                )
+                self.assertFalse(
+                    any(
+                        "candidate" in diagnosis
+                        for diagnosis in data["classes"]["2:bicycle"][
+                            "diagnosis"
+                        ]
+                    )
+                )
+
+    def test_checkpoint_hash_validation_and_runtime_probes_fail_closed(self):
+        cases = {
+            "old_manifest_schema": (
+                {"audit_schema_version": 2},
+                "invalid_runtime_manifest_field:audit_schema_version",
+            ),
+            "empty_config_hash": (
+                {"config_sha256": ""},
+                "invalid_runtime_manifest_field:config_sha256",
+            ),
+            "null_checkpoint_hash": (
+                {"association_checkpoint_sha256": None},
+                "invalid_runtime_manifest_field:association_checkpoint_sha256",
+            ),
+            "not_loadable": (
+                {"association_checkpoint_loadable": False},
+                "invalid_runtime_manifest_field:association_checkpoint_loadable",
+            ),
+            "preflight_validation_error": (
+                {"association_checkpoint_validation_error": "broken checkpoint"},
+                "runtime_manifest_validation_error:association_checkpoint_validation_error",
+            ),
+            "no_validated_head_keys": (
+                {"association_checkpoint_head_key_count": 0},
+                "invalid_runtime_manifest_field:association_checkpoint_head_key_count",
+            ),
+            "future_validation_error": (
+                {
+                    "association_checkpoint_future_validation_error": (
+                        "input_dim mismatch"
+                    )
+                },
+                "runtime_manifest_validation_error:association_checkpoint_future_validation_error",
+            ),
+            "nested_future_validation_error": (
+                {
+                    "association_checkpoint_future_status": {
+                        "key_validation_error": "missing key"
+                    }
+                },
+                "runtime_manifest_validation_error:association_checkpoint_future_status.key_validation_error",
+            ),
+            "future_key_validation_invalid": (
+                {"association_checkpoint_key_validation_status": "invalid"},
+                "invalid_runtime_manifest_field:association_checkpoint_key_validation_status",
+            ),
+            "configured_but_not_loaded": (
+                {"association_checkpoint_loaded": False},
+                "configured_association_checkpoint_not_loaded",
+            ),
+            "runtime_contract_invalid": (
+                {"association_checkpoint_runtime_contract_validation_status": "invalid"},
+                "invalid_runtime_manifest_field:association_checkpoint_runtime_contract_validation_status",
+            ),
+            "runtime_contract_mismatch": (
+                {
+                    "association_checkpoint_runtime_contract_actual": {
+                        "input_dim": 999
+                    }
+                },
+                "association_checkpoint_runtime_contract_mismatch",
+            ),
+        }
+
+        for name, (overrides, reason) in cases.items():
+            with self.subTest(name=name):
+                manifest = self._valid_runtime_manifest(**overrides)
+                data = self._run_compare(
+                    self._complete_audit(runtime_manifest=manifest)
+                )
+
+                self.assertFalse(data["decision_evidence"]["usable"])
+                self.assertIn(
+                    reason, data["decision_evidence"]["incomplete_reasons"]
+                )
+                self.assertIn(
+                    "insufficient_decision_evidence",
+                    data["classes"]["2:bicycle"]["diagnosis"],
+                )
+
+    def test_checkpoint_fields_are_not_required_outside_enabled_shadow_audit(self):
+        manifest = self._valid_runtime_manifest(
+            association_head_enabled=False,
+            association_head_audit_shadow_mode=False,
+        )
+        for field in list(manifest):
+            if field.startswith("association_checkpoint_"):
+                manifest.pop(field)
+
+        data = self._run_compare(
+            self._complete_audit(runtime_manifest=manifest)
+        )
+
+        reasons = data["decision_evidence"]["incomplete_reasons"]
+        self.assertFalse(data["decision_evidence"]["usable"])
+        self.assertIn("association_shadow_audit_not_enabled", reasons)
+        self.assertFalse(
+            any(
+                reason.startswith(
+                    "missing_runtime_manifest_field:association_checkpoint_"
+                )
+                for reason in reasons
+            )
+        )
+
+    def test_atomic_json_writer_replaces_from_same_directory_and_preserves_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            output = directory / "report.json"
+            output.write_text("stale report", encoding="utf-8")
+            output.chmod(0o640)
+
+            with patch.object(
+                comparator.os, "replace", wraps=os.replace
+            ) as replace_mock:
+                comparator._atomic_write_json(output, {"status": "complete"})
+
+            self.assertEqual(replace_mock.call_count, 1)
+            temporary_path, replaced_output = replace_mock.call_args.args
+            self.assertEqual(Path(temporary_path).parent, output.parent)
+            self.assertEqual(Path(replaced_output), output)
+            self.assertEqual(output.stat().st_mode & 0o777, 0o640)
+            self.assertEqual(
+                json.loads(output.read_text(encoding="utf-8")),
+                {"status": "complete"},
+            )
+            self.assertEqual(list(directory.iterdir()), [output])
+
+    def test_cli_atomic_replacement_preserves_existing_output_mode(self):
+        data, output_mode = self._run_compare(
+            self._complete_audit(), existing_output_mode=0o604
+        )
+
+        self.assertTrue(data["decision_evidence"]["usable"])
+        self.assertEqual(output_mode, 0o604)
 
 
 if __name__ == "__main__":
