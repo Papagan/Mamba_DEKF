@@ -137,15 +137,13 @@ def _normalize_track_ids(values, track_count):
     track_ids = _metadata_values("track_ids", values, track_count)
     normalized = []
     for value in track_ids:
-        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
-            raise ValueError("track_ids must contain JSON-safe scalar identifiers")
+        if isinstance(value, bool) or not isinstance(value, (str, int)):
+            raise ValueError("track_ids must contain string or integer identifiers")
         if isinstance(value, str):
             value = value.strip()
             if not value:
                 raise ValueError("track_ids must not contain empty identifiers")
-        if isinstance(value, float) and not np.isfinite(value):
-            raise ValueError("track_ids must contain finite identifiers")
-        if isinstance(value, (int, float)) and value < 0:
+        if isinstance(value, int) and value < 0:
             raise ValueError("track_ids must contain non-negative identifiers")
         try:
             json.dumps(value, allow_nan=False)

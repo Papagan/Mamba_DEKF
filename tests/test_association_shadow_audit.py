@@ -549,7 +549,7 @@ class CompareAssignmentResultsTest(unittest.TestCase):
                 self._compare(**{name: value})
 
     def test_rejects_empty_duplicate_or_non_json_track_ids(self):
-        invalid_track_ids = ([""], [None], [np.nan], [-1], [{"id": 10}])
+        invalid_track_ids = ([""], [None], [np.nan], [1.5], [-1], [{"id": 10}])
         for track_ids in invalid_track_ids:
             with self.subTest(track_ids=track_ids), self.assertRaisesRegex(
                 ValueError, "track_ids"
