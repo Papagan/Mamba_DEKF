@@ -135,8 +135,8 @@ Schema v1 and malformed schema v2 input fail closed as
 `insufficient_decision_evidence`; no class/state can produce a candidate. A
 usable top level requires native integer `schema_version: 2`, native boolean
 `true` values for availability, completeness, and manifest compatibility, a
-mapping `runtime_manifest`, an optional `manifest_initialized` that is exactly
-`true`, an empty list of incomplete reasons, and a non-empty decision bucket
+mapping `runtime_manifest`, `manifest_initialized` present and exactly `true`,
+an empty list of incomplete reasons, and a non-empty decision bucket
 list. `audit_errors` must contain non-negative native integer `count` and
 `sample_count` values plus a `samples` list, with
 `sample_count == len(samples) <= count`; an optional top-level

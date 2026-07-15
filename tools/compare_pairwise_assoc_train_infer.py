@@ -57,6 +57,29 @@ def _load_train_cache(path: Path) -> List[Dict[str, Any]]:
     return data
 
 
+def _load_audit_json(path: Path) -> Tuple[Any, List[str]]:
+    duplicate_keys = []
+
+    def strict_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                duplicate_keys.append(key)
+            else:
+                result[key] = value
+        return result
+
+    try:
+        data = json.loads(
+            path.read_text(encoding="utf-8"),
+            parse_int=_bounded_json_int,
+            object_pairs_hook=strict_object,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}, ["invalid_audit_json"]
+    return data, ["duplicate_json_key"] if duplicate_keys else []
+
+
 def _class_key(class_id: int, class_name: str) -> str:
     return f"{class_id}:{class_name}"
 
@@ -146,11 +169,9 @@ def _canonical_class_identity_status(
         "canonical_class_id_to_name": {
             str(class_id): class_name
             for class_id, class_name in sorted(normalized.items())
-        }
-        if valid
-        else {},
+        },
     }
-    return status, normalized if valid else {}
+    return status, normalized
 
 
 def _bucket_class_identity(
@@ -612,7 +633,9 @@ def _decision_evidence_status(
         reject("missing_runtime_manifest")
     elif not isinstance(audit["runtime_manifest"], Mapping):
         reject("invalid_runtime_manifest")
-    if "manifest_initialized" in audit:
+    if "manifest_initialized" not in audit:
+        reject("missing_manifest_initialized")
+    else:
         initialized = audit["manifest_initialized"]
         if type(initialized) is not bool or initialized is not True:
             reject("invalid_manifest_initialized")
@@ -779,9 +802,7 @@ def build_summary(
             f"min_known_changed must be at least {DEFAULT_MIN_KNOWN_CHANGED}"
         )
     train_samples = _load_train_cache(train_cache)
-    audit = json.loads(
-        infer_audit.read_text(encoding="utf-8"), parse_int=_bounded_json_int
-    )
+    audit, json_reasons = _load_audit_json(infer_audit)
     audit_mapping = audit if isinstance(audit, Mapping) else {}
     identity_status, canonical_classes = _canonical_class_identity_status(
         audit_mapping
@@ -800,7 +821,8 @@ def build_summary(
     )
     identity_reasons = list(
         dict.fromkeys(
-            identity_status["incomplete_reasons"]
+            json_reasons
+            + identity_status["incomplete_reasons"]
             + train_identity_reasons
             + pair_identity_reasons
             + decision_identity_reasons

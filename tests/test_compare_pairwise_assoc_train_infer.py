@@ -37,7 +37,14 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
             },
         ]
 
-    def _run_compare(self, audit, *extra_args, expect_success=True, samples=None):
+    def _run_compare(
+        self,
+        audit,
+        *extra_args,
+        expect_success=True,
+        samples=None,
+        audit_text=None,
+    ):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             train_path = tmp_path / "train.pkl"
@@ -45,7 +52,10 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
             output_path = tmp_path / "summary.json"
             with open(train_path, "wb") as f:
                 pickle.dump(self.samples if samples is None else samples, f)
-            audit_path.write_text(json.dumps(audit), encoding="utf-8")
+            audit_path.write_text(
+                json.dumps(audit) if audit_text is None else audit_text,
+                encoding="utf-8",
+            )
 
             result = subprocess.run(
                 [
@@ -791,6 +801,69 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
             trailer["diagnosis_by_state"]["unmatched"],
         )
         self.assertIn("insufficient_decision_evidence", trailer["diagnosis"])
+
+    def test_duplicate_json_keys_fail_closed_before_identity_validation(self):
+        audit = self._complete_audit()
+        audit_text = json.dumps(audit).replace(
+            '"2": "bicycle"',
+            '"2": "bicycle", "2": "motorcycle"',
+            1,
+        )
+
+        data = self._run_compare(audit, audit_text=audit_text)
+
+        self.assertFalse(data["decision_evidence"]["usable"])
+        self.assertIn(
+            "duplicate_json_key",
+            data["class_identity_validation"]["incomplete_reasons"],
+        )
+        self.assertFalse(
+            any(
+                "candidate" in diagnosis
+                for bucket in data["classes"].values()
+                for diagnosis in bucket["diagnosis"]
+            )
+        )
+
+    def test_valid_mapping_class_remains_visible_with_invalid_mapping_key(self):
+        audit = self._complete_audit(
+            runtime_manifest={
+                "config_sha256": "test",
+                "class_id_to_name": {
+                    "2": "bicycle",
+                    "5": "trailer",
+                    str(10**100): "invalid",
+                },
+                "active_class_states": {"5": ["unmatched"]},
+            }
+        )
+
+        data = self._run_compare(audit)
+
+        self.assertIn("5:trailer", data["classes"])
+        self.assertIn(
+            "insufficient_decision_evidence",
+            data["classes"]["5:trailer"]["diagnosis_by_state"]["unmatched"],
+        )
+        self.assertFalse(data["decision_evidence"]["usable"])
+
+    def test_missing_manifest_initialized_fails_closed(self):
+        audit = self._complete_audit()
+        audit.pop("manifest_initialized")
+
+        data = self._run_compare(audit)
+
+        self.assertFalse(data["decision_evidence"]["usable"])
+        self.assertIn(
+            "missing_manifest_initialized",
+            data["decision_evidence"]["incomplete_reasons"],
+        )
+        self.assertFalse(
+            any(
+                "candidate" in diagnosis
+                for diagnosis in data["classes"]["2:bicycle"]["diagnosis"]
+            )
+        )
 
 
 if __name__ == "__main__":
