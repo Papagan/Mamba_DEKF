@@ -1,3 +1,4 @@
+import copy
 import json
 import pickle
 import subprocess
@@ -5,6 +6,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+from tracker.association_head_audit import AssociationHeadAuditAccumulator
 
 
 class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
@@ -114,17 +117,60 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
         }
 
     @staticmethod
-    def _decision_bucket(known_changed=120, improved=100, damaged=20):
+    def _decision_bucket(
+        known_changed=120,
+        improved=100,
+        damaged=20,
+        state="matched",
+        total=200,
+    ):
+        neutral = known_changed - improved - damaged
+        if neutral < 0:
+            raise ValueError("known_changed must cover improved and damaged")
+        if total < known_changed:
+            raise ValueError("total must cover known decisions")
         return {
             "class_id": 2,
             "class_name": "bicycle",
-            "track_state_bucket": "matched",
-            "total_decisions": 200,
+            "track_state_bucket": state,
+            "total_decisions": total,
+            "changed_decisions": known_changed,
+            "changed_detection_count": known_changed,
+            "changed_to_match_count": 0,
+            "changed_to_unmatched_count": 0,
+            "threshold_crossing_count": 0,
+            "known_gt_decisions": known_changed,
             "known_changed_count": known_changed,
             "improved_count": improved,
             "damaged_count": damaged,
+            "neutral_count": neutral,
+            "unknown_count": total - known_changed,
+            "net_improvement": improved - damaged,
             "harm_precision": damaged / max(known_changed, 1),
+            "sample_count": 0,
+            "samples": [],
+            "raw_decisions": [],
+            "association_scores": [],
+            "cost_gaps": [],
         }
+
+    def _complete_audit(self, decision_buckets=None, **overrides):
+        audit = {
+            "schema_version": 2,
+            "runtime_manifest": {"config_sha256": "test"},
+            "manifest_initialized": True,
+            "decision_evidence_available": True,
+            "decision_evidence_complete": True,
+            "decision_evidence_incomplete_reasons": [],
+            "manifest_compatible": True,
+            "audit_error_count": 0,
+            "audit_errors": {"count": 0, "sample_count": 0, "samples": []},
+            "decision_buckets": decision_buckets
+            if decision_buckets is not None
+            else [self._decision_bucket()],
+        }
+        audit.update(overrides)
+        return audit
 
     def test_schema_v1_track_state_scores_are_observational_and_fail_closed(self):
         data = self._run_compare(
@@ -171,34 +217,60 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
 
     def test_schema_v2_safe_decision_counts_are_shadow_ab_candidate(self):
         data = self._run_compare(
-            {
-                "schema_version": 2,
-                "decision_evidence_available": True,
-                "decision_evidence_complete": True,
-                "manifest_compatible": True,
-                "audit_errors": {"count": 0, "samples": []},
-                "pair_buckets": [self._pair_bucket()],
-                "decision_buckets": [self._decision_bucket()],
-            }
+            self._complete_audit(pair_buckets=[self._pair_bucket()])
         )
 
         bucket = data["classes"]["2:bicycle"]
         self.assertEqual(data["infer_audit_schema_version"], 2)
         self.assertTrue(data["decision_evidence"]["available"])
         self.assertEqual(bucket["decision_evidence"]["known_changed_count"], 120)
+        self.assertEqual(
+            bucket["decision_evidence_by_state"]["matched"][
+                "known_changed_count"
+            ],
+            120,
+        )
+        self.assertIn(
+            "candidate_for_shadow_ab_activation",
+            bucket["diagnosis_by_state"]["matched"],
+        )
         self.assertIn("candidate_for_shadow_ab_activation", bucket["diagnosis"])
 
+    def test_complete_production_v2_bucket_is_accepted(self):
+        audit = AssociationHeadAuditAccumulator(
+            runtime_manifest={"config_sha256": "producer"}
+        )
+        audit.add_decision(
+            {
+                "class_id": 5,
+                "class_name": "trailer",
+                "track_state_bucket": "unmatched",
+                "assignment_changed": True,
+                "production_det_index": 0,
+                "shadow_det_index": 1,
+                "threshold_crossing": False,
+                "outcome": "improved",
+                "production_selected_association_score": 0.1,
+                "shadow_selected_association_score": 0.9,
+                "original_cost_gap": 0.01,
+            }
+        )
+
+        data = self._run_compare(audit.to_summary())
+        state = data["classes"]["5:trailer"]["decision_evidence_by_state"][
+            "unmatched"
+        ]
+        self.assertTrue(data["decision_evidence"]["usable"])
+        self.assertEqual(state["total_decisions"], 1)
+        self.assertEqual(state["known_changed_count"], 1)
+        self.assertEqual(state["improved_count"], 1)
+
     def test_default_minimum_requires_100_known_changed_decisions(self):
-        audit = {
-            "schema_version": 2,
-            "decision_evidence_available": True,
-            "decision_evidence_complete": True,
-            "manifest_compatible": True,
-            "audit_errors": {"count": 0},
-            "decision_buckets": [
+        audit = self._complete_audit(
+            decision_buckets=[
                 self._decision_bucket(known_changed=99, improved=90, damaged=9)
-            ],
-        }
+            ]
+        )
 
         data = self._run_compare(audit)
         bucket = data["classes"]["2:bicycle"]
@@ -222,51 +294,37 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
         )
 
     def test_zero_known_changed_decisions_are_insufficient(self):
-        audit = {
-            "schema_version": 2,
-            "decision_evidence_available": True,
-            "decision_evidence_complete": True,
-            "manifest_compatible": True,
-            "audit_errors": {"count": 0},
-            "decision_buckets": [
+        audit = self._complete_audit(
+            decision_buckets=[
                 self._decision_bucket(known_changed=0, improved=0, damaged=0)
-            ],
-        }
+            ]
+        )
 
         diagnosis = self._run_compare(audit)["classes"]["2:bicycle"]["diagnosis"]
         self.assertIn("insufficient_decision_evidence", diagnosis)
         self.assertFalse(any("candidate" in item for item in diagnosis))
 
     def test_harm_above_gate_is_not_safe(self):
-        audit = {
-            "schema_version": 2,
-            "decision_evidence_available": True,
-            "decision_evidence_complete": True,
-            "manifest_compatible": True,
-            "audit_errors": {"count": 0},
-            "decision_buckets": [
+        audit = self._complete_audit(
+            decision_buckets=[
                 self._decision_bucket(known_changed=120, improved=90, damaged=30)
-            ],
-        }
+            ]
+        )
 
         diagnosis = self._run_compare(audit)["classes"]["2:bicycle"]["diagnosis"]
         self.assertIn("shadow_decisions_not_safe", diagnosis)
         self.assertFalse(any("candidate" in item for item in diagnosis))
 
     def test_incomplete_or_invalid_audit_metadata_fails_closed(self):
-        base = {
-            "schema_version": 2,
-            "decision_evidence_available": True,
-            "decision_evidence_complete": True,
-            "manifest_compatible": True,
-            "audit_errors": {"count": 0},
-            "decision_buckets": [self._decision_bucket()],
-        }
+        base = self._complete_audit()
         cases = {
             "evidence_unavailable": {"decision_evidence_available": False},
             "evidence_incomplete": {"decision_evidence_complete": False},
             "manifest_incompatible": {"manifest_compatible": False},
-            "audit_errors": {"audit_errors": {"count": 1}},
+            "audit_errors": {
+                "audit_error_count": 1,
+                "audit_errors": {"count": 1, "sample_count": 0, "samples": []},
+            },
             "missing_buckets": {"decision_buckets": []},
         }
 
@@ -280,19 +338,24 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
                 self.assertFalse(any("candidate" in item for item in diagnosis))
 
     def test_malformed_audit_errors_fail_closed_with_reason(self):
-        base = {
-            "schema_version": 2,
-            "decision_evidence_available": True,
-            "decision_evidence_complete": True,
-            "manifest_compatible": True,
-            "decision_buckets": [self._decision_bucket()],
-        }
+        base = self._complete_audit()
         malformed_values = {
             "not_mapping": [],
-            "boolean_count": {"count": True},
-            "negative_count": {"count": -1},
-            "float_count": {"count": 1.5},
-            "string_count": {"count": "1"},
+            "boolean_count": {"count": True, "sample_count": 0, "samples": []},
+            "negative_count": {"count": -1, "sample_count": 0, "samples": []},
+            "float_count": {"count": 1.5, "sample_count": 0, "samples": []},
+            "string_count": {"count": "1", "sample_count": 0, "samples": []},
+            "missing_sample_count": {"count": 0, "samples": []},
+            "sample_count_mismatch": {
+                "count": 1,
+                "sample_count": 0,
+                "samples": [{"message": "error"}],
+            },
+            "zero_count_with_sample": {
+                "count": 0,
+                "sample_count": 1,
+                "samples": [{"message": "error"}],
+            },
         }
 
         for name, audit_errors in malformed_values.items():
@@ -302,6 +365,187 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
                 diagnosis = data["classes"]["2:bicycle"]["diagnosis"]
                 self.assertFalse(evidence["usable"])
                 self.assertIn("invalid_audit_errors", evidence["incomplete_reasons"])
+                self.assertIn("insufficient_decision_evidence", diagnosis)
+                self.assertFalse(any("candidate" in item for item in diagnosis))
+
+    def test_matched_and_unmatched_decisions_are_gated_independently(self):
+        data = self._run_compare(
+            self._complete_audit(
+                decision_buckets=[
+                    self._decision_bucket(
+                        known_changed=100, improved=100, damaged=0, state="matched"
+                    ),
+                    self._decision_bucket(
+                        known_changed=20,
+                        improved=0,
+                        damaged=20,
+                        state="unmatched",
+                    ),
+                ]
+            )
+        )
+
+        bicycle = data["classes"]["2:bicycle"]
+        self.assertIn(
+            "candidate_for_shadow_ab_activation",
+            bicycle["diagnosis_by_state"]["matched"],
+        )
+        self.assertIn(
+            "shadow_decisions_not_safe",
+            bicycle["diagnosis_by_state"]["unmatched"],
+        )
+        self.assertEqual(
+            bicycle["decision_evidence_by_state"]["matched"]["improved_count"],
+            100,
+        )
+        self.assertEqual(
+            bicycle["decision_evidence_by_state"]["unmatched"]["damaged_count"],
+            20,
+        )
+        self.assertIn("shadow_decisions_not_safe", bicycle["diagnosis"])
+        self.assertFalse(any("candidate" in item for item in bicycle["diagnosis"]))
+
+    def test_class_candidate_requires_every_observed_state_to_be_candidate(self):
+        data = self._run_compare(
+            self._complete_audit(
+                decision_buckets=[
+                    self._decision_bucket(state="matched"),
+                    self._decision_bucket(state="unmatched"),
+                ]
+            )
+        )
+
+        bicycle = data["classes"]["2:bicycle"]
+        self.assertIn("candidate_for_shadow_ab_activation", bicycle["diagnosis"])
+
+    def test_multiple_buckets_for_same_class_and_state_are_aggregated(self):
+        data = self._run_compare(
+            self._complete_audit(
+                decision_buckets=[
+                    self._decision_bucket(
+                        known_changed=60, improved=50, damaged=10, total=100
+                    ),
+                    self._decision_bucket(
+                        known_changed=60, improved=50, damaged=10, total=100
+                    ),
+                ]
+            )
+        )
+
+        state = data["classes"]["2:bicycle"]["decision_evidence_by_state"][
+            "matched"
+        ]
+        self.assertEqual(state["decision_bucket_count"], 2)
+        self.assertEqual(state["total_decisions"], 200)
+        self.assertEqual(state["known_changed_count"], 120)
+        self.assertEqual(state["improved_count"], 100)
+        self.assertEqual(state["damaged_count"], 20)
+        self.assertIn(
+            "candidate_for_shadow_ab_activation",
+            data["classes"]["2:bicycle"]["diagnosis_by_state"]["matched"],
+        )
+
+    def test_forged_decision_bucket_counters_fail_closed(self):
+        base = self._complete_audit()
+
+        def changed(callback):
+            audit = copy.deepcopy(base)
+            callback(audit["decision_buckets"][0])
+            return audit
+
+        malformed = {
+            "class_id_string": changed(lambda bucket: bucket.__setitem__("class_id", "2")),
+            "class_id_bool": changed(lambda bucket: bucket.__setitem__("class_id", True)),
+            "class_id_negative": changed(lambda bucket: bucket.__setitem__("class_id", -1)),
+            "empty_class_name": changed(lambda bucket: bucket.__setitem__("class_name", "")),
+            "invalid_state": changed(
+                lambda bucket: bucket.__setitem__("track_state_bucket", "lost")
+            ),
+            "missing_counter": changed(lambda bucket: bucket.pop("changed_decisions")),
+            "string_counter": changed(
+                lambda bucket: bucket.__setitem__("known_changed_count", "120")
+            ),
+            "boolean_counter": changed(
+                lambda bucket: bucket.__setitem__("improved_count", True)
+            ),
+            "negative_counter": changed(
+                lambda bucket: bucket.__setitem__("damaged_count", -1)
+            ),
+            "outcome_total": changed(
+                lambda bucket: bucket.__setitem__("unknown_count", 81)
+            ),
+            "known_gt_total": changed(
+                lambda bucket: bucket.__setitem__("known_gt_decisions", 119)
+            ),
+            "changed_exceeds_total": changed(
+                lambda bucket: bucket.__setitem__("changed_decisions", 201)
+            ),
+            "change_categories": changed(
+                lambda bucket: bucket.__setitem__("changed_to_match_count", 1)
+            ),
+            "threshold_exceeds_changed": changed(
+                lambda bucket: bucket.__setitem__("threshold_crossing_count", 121)
+            ),
+            "known_changed_too_small": changed(
+                lambda bucket: bucket.__setitem__("known_changed_count", 119)
+            ),
+            "known_changed_too_large": changed(
+                lambda bucket: (
+                    bucket.__setitem__("changed_decisions", 121),
+                    bucket.__setitem__("changed_detection_count", 121),
+                    bucket.__setitem__("known_changed_count", 121),
+                )
+            ),
+            "wrong_net_improvement": changed(
+                lambda bucket: bucket.__setitem__("net_improvement", 81)
+            ),
+            "nonfinite_harm_precision": changed(
+                lambda bucket: bucket.__setitem__("harm_precision", float("inf"))
+            ),
+            "wrong_harm_precision": changed(
+                lambda bucket: bucket.__setitem__("harm_precision", 0.10)
+            ),
+        }
+
+        for name, audit in malformed.items():
+            with self.subTest(name=name):
+                data = self._run_compare(audit)
+                evidence = data["decision_evidence"]
+                diagnosis = data["classes"]["2:bicycle"]["diagnosis"]
+                self.assertFalse(evidence["usable"])
+                self.assertIn("invalid_decision_buckets", evidence["incomplete_reasons"])
+                self.assertIn("insufficient_decision_evidence", diagnosis)
+                self.assertFalse(any("candidate" in item for item in diagnosis))
+
+    def test_top_level_v2_metadata_is_strict_and_fail_closed(self):
+        base = self._complete_audit()
+        malformed = {}
+
+        string_false = copy.deepcopy(base)
+        string_false["decision_evidence_available"] = "false"
+        malformed["string_false"] = (string_false, "invalid_decision_evidence_available")
+
+        missing_manifest = copy.deepcopy(base)
+        missing_manifest.pop("runtime_manifest")
+        malformed["missing_manifest"] = (missing_manifest, "missing_runtime_manifest")
+
+        zero_count_with_sample = copy.deepcopy(base)
+        zero_count_with_sample["audit_errors"] = {
+            "count": 0,
+            "sample_count": 1,
+            "samples": [{"message": "forged"}],
+        }
+        malformed["zero_count_with_sample"] = (
+            zero_count_with_sample,
+            "invalid_audit_errors",
+        )
+
+        for name, (audit, reason) in malformed.items():
+            with self.subTest(name=name):
+                data = self._run_compare(audit)
+                self.assertFalse(data["decision_evidence"]["usable"])
+                self.assertIn(reason, data["decision_evidence"]["incomplete_reasons"])
+                diagnosis = data["classes"]["2:bicycle"]["diagnosis"]
                 self.assertIn("insufficient_decision_evidence", diagnosis)
                 self.assertFalse(any("candidate" in item for item in diagnosis))
 

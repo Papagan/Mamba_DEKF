@@ -52,9 +52,13 @@ Copy the remote audit JSON and compare it with the rebuilt training cache:
 python tools/compare_pairwise_assoc_train_infer.py \
   --train-cache /root/autodl-tmp/data/training_cache/nuscenes/mini/train_pairwise_assoc.pkl \
   --infer-audit debug/association_head_shadow_audit.json \
-  --output docs/pairwise_assoc_train_infer_compare.json \
+  --output debug/association_shadow_decision_report.json \
   --min-known-changed 100
 ```
+
+Do not overwrite the historical JSON files under `docs/`. In particular, the
+old `docs/pairwise_assoc_train_infer_compare.json` is not schema v2 decision
+evidence and cannot authorize an activation experiment.
 
 The compare report preserves train-cache class balance, hard-negative, and
 distance summaries. Its `track_state_scores` section reports per-class,
@@ -76,10 +80,10 @@ mismatch or to recommend activation.
 
 ## Schema v2 Decision Gates
 
-Activation diagnostics use only schema v2 `decision_buckets`. The report states
-the input `infer_audit_schema_version`, source evidence status, effective
-usability, manifest compatibility, audit error count, and configured gates.
-Per class, decision buckets are combined across track states before applying:
+Activation diagnostics use only schema v2 `decision_buckets`. The activation
+unit is a `(class_id, class_name, track_state_bucket)` class/state tuple, not a
+class pooled across `matched` and `unmatched`. Buckets for the same class/state
+are aggregated, then each state independently applies:
 
 - `known_changed_count == 0`: `insufficient_decision_evidence`.
 - Fewer than 100 known changed decisions: `shadow_decisions_not_safe`.
@@ -87,16 +91,38 @@ Per class, decision buckets are combined across track states before applying:
   `harm_precision <= 0.20`: `candidate_for_shadow_ab_activation`.
 - Any other complete schema v2 result: `shadow_decisions_not_safe`.
 
+The report exposes these results as `decision_evidence_by_state` and
+`diagnosis_by_state`. A class with one observed state may retain that state's
+class-level candidate diagnosis. A class with multiple observed states is a
+class-level candidate only when every state is a candidate; one unsafe or
+insufficient state prevents a class-level candidate. Class-level pooled counts
+remain descriptive and are never used to bypass a failed state gate.
+
 The 100 known-changed minimum is a hard safety floor. The
 `--min-known-changed` option may raise it for a stricter experiment but rejects
 values below 100.
 
-Schema v1, `decision_evidence_available: false`, incomplete decision evidence,
-missing decision buckets, incompatible manifests, or any `audit_errors` fail
-closed as `insufficient_decision_evidence`; none can produce a candidate.
-`audit_errors` must be an object whose `count` is a non-negative integer.
-Malformed structures or counts set `audit_errors_valid: false`, add
-`invalid_audit_errors` to `incomplete_reasons`, and fail closed.
+Schema v1 and malformed schema v2 input fail closed as
+`insufficient_decision_evidence`; no class/state can produce a candidate. A
+usable top level requires native integer `schema_version: 2`, native boolean
+`true` values for availability, completeness, and manifest compatibility, a
+mapping `runtime_manifest`, an optional `manifest_initialized` that is exactly
+`true`, an empty list of incomplete reasons, and a non-empty decision bucket
+list. `audit_errors` must contain non-negative native integer `count` and
+`sample_count` values plus a `samples` list, with
+`sample_count == len(samples) <= count`; an optional top-level
+`audit_error_count` must agree. Any recorded audit error also fails closed.
+
+Each decision bucket requires a non-negative native integer `class_id`, a
+non-empty `class_name`, a `matched` or `unmatched` state, and every production
+counter as a non-negative native integer. Outcome counts, known-GT counts,
+changed-assignment categories, threshold crossings, and known-changed counts
+must satisfy the schema v2 accounting identities. Optional `net_improvement`
+and `harm_precision` must be finite and consistent with those counters. Numeric
+strings, booleans used as integers, negative values, and inconsistent derived
+metrics are rejected rather than coerced or clipped. Rejection reasons are
+reported in `decision_evidence.incomplete_reasons`.
+
 Unknown GT identities are retained as unknown evidence and cannot count as
 `improved` or `damaged`, so sparse or unavailable GT can prevent the minimum
 known-changed gate from being reached.
