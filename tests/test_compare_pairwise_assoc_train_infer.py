@@ -199,14 +199,17 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
     def _valid_runtime_manifest(**overrides):
         head_keys = ["heads.2.0.weight", "heads.2.0.bias"]
         runtime_contract = {
-            "input_dim": 135,
-            "hidden_dims": [256, 128],
-            "dropout": 0.1,
-            "num_classes": 7,
+            "filter_mode": "pure_dekf",
+            "history_source": "fusion",
+            "tracker_compat_mode": "mctrack",
+            "expected_bev_cost_mode": "geometric",
         }
         manifest = {
             "audit_schema_version": 3,
+            "config_path": "/tmp/config.yaml",
             "config_sha256": "a" * 64,
+            "git_commit": "c" * 40,
+            "git_dirty": False,
             "class_id_to_name": {"2": "bicycle"},
             "active_class_states": {"2": ["matched"]},
             "association_head_enabled": True,
@@ -225,6 +228,24 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
             ),
             "association_checkpoint_runtime_contract_validation_status": "valid",
             "association_checkpoint_loaded": True,
+            "association_head_architecture": {
+                "input_dim": 135,
+                "hidden_dims": [256, 128],
+                "hidden_dims_source": "checkpoint",
+                "dropout": 0.1,
+                "dropout_source": "checkpoint",
+                "num_classes": 7,
+            },
+            "apply_mode": "margin_tiebreak",
+            "cost_margin_eps": 0.05,
+            "min_score": 0.5,
+            "alpha": 0.05,
+            "max_delta": 0.03,
+            "filter_mode": "pure_dekf",
+            "tracker_compat_mode": "mctrack",
+            "bev_matching_mode": "Hungarian",
+            "bev_cost_modes": {"2": "RO_GDIOU_3D"},
+            "process_count": 1,
         }
         manifest.update(overrides)
         return manifest
@@ -295,7 +316,7 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
 
     def test_complete_production_v2_bucket_is_accepted(self):
         runtime_manifest = self._valid_runtime_manifest(
-            config_sha256="producer",
+            config_sha256="d" * 64,
             class_id_to_name={"2": "bicycle", "5": "trailer"},
             active_class_states={"5": ["unmatched"]},
         )
@@ -353,6 +374,12 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
                 "TRACKER_COMPAT_MODE": "mctrack",
                 "CATEGORY_MAP_TO_NUMBER": {"bicycle": 2},
                 "THRESHOLD": {"BEV": {"COST_MODE": "geometric"}},
+                "MATCHING": {
+                    "BEV": {
+                        "MATCHING_MODE": "Hungarian",
+                        "COST_MODE": {2: "RO_GDIOU_3D"},
+                    }
+                },
                 "MAMBA_ASSOCIATION_HEAD": {
                     "ENABLED": True,
                     "CHECKPOINT_PATH": str(checkpoint_path),
@@ -700,10 +727,16 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
                 self.assertFalse(activation["class_level_usable"])
                 self.assertIn(reason, activation["incomplete_reasons"])
                 self.assertIn(
-                    "candidate_for_shadow_ab_activation",
+                    "insufficient_decision_evidence",
                     bicycle["diagnosis_by_state"]["matched"],
                 )
                 self.assertIn("insufficient_decision_evidence", bicycle["diagnosis"])
+                self.assertFalse(
+                    any(
+                        "candidate" in item
+                        for item in bicycle["diagnosis_by_state"]["matched"]
+                    )
+                )
                 self.assertFalse(any("candidate" in item for item in bicycle["diagnosis"]))
 
     def test_canonical_manifest_mapping_validates_every_bucket_source(self):
@@ -952,7 +985,10 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
     def test_runtime_manifest_safety_fields_are_required(self):
         required_fields = (
             "audit_schema_version",
+            "config_path",
             "config_sha256",
+            "git_commit",
+            "git_dirty",
             "association_head_enabled",
             "association_head_audit_enabled",
             "association_head_audit_shadow_mode",
@@ -967,6 +1003,19 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
             "association_checkpoint_runtime_contract_actual",
             "association_checkpoint_runtime_contract_validation_status",
             "association_checkpoint_loaded",
+            "association_head_architecture",
+            "class_id_to_name",
+            "active_class_states",
+            "apply_mode",
+            "cost_margin_eps",
+            "min_score",
+            "alpha",
+            "max_delta",
+            "filter_mode",
+            "tracker_compat_mode",
+            "bev_matching_mode",
+            "bev_cost_modes",
+            "process_count",
         )
 
         for field in required_fields:
@@ -1002,6 +1051,31 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
             "empty_config_hash": (
                 {"config_sha256": ""},
                 "invalid_runtime_manifest_field:config_sha256",
+            ),
+            "malformed_config_hash": (
+                {"config_sha256": "x"},
+                "invalid_runtime_manifest_field:config_sha256",
+            ),
+            "invalid_architecture": (
+                {
+                    "association_head_architecture": {
+                        "input_dim": 135,
+                        "hidden_dims": [256, 0],
+                        "hidden_dims_source": "checkpoint",
+                        "dropout": 0.1,
+                        "dropout_source": "checkpoint",
+                        "num_classes": 7,
+                    }
+                },
+                "invalid_runtime_manifest_field:association_head_architecture.hidden_dims",
+            ),
+            "invalid_apply_mode": (
+                {"apply_mode": "unknown"},
+                "invalid_runtime_manifest_field:apply_mode",
+            ),
+            "invalid_process_count": (
+                {"process_count": 0},
+                "invalid_runtime_manifest_field:process_count",
             ),
             "null_checkpoint_hash": (
                 {"association_checkpoint_sha256": None},

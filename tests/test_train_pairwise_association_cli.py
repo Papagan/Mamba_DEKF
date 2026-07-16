@@ -83,7 +83,16 @@ class TrainPairwiseAssociationCliTest(unittest.TestCase):
             self.assertTrue(ckpt_path.exists())
             self.assertIn("ranking", metrics_path.read_text(encoding="utf-8"))
             ckpt = torch.load(ckpt_path, map_location="cpu")
-            self.assertTrue(ckpt["runtime_contract"]["precompute_embeddings"])
+            runtime_contract = ckpt["runtime_contract"]
+            self.assertTrue(runtime_contract["precompute_embeddings"])
+            self.assertEqual(
+                runtime_contract["filter_mode"], "mamba_multihead_closure"
+            )
+            self.assertEqual(runtime_contract["history_source"], "fusion")
+            self.assertEqual(runtime_contract["tracker_compat_mode"], "mctrack")
+            self.assertEqual(
+                runtime_contract["expected_bev_cost_mode"], "geometric"
+            )
 
 
 if __name__ == "__main__":

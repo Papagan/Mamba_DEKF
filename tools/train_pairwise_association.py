@@ -811,6 +811,16 @@ def train_pairwise_association(args, cfg: Dict[str, Any] | None = None, logger_o
                     "filter_mode": str(cfg.get("FILTER_MODE", "mamba_multihead_closure")),
                     "history_source": str((cfg.get("DATA", {}) or {}).get("HISTORY_SOURCE", "det")).strip().lower(),
                     "init_state_source": str((cfg.get("DATA", {}) or {}).get("INIT_STATE_SOURCE", "det")).strip().lower(),
+                    "tracker_compat_mode": str(
+                        (cfg.get("DATA", {}) or {}).get(
+                            "TRAIN_TRACKER_COMPAT_MODE", "default"
+                        )
+                    ).strip().lower(),
+                    "expected_bev_cost_mode": str(
+                        (cfg.get("DATA", {}) or {}).get(
+                            "EXPECTED_BEV_COST_MODE", "geometric"
+                        )
+                    ).strip().lower(),
                     "backbone_checkpoint": args.backbone_checkpoint,
                     "freeze_backbone": bool(args.freeze_backbone),
                     "precompute_embeddings": bool(use_precomputed),

@@ -23,6 +23,19 @@ MAX_HARM_PRECISION = 0.20
 MAX_CLASS_ID = 2**31 - 1
 RUNTIME_MANIFEST_SCHEMA_VERSION = 3
 TRACK_STATE_BUCKETS = {"matched", "unmatched"}
+ASSOCIATION_RUNTIME_CONTRACT_FIELDS = (
+    "filter_mode",
+    "history_source",
+    "tracker_compat_mode",
+    "expected_bev_cost_mode",
+)
+ASSOCIATION_APPLY_MODES = {
+    "penalty",
+    "margin_tiebreak",
+    "margin",
+    "tiebreak",
+    "tie_break",
+}
 DECISION_COUNTER_FIELDS = (
     "total_decisions",
     "changed_decisions",
@@ -259,9 +272,35 @@ def _runtime_manifest_status(audit: Mapping[str, Any]) -> Dict[str, Any]:
     ):
         reject("invalid_runtime_manifest_field:audit_schema_version")
 
+    config_path = require_field("config_path")
+    if not isinstance(config_path, str) or not config_path.strip():
+        reject("invalid_runtime_manifest_field:config_path")
+    else:
+        try:
+            path = Path(config_path).expanduser()
+            if not path.is_absolute() or str(path.resolve()) != config_path:
+                reject("invalid_runtime_manifest_field:config_path")
+        except (OSError, RuntimeError, TypeError, ValueError):
+            reject("invalid_runtime_manifest_field:config_path")
+
+    def valid_hex_digest(value: Any, lengths: set[int]) -> bool:
+        return (
+            isinstance(value, str)
+            and len(value) in lengths
+            and all(char in "0123456789abcdefABCDEF" for char in value)
+        )
+
     config_sha256 = require_field("config_sha256")
-    if not isinstance(config_sha256, str) or not config_sha256.strip():
+    if not valid_hex_digest(config_sha256, {64}):
         reject("invalid_runtime_manifest_field:config_sha256")
+
+    git_commit = require_field("git_commit")
+    if git_commit is not None and not valid_hex_digest(git_commit, {40, 64}):
+        reject("invalid_runtime_manifest_field:git_commit")
+
+    git_dirty = require_field("git_dirty")
+    if git_dirty is not None and type(git_dirty) is not bool:
+        reject("invalid_runtime_manifest_field:git_dirty")
 
     context_fields = (
         "association_head_enabled",
@@ -282,6 +321,135 @@ def _runtime_manifest_status(audit: Mapping[str, Any]) -> Dict[str, Any]:
     )
     if len(context_values) == len(context_fields) and not shadow_audit_enabled:
         reject("association_shadow_audit_not_enabled")
+
+    architecture = require_field("association_head_architecture")
+    if not isinstance(architecture, Mapping):
+        reject("invalid_runtime_manifest_field:association_head_architecture")
+    else:
+        architecture_fields = (
+            "input_dim",
+            "hidden_dims",
+            "hidden_dims_source",
+            "dropout",
+            "dropout_source",
+            "num_classes",
+        )
+        architecture_values = {}
+        for field in architecture_fields:
+            if field not in architecture:
+                reject(
+                    "missing_runtime_manifest_field:"
+                    f"association_head_architecture.{field}"
+                )
+            else:
+                architecture_values[field] = architecture[field]
+        for field in ("input_dim", "num_classes"):
+            value = architecture_values.get(field)
+            if type(value) is not int or value <= 0:
+                reject(
+                    "invalid_runtime_manifest_field:"
+                    f"association_head_architecture.{field}"
+                )
+        hidden_dims = architecture_values.get("hidden_dims")
+        if (
+            not isinstance(hidden_dims, (list, tuple))
+            or not hidden_dims
+            or any(type(value) is not int or value <= 0 for value in hidden_dims)
+        ):
+            reject(
+                "invalid_runtime_manifest_field:"
+                "association_head_architecture.hidden_dims"
+            )
+        for field in ("hidden_dims_source", "dropout_source"):
+            value = architecture_values.get(field)
+            if not isinstance(value, str) or not value.strip():
+                reject(
+                    "invalid_runtime_manifest_field:"
+                    f"association_head_architecture.{field}"
+                )
+        dropout = architecture_values.get("dropout")
+        if (
+            isinstance(dropout, bool)
+            or not isinstance(dropout, (int, float))
+            or not math.isfinite(float(dropout))
+            or not 0.0 <= float(dropout) <= 1.0
+        ):
+            reject(
+                "invalid_runtime_manifest_field:association_head_architecture.dropout"
+            )
+
+    class_id_to_name = require_field("class_id_to_name")
+    if not isinstance(class_id_to_name, Mapping) or not class_id_to_name:
+        reject("invalid_runtime_manifest_field:class_id_to_name")
+
+    active_class_states = require_field("active_class_states")
+    if not isinstance(active_class_states, Mapping):
+        reject("invalid_runtime_manifest_field:active_class_states")
+    else:
+        for raw_class_id, states in active_class_states.items():
+            try:
+                _bounded_class_id(
+                    raw_class_id,
+                    "active_class_states key",
+                    allow_canonical_string=True,
+                )
+            except (TypeError, ValueError):
+                reject("invalid_runtime_manifest_field:active_class_states")
+                continue
+            if (
+                not isinstance(states, list)
+                or states != sorted(set(states))
+                or any(state not in TRACK_STATE_BUCKETS for state in states)
+            ):
+                reject("invalid_runtime_manifest_field:active_class_states")
+
+    apply_mode = require_field("apply_mode")
+    if apply_mode not in ASSOCIATION_APPLY_MODES:
+        reject("invalid_runtime_manifest_field:apply_mode")
+
+    def require_finite_number(
+        field: str, *, minimum: float | None = None, maximum: float | None = None
+    ) -> None:
+        value = require_field(field)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or (minimum is not None and float(value) < minimum)
+            or (maximum is not None and float(value) > maximum)
+        ):
+            reject(f"invalid_runtime_manifest_field:{field}")
+
+    require_finite_number("cost_margin_eps", minimum=0.0)
+    require_finite_number("min_score", minimum=0.0, maximum=1.0)
+    require_finite_number("alpha", minimum=0.0)
+    require_finite_number("max_delta", minimum=0.0)
+
+    for field in ("filter_mode", "tracker_compat_mode", "bev_matching_mode"):
+        value = require_field(field)
+        if not isinstance(value, str) or not value.strip():
+            reject(f"invalid_runtime_manifest_field:{field}")
+
+    bev_cost_modes = require_field("bev_cost_modes")
+    if not isinstance(bev_cost_modes, Mapping) or not bev_cost_modes:
+        reject("invalid_runtime_manifest_field:bev_cost_modes")
+    else:
+        for raw_class_id, cost_mode in bev_cost_modes.items():
+            try:
+                _bounded_class_id(
+                    raw_class_id,
+                    "bev_cost_modes key",
+                    allow_canonical_string=True,
+                )
+            except (TypeError, ValueError):
+                reject("invalid_runtime_manifest_field:bev_cost_modes")
+                continue
+            if not isinstance(cost_mode, str) or not cost_mode.strip():
+                reject("invalid_runtime_manifest_field:bev_cost_modes")
+
+    process_count = require_field("process_count")
+    if type(process_count) is not int or process_count <= 0:
+        reject("invalid_runtime_manifest_field:process_count")
 
     if shadow_audit_enabled:
         checkpoint_fields = (
@@ -358,6 +526,27 @@ def _runtime_manifest_status(audit: Mapping[str, Any]) -> Dict[str, Any]:
             reject(
                 "invalid_runtime_manifest_field:association_checkpoint_runtime_contract_actual"
             )
+        for contract_name, contract in (
+            (
+                "association_checkpoint_runtime_contract_expected",
+                expected_contract,
+            ),
+            (
+                "association_checkpoint_runtime_contract_actual",
+                actual_contract,
+            ),
+        ):
+            if isinstance(contract, Mapping):
+                if set(contract) != set(ASSOCIATION_RUNTIME_CONTRACT_FIELDS):
+                    reject(f"invalid_runtime_manifest_field:{contract_name}")
+                for field in ASSOCIATION_RUNTIME_CONTRACT_FIELDS:
+                    value = contract.get(field)
+                    if (
+                        not isinstance(value, str)
+                        or not value.strip()
+                        or value != value.strip().lower()
+                    ):
+                        reject(f"invalid_runtime_manifest_field:{contract_name}")
         if not _strict_json_equal(expected_contract, actual_contract):
             reject("association_checkpoint_runtime_contract_mismatch")
         if (
