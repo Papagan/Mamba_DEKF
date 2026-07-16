@@ -37,6 +37,42 @@ class ComposePairVectorsTest(unittest.TestCase):
         self.assertTrue(torch.allclose(pair_vectors, expected))
         self.assertEqual(PAIR_GEOMETRY_DIM, 7)
 
+    def test_preserves_dtype_and_autograd(self):
+        track_embeddings = torch.tensor(
+            [[1.0, 2.0]], dtype=torch.float64, requires_grad=True
+        )
+        detection_embeddings = torch.tensor(
+            [[3.0, 5.0]], dtype=torch.float64, requires_grad=True
+        )
+        pair_geometry = torch.tensor(
+            [[0.4, 0.2, 1.5, 0.8, 0.9, 1.0, 5.0]],
+            dtype=torch.float64,
+            requires_grad=True,
+        )
+
+        pair_vectors = compose_pair_vectors(
+            track_embeddings,
+            detection_embeddings,
+            pair_geometry,
+        )
+        pair_vectors.sum().backward()
+
+        self.assertEqual(pair_vectors.dtype, torch.float64)
+        self.assertTrue(pair_vectors.requires_grad)
+        self.assertTrue(
+            torch.equal(
+                track_embeddings.grad,
+                torch.tensor([[3.0, 5.0]], dtype=torch.float64),
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                detection_embeddings.grad,
+                torch.tensor([[3.0, 4.0]], dtype=torch.float64),
+            )
+        )
+        self.assertTrue(torch.equal(pair_geometry.grad, torch.ones_like(pair_geometry)))
+
     def test_rejects_mismatched_batch_dimensions(self):
         with self.assertRaisesRegex(
             ValueError,

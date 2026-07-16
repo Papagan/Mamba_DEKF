@@ -4,8 +4,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
+
+from tools import train_pairwise_association
+from training.association_features import compose_pair_vectors
 
 
 def _sample(anchor_id, class_id, label, value, negative_type="positive"):
@@ -29,6 +33,43 @@ def _sample(anchor_id, class_id, label, value, negative_type="positive"):
 
 
 class TrainPairwiseAssociationCliTest(unittest.TestCase):
+    def test_precompute_pair_composition_delegates_to_shared_helper(self):
+        track_embeddings = torch.tensor([[1.0, 2.0]])
+        detection_embeddings = torch.tensor([[3.0, 5.0]])
+        pair_geometry = torch.tensor([[0.4, 0.2, 1.5, 0.8, 0.9, 1.0, 5.0]])
+
+        class StubModel:
+            def __init__(self):
+                self._embeddings = iter((track_embeddings, detection_embeddings))
+
+            def encode(self, history, class_ids, state_buckets=None):
+                return next(self._embeddings)
+
+        batch = {
+            "anchor_history": torch.zeros(1, 2, 12),
+            "candidate_history": torch.zeros(1, 2, 12),
+            "pair_features": pair_geometry,
+            "class_id": torch.tensor([2]),
+            "state_buckets": ["matched"],
+        }
+        expected = compose_pair_vectors(
+            track_embeddings,
+            detection_embeddings,
+            pair_geometry,
+        )
+
+        with patch.object(
+            train_pairwise_association,
+            "compose_pair_vectors",
+            wraps=compose_pair_vectors,
+        ) as shared_compose:
+            actual = train_pairwise_association._pair_vectors_from_batch(
+                StubModel(), batch, torch.device("cpu")
+            )
+
+        shared_compose.assert_called_once()
+        self.assertTrue(torch.equal(actual, expected))
+
     def test_dry_run_writes_metrics_json(self):
         root = Path(__file__).resolve().parents[1]
         samples = [

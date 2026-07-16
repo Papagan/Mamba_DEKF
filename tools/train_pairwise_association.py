@@ -28,6 +28,7 @@ from training.association_dataset import (  # noqa: E402
     pairwise_association_collate_fn,
     precomputed_pairwise_association_collate_fn,
 )
+from training.association_features import compose_pair_vectors  # noqa: E402
 from training.association_metrics import compute_association_metrics  # noqa: E402
 from training.association_model import (  # noqa: E402
     ClassConditionedAssociationHeadBank,
@@ -332,16 +333,7 @@ def _pair_vectors_from_batch(model, batch, device) -> torch.Tensor:
         class_ids,
         state_buckets=["matched"] * int(class_ids.shape[0]),
     )
-    return torch.cat(
-        [
-            track_embedding,
-            det_embedding,
-            torch.abs(track_embedding - det_embedding),
-            track_embedding * det_embedding,
-            pair_features,
-        ],
-        dim=-1,
-    )
+    return compose_pair_vectors(track_embedding, det_embedding, pair_features)
 
 
 def _precompute_pair_vectors(model, loader, device, *, logger_obj=None, label: str = "train") -> Dict[str, Any]:
