@@ -1073,6 +1073,14 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
                 {"apply_mode": "unknown"},
                 "invalid_runtime_manifest_field:apply_mode",
             ),
+            "non_string_apply_mode": (
+                {"apply_mode": {"mode": "penalty"}},
+                "invalid_runtime_manifest_field:apply_mode",
+            ),
+            "unhashable_active_state": (
+                {"active_class_states": {"2": [{"state": "matched"}]}},
+                "invalid_runtime_manifest_field:active_class_states",
+            ),
             "invalid_process_count": (
                 {"process_count": 0},
                 "invalid_runtime_manifest_field:process_count",

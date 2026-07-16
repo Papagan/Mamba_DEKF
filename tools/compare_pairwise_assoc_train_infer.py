@@ -398,13 +398,14 @@ def _runtime_manifest_status(audit: Mapping[str, Any]) -> Dict[str, Any]:
                 continue
             if (
                 not isinstance(states, list)
-                or states != sorted(set(states))
+                or any(not isinstance(state, str) for state in states)
                 or any(state not in TRACK_STATE_BUCKETS for state in states)
+                or states != sorted(set(states))
             ):
                 reject("invalid_runtime_manifest_field:active_class_states")
 
     apply_mode = require_field("apply_mode")
-    if apply_mode not in ASSOCIATION_APPLY_MODES:
+    if not isinstance(apply_mode, str) or apply_mode not in ASSOCIATION_APPLY_MODES:
         reject("invalid_runtime_manifest_field:apply_mode")
 
     def require_finite_number(
