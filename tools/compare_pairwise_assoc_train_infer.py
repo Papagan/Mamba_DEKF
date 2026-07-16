@@ -381,6 +381,10 @@ def _runtime_manifest_status(audit: Mapping[str, Any]) -> Dict[str, Any]:
     class_id_to_name = require_field("class_id_to_name")
     if not isinstance(class_id_to_name, Mapping) or not class_id_to_name:
         reject("invalid_runtime_manifest_field:class_id_to_name")
+    else:
+        class_identity_status, _ = _canonical_class_identity_status(audit)
+        if not class_identity_status["valid"]:
+            reject("invalid_runtime_manifest_field:class_id_to_name")
 
     active_class_states = require_field("active_class_states")
     if not isinstance(active_class_states, Mapping):

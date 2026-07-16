@@ -1081,6 +1081,10 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
                 {"active_class_states": {"2": [{"state": "matched"}]}},
                 "invalid_runtime_manifest_field:active_class_states",
             ),
+            "invalid_class_map": (
+                {"class_id_to_name": {"not-an-id": "bicycle"}},
+                "invalid_runtime_manifest_field:class_id_to_name",
+            ),
             "invalid_process_count": (
                 {"process_count": 0},
                 "invalid_runtime_manifest_field:process_count",
