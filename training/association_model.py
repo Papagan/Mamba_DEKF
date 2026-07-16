@@ -6,6 +6,8 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
+from training.association_features import compose_pair_vectors
+
 
 class ClassConditionedAssociationHeadBank(nn.Module):
     """Route pair features to an independent binary association head per class."""
@@ -109,14 +111,5 @@ class PairwiseAssociationModel(nn.Module):
     ) -> Tensor:
         track_embedding = self.encode(anchor_history, class_ids, state_buckets=state_buckets)
         det_embedding = self.encode(candidate_history, class_ids, state_buckets=["matched"] * int(class_ids.shape[0]))
-        pair = torch.cat(
-            [
-                track_embedding,
-                det_embedding,
-                torch.abs(track_embedding - det_embedding),
-                track_embedding * det_embedding,
-                pair_features,
-            ],
-            dim=-1,
-        )
+        pair = compose_pair_vectors(track_embedding, det_embedding, pair_features)
         return self.association_heads(pair, class_ids)
