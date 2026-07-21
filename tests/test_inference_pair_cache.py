@@ -3,9 +3,11 @@ import json
 import pickle
 import unittest
 from fractions import Fraction
+from unittest.mock import patch
 
 import numpy as np
 
+from tracker import inference_pair_cache
 from tracker.inference_pair_cache import build_candidate_groups
 
 
@@ -366,6 +368,36 @@ class InferencePairCacheGroupTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "class_names"):
                     self._build(payload)
 
+    def test_rejects_state_and_gt_string_subclasses_and_emits_builtin_strings(self):
+        class StringSubclass(str):
+            pass
+
+        cases = (
+            ("state_buckets", [StringSubclass("matched")]),
+            ("track_gt_tokens", [StringSubclass("gt-b")]),
+            ("det_gt_tokens", [StringSubclass("gt-a"), "gt-b"]),
+        )
+        for field, value in cases:
+            with self.subTest(field=field):
+                payload = self._payload()
+                payload[field] = value
+                with self.assertRaisesRegex(ValueError, field):
+                    self._build(payload)
+
+        groups = self._build()
+        group = groups[0]
+        for field in (
+            "scene_id",
+            "sample_token",
+            "class_name",
+            "state_bucket",
+            "track_gt_token",
+        ):
+            self.assertIs(type(group[field]), str)
+        for candidate in group["candidates"]:
+            self.assertIs(type(candidate["det_gt_token"]), str)
+        pickle.dumps(groups)
+
     def test_thresholds_require_finite_real_numeric_scalars_without_coercion(self):
         invalid_thresholds = (
             {5: True},
@@ -508,6 +540,68 @@ class InferencePairCacheGroupTest(unittest.TestCase):
 
                 self.assertIsNone(groups[0]["candidates"][0]["association_score"])
                 json.dumps(groups, allow_nan=False)
+
+    def test_large_arrays_do_not_use_scalar_conversion_per_element(self):
+        candidate_count = 128
+        embedding_width = 32
+        pair_width = 16
+        payload = {
+            "scene_id": "scene-large",
+            "sample_token": "sample-large",
+            "frame_id": 8,
+            "track_ids": [31],
+            "class_ids": [5],
+            "class_names": ["trailer"],
+            "state_buckets": ["matched"],
+            "track_gt_tokens": [None],
+            "det_gt_tokens": [f"det-{index}" for index in range(candidate_count)],
+            "pair_indices": [(0, index) for index in range(candidate_count)],
+            "pair_vectors": np.full(
+                (candidate_count, pair_width), 0.25, dtype=np.float32
+            ),
+            "track_embeddings": np.full((1, embedding_width), 0.5, dtype=np.float32),
+            "det_embeddings": np.full(
+                (candidate_count, embedding_width), 0.75, dtype=np.float32
+            ),
+            "association_scores": np.full((1, candidate_count), 0.6, dtype=np.float32),
+        }
+        base_costs = np.linspace(0.1, 1.0, candidate_count, dtype=np.float64).reshape(
+            1, -1
+        )
+
+        with patch.object(
+            inference_pair_cache,
+            "_finite_python_float",
+            wraps=inference_pair_cache._finite_python_float,
+        ) as scalar_conversion:
+            groups = self._build(
+                payload,
+                base_cost_matrix=base_costs,
+                production_costs=np.asarray([base_costs[0, 0]]),
+            )
+
+        self.assertEqual(groups[0]["candidate_count"], candidate_count)
+        self.assertLessEqual(scalar_conversion.call_count, candidate_count + 2)
+
+    def test_disabled_vector_serialization_still_validates_numeric_arrays(self):
+        underflowing = np.nextafter(
+            np.longdouble(0.0), np.longdouble(1.0), dtype=np.longdouble
+        )
+        cases = (
+            ("track_embeddings", (0, 0)),
+            ("pair_vectors", (0, 0)),
+        )
+        for field, index in cases:
+            with self.subTest(field=field):
+                payload = self._payload()
+                payload[field] = payload[field].astype(np.longdouble)
+                payload[field][index] = underflowing
+                with self.assertRaisesRegex(ValueError, f"{field}.*underflow"):
+                    self._build(
+                        payload,
+                        include_embeddings=False,
+                        include_pair_vectors=False,
+                    )
 
     def test_rejects_malformed_matrix_vector_and_embedding_shapes(self):
         cases = []

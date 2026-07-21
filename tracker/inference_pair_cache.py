@@ -82,7 +82,7 @@ def _class_names(values, expected_count):
 
 def _states(values, expected_count):
     normalized = _sequence("state_buckets", values, expected_count)
-    if any(value not in TRACK_STATES for value in normalized):
+    if any(type(value) is not str or value not in TRACK_STATES for value in normalized):
         raise ValueError("state_buckets values must be matched or unmatched")
     return normalized
 
@@ -91,13 +91,13 @@ def _tokens(name, values, expected_count):
     normalized = _sequence(name, values, expected_count)
     for value in normalized:
         if value is not None and (
-            not isinstance(value, str) or not value or value.strip() != value
+            type(value) is not str or not value or value.strip() != value
         ):
             raise ValueError(f"{name} must contain canonical string tokens or None")
     return normalized
 
 
-def _matrix(name, value, *, shape=None, finite=False):
+def _matrix(name, value, *, shape=None, finite=False, keep_original=False):
     array = np.asarray(value)
     if array.ndim != 2:
         raise ValueError(f"{name} must be a two-dimensional array")
@@ -107,10 +107,10 @@ def _matrix(name, value, *, shape=None, finite=False):
         raise TypeError(f"{name} must contain real numeric values")
     if shape is not None and array.shape != shape:
         raise ValueError(f"{name} must have shape {shape}, got {array.shape}")
-    if finite and not np.all(np.isfinite(array)):
-        raise ValueError(f"{name} must contain only finite values")
-    _validate_python_float_values(name, array)
-    return np.array(array, copy=True)
+    normalized = _normalized_float64_array(name, array, finite=finite)
+    if keep_original:
+        return normalized, np.array(array, copy=True)
+    return normalized
 
 
 def _finite_python_float(name, value):
@@ -125,22 +125,32 @@ def _finite_python_float(name, value):
     return converted
 
 
-def _validate_python_float_values(name, array):
-    for value in array.flat:
-        if np.isfinite(value):
-            _finite_python_float(name, value)
+def _normalized_float64_array(name, array, *, finite):
+    original_finite = np.isfinite(array)
+    if finite and not np.all(original_finite):
+        raise ValueError(f"{name} must contain only finite values")
+    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+        normalized = array.astype(np.float64, copy=True)
+    if np.any(original_finite & ~np.isfinite(normalized)):
+        raise ValueError(f"{name} must convert to finite Python float values")
+    if np.any(original_finite & (array != 0) & (normalized == 0.0)):
+        raise ValueError(f"{name} underflows Python float")
+    return normalized
 
 
-def _ranked_finite_entries(base_costs, track_index, pair_entries):
+def _ranked_finite_entries(base_costs, original_base_costs, track_index, pair_entries):
     entries = []
     originals_by_float = {}
     for det_index, _ in pair_entries:
-        original = base_costs[track_index, det_index]
-        if not np.isfinite(original):
+        converted = base_costs[track_index, det_index]
+        if not np.isfinite(converted):
             continue
-        converted = _finite_python_float("base_cost_matrix", original)
-        prior = originals_by_float.get(converted)
-        if prior is not None and original != prior:
+        converted = converted.item()
+        original = original_base_costs[track_index, det_index]
+        if (
+            converted in originals_by_float
+            and original != originals_by_float[converted]
+        ):
             raise ValueError(
                 "base_cost_matrix has distinct candidate costs that convert to "
                 "the same Python float"
@@ -205,10 +215,7 @@ def _production_cost_array(value, match_count):
         array.dtype, np.complexfloating
     ):
         raise TypeError("production_costs must contain real numeric values")
-    if not np.all(np.isfinite(array)):
-        raise ValueError("production_costs must contain only finite values")
-    _validate_python_float_values("production_costs", array)
-    return np.array(array, copy=True)
+    return _normalized_float64_array("production_costs", array, finite=True)
 
 
 def _assignment_map(matches, costs, track_count, det_count, candidate_pairs):
@@ -240,10 +247,7 @@ def _assignment_map(matches, costs, track_count, det_count, candidate_pairs):
                 "production match "
                 f"({track_index}, {det_index}) is not represented by pair_indices"
             )
-        result[track_index] = (
-            det_index,
-            _finite_python_float("production_costs", cost),
-        )
+        result[track_index] = (det_index, cost.item())
         seen_detections.add(det_index)
     return result
 
@@ -345,8 +349,11 @@ def build_candidate_groups(
         )
     det_gt_tokens = _tokens("det_gt_tokens", payload["det_gt_tokens"], det_count)
 
-    base_costs = _matrix(
-        "base_cost_matrix", base_cost_matrix, shape=(track_count, det_count)
+    base_costs, original_base_costs = _matrix(
+        "base_cost_matrix",
+        base_cost_matrix,
+        shape=(track_count, det_count),
+        keep_original=True,
     )
     pair_indices = _index_pairs("pair_indices", payload["pair_indices"])
     candidate_pairs = _validate_pair_indices(pair_indices, track_count, det_count)
@@ -389,7 +396,9 @@ def build_candidate_groups(
     groups = []
     for track_index in range(track_count):
         pair_entries = sorted(pairs_by_track[track_index])
-        finite_entries = _ranked_finite_entries(base_costs, track_index, pair_entries)
+        finite_entries = _ranked_finite_entries(
+            base_costs, original_base_costs, track_index, pair_entries
+        )
         ranks = {
             det_index: rank
             for rank, (_, det_index) in enumerate(finite_entries, start=1)
@@ -406,17 +415,13 @@ def build_candidate_groups(
         for det_index, pair_position in pair_entries:
             base_cost = base_costs[track_index, det_index]
             finite = bool(np.isfinite(base_cost))
-            raw_cost = (
-                _finite_python_float("base_cost_matrix", base_cost) if finite else None
-            )
+            raw_cost = base_cost.item() if finite else None
             cost_gap = None
             if finite and best_cost is not None:
                 cost_gap = _finite_python_float("cost_gap", raw_cost - best_cost)
             association_score = None
             if scores is not None and np.isfinite(scores[track_index, det_index]):
-                association_score = _finite_python_float(
-                    "association_scores", scores[track_index, det_index]
-                )
+                association_score = scores[track_index, det_index].item()
             candidate = {
                 "det_index": det_index,
                 "geometric_cost": raw_cost if finite else None,
@@ -438,15 +443,9 @@ def build_candidate_groups(
                 ),
             }
             if include_embeddings:
-                candidate["det_embedding"] = [
-                    _finite_python_float("det_embeddings", value)
-                    for value in det_embeddings[det_index]
-                ]
+                candidate["det_embedding"] = det_embeddings[det_index].tolist()
             if include_pair_vectors:
-                candidate["pair_vector"] = [
-                    _finite_python_float("pair_vectors", value)
-                    for value in pair_vectors[pair_position]
-                ]
+                candidate["pair_vector"] = pair_vectors[pair_position].tolist()
             candidates.append(candidate)
 
         group = {
@@ -468,10 +467,7 @@ def build_candidate_groups(
             "candidates": candidates,
         }
         if include_embeddings:
-            group["track_embedding"] = [
-                _finite_python_float("track_embeddings", value)
-                for value in track_embeddings[track_index]
-            ]
+            group["track_embedding"] = track_embeddings[track_index].tolist()
         groups.append(group)
 
     return groups
