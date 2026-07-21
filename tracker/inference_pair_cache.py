@@ -2,8 +2,17 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
+import json
+import os
+import pickle
+import subprocess
+import tempfile
+from collections import defaultdict
 from collections.abc import Mapping
 from numbers import Integral, Real
+from pathlib import Path
 
 import numpy as np
 
@@ -471,3 +480,867 @@ def build_candidate_groups(
         groups.append(group)
 
     return groups
+
+
+_GROUP_FIELDS = {
+    "schema_version",
+    "scene_id",
+    "sample_token",
+    "frame_id",
+    "track_id",
+    "class_id",
+    "class_name",
+    "state_bucket",
+    "track_gt_token",
+    "production_det_index",
+    "production_match_cost",
+    "candidate_count",
+    "finite_candidate_count",
+    "gt_target_det_index",
+    "gt_target_status",
+    "candidates",
+}
+_CANDIDATE_FIELDS = {
+    "det_index",
+    "geometric_cost",
+    "geometric_threshold",
+    "finite",
+    "inside_geometric_gate",
+    "candidate_rank",
+    "best_cost",
+    "cost_gap",
+    "association_score",
+    "production_selected",
+    "det_gt_token",
+    "gt_label",
+}
+_ERROR_FIELDS = {
+    "scene_id",
+    "sample_token",
+    "frame_id",
+    "stage",
+    "error_type",
+    "message",
+}
+_STATE_FIELDS = {
+    "schema_version",
+    "runtime_manifest",
+    "groups",
+    "error_count",
+    "error_samples",
+}
+_GROUP_STATUSES = {"matched", "no_match", "unknown"}
+_PICKLE_PROTOCOL = 4
+
+
+def _require_exact_fields(name, value, required, optional=()):
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{name} must be a mapping")
+    keys = set(value.keys())
+    allowed = set(required) | set(optional)
+    missing = set(required) - keys
+    extra = keys - allowed
+    if missing:
+        raise ValueError(f"{name} is missing required field {sorted(missing)[0]}")
+    if extra:
+        raise ValueError(f"{name} has unexpected field {sorted(extra, key=str)[0]}")
+
+
+def _strict_nonnegative_integer(name, value):
+    value = _native_scalar(value)
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
+        raise TypeError(f"{name} must be a non-negative integer")
+    normalized = int(value)
+    if normalized < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return normalized
+
+
+def _strict_positive_integer(name, value):
+    normalized = _strict_nonnegative_integer(name, value)
+    if normalized == 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return normalized
+
+
+def _strict_bool(name, value):
+    if type(value) is not bool:
+        raise TypeError(f"{name} must be a built-in bool")
+    return value
+
+
+def _canonical_string(name, value, *, allow_empty=False):
+    if type(value) is not str:
+        raise TypeError(f"{name} must be a built-in string")
+    if value.strip() != value or (not allow_empty and not value):
+        raise ValueError(f"{name} must be a canonical string")
+    return value
+
+
+def _optional_canonical_string(name, value):
+    if value is None:
+        return None
+    return _canonical_string(name, value)
+
+
+def _finite_number(name, value):
+    value = _native_scalar(value)
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
+        raise TypeError(f"{name} must be a finite real number")
+    return _finite_python_float(name, value)
+
+
+def _optional_finite_number(name, value):
+    return None if value is None else _finite_number(name, value)
+
+
+def _optional_nonnegative_integer(name, value):
+    return None if value is None else _strict_nonnegative_integer(name, value)
+
+
+def _finite_vector(name, value):
+    if type(value) is not list or not value:
+        raise ValueError(f"{name} must be a nonempty built-in list")
+    return [
+        _finite_number(f"{name}[{index}]", item)
+        for index, item in enumerate(value)
+    ]
+
+
+def _group_key(group):
+    return (
+        group["scene_id"],
+        group["sample_token"],
+        group["frame_id"],
+        group["track_id"],
+    )
+
+
+def validate_candidate_group(group):
+    """Strictly normalize one Task 2 group to independent built-in values."""
+    _require_exact_fields("candidate group", group, _GROUP_FIELDS, {"track_embedding"})
+    schema_version = _strict_nonnegative_integer(
+        "schema_version", group["schema_version"]
+    )
+    if schema_version != INFERENCE_PAIR_CACHE_SCHEMA_VERSION:
+        raise ValueError("candidate group has an unsupported schema_version")
+
+    normalized = {
+        "schema_version": INFERENCE_PAIR_CACHE_SCHEMA_VERSION,
+        "scene_id": _canonical_string("scene_id", group["scene_id"]),
+        "sample_token": _canonical_string("sample_token", group["sample_token"]),
+        "frame_id": _strict_nonnegative_integer("frame_id", group["frame_id"]),
+        "track_id": _strict_nonnegative_integer("track_id", group["track_id"]),
+        "class_id": _strict_nonnegative_integer("class_id", group["class_id"]),
+        "class_name": _canonical_string("class_name", group["class_name"]),
+        "state_bucket": _canonical_string("state_bucket", group["state_bucket"]),
+        "track_gt_token": _optional_canonical_string(
+            "track_gt_token", group["track_gt_token"]
+        ),
+        "production_det_index": _optional_nonnegative_integer(
+            "production_det_index", group["production_det_index"]
+        ),
+        "production_match_cost": _optional_finite_number(
+            "production_match_cost", group["production_match_cost"]
+        ),
+        "candidate_count": _strict_nonnegative_integer(
+            "candidate_count", group["candidate_count"]
+        ),
+        "finite_candidate_count": _strict_nonnegative_integer(
+            "finite_candidate_count", group["finite_candidate_count"]
+        ),
+        "gt_target_det_index": _optional_nonnegative_integer(
+            "gt_target_det_index", group["gt_target_det_index"]
+        ),
+        "gt_target_status": _canonical_string(
+            "gt_target_status", group["gt_target_status"]
+        ),
+    }
+    if normalized["state_bucket"] not in TRACK_STATES:
+        raise ValueError("state_bucket must be matched or unmatched")
+    if normalized["gt_target_status"] not in _GROUP_STATUSES:
+        raise ValueError("gt_target_status must be matched, no_match, or unknown")
+
+    if "track_embedding" in group:
+        normalized["track_embedding"] = _finite_vector(
+            "track_embedding", group["track_embedding"]
+        )
+
+    candidates_value = group["candidates"]
+    if type(candidates_value) is not list:
+        raise TypeError("candidates must be a built-in list")
+    candidates = []
+    for position, candidate in enumerate(candidates_value):
+        name = f"candidates[{position}]"
+        _require_exact_fields(
+            name,
+            candidate,
+            _CANDIDATE_FIELDS,
+            {"det_embedding", "pair_vector"},
+        )
+        item = {
+            "det_index": _strict_nonnegative_integer(
+                f"{name}.det_index", candidate["det_index"]
+            ),
+            "geometric_cost": _optional_finite_number(
+                f"{name}.geometric_cost", candidate["geometric_cost"]
+            ),
+            "geometric_threshold": _finite_number(
+                f"{name}.geometric_threshold", candidate["geometric_threshold"]
+            ),
+            "finite": _strict_bool(f"{name}.finite", candidate["finite"]),
+            "inside_geometric_gate": _strict_bool(
+                f"{name}.inside_geometric_gate",
+                candidate["inside_geometric_gate"],
+            ),
+            "candidate_rank": (
+                None
+                if candidate["candidate_rank"] is None
+                else _strict_positive_integer(
+                    f"{name}.candidate_rank", candidate["candidate_rank"]
+                )
+            ),
+            "best_cost": _optional_finite_number(
+                f"{name}.best_cost", candidate["best_cost"]
+            ),
+            "cost_gap": _optional_finite_number(
+                f"{name}.cost_gap", candidate["cost_gap"]
+            ),
+            "association_score": _optional_finite_number(
+                f"{name}.association_score", candidate["association_score"]
+            ),
+            "production_selected": _strict_bool(
+                f"{name}.production_selected", candidate["production_selected"]
+            ),
+            "det_gt_token": _optional_canonical_string(
+                f"{name}.det_gt_token", candidate["det_gt_token"]
+            ),
+        }
+        label = candidate["gt_label"]
+        if label is not None:
+            label = _strict_nonnegative_integer(f"{name}.gt_label", label)
+            if label not in (0, 1):
+                raise ValueError(f"{name}.gt_label must be 0, 1, or None")
+        item["gt_label"] = label
+        for field in ("det_embedding", "pair_vector"):
+            if field in candidate:
+                item[field] = _finite_vector(f"{name}.{field}", candidate[field])
+        candidates.append(item)
+
+    candidates.sort(key=lambda item: item["det_index"])
+    det_indices = [item["det_index"] for item in candidates]
+    if len(set(det_indices)) != len(det_indices):
+        raise ValueError("candidate det_index values must be unique")
+    if normalized["candidate_count"] != len(candidates):
+        raise ValueError("candidate_count does not match candidates")
+
+    finite_candidates = [item for item in candidates if item["finite"]]
+    if normalized["finite_candidate_count"] != len(finite_candidates):
+        raise ValueError("finite_candidate_count does not match candidates")
+    expected_best = (
+        min(item["geometric_cost"] for item in finite_candidates)
+        if finite_candidates
+        else None
+    )
+    expected_ranks = {
+        item["det_index"]: rank
+        for rank, item in enumerate(
+            sorted(
+                finite_candidates,
+                key=lambda entry: (entry["geometric_cost"], entry["det_index"]),
+            ),
+            start=1,
+        )
+    }
+    for item in candidates:
+        if item["best_cost"] != expected_best:
+            raise ValueError("candidate best_cost is inconsistent")
+        if item["finite"]:
+            if item["geometric_cost"] is None:
+                raise ValueError("finite candidate must have geometric_cost")
+            if item["candidate_rank"] != expected_ranks[item["det_index"]]:
+                raise ValueError("candidate_rank is inconsistent")
+            if item["cost_gap"] != item["geometric_cost"] - expected_best:
+                raise ValueError("candidate cost_gap is inconsistent")
+            if item["inside_geometric_gate"] != (
+                item["geometric_cost"] <= item["geometric_threshold"]
+            ):
+                raise ValueError("inside_geometric_gate is inconsistent")
+        elif any(
+            item[field] is not None
+            for field in ("geometric_cost", "candidate_rank", "cost_gap")
+        ) or item["inside_geometric_gate"]:
+            raise ValueError("non-finite candidate fields are inconsistent")
+
+    has_track_embedding = "track_embedding" in normalized
+    det_embedding_flags = ["det_embedding" in item for item in candidates]
+    if candidates and (
+        any(det_embedding_flags) != all(det_embedding_flags)
+        or all(det_embedding_flags) != has_track_embedding
+    ):
+        raise ValueError("track and detection embedding fields are inconsistent")
+    if has_track_embedding:
+        width = len(normalized["track_embedding"])
+        if any(len(item["det_embedding"]) != width for item in candidates):
+            raise ValueError("track and detection embedding dimensions differ")
+    pair_widths = {
+        len(item["pair_vector"])
+        for item in candidates
+        if "pair_vector" in item
+    }
+    if pair_widths and (
+        len(pair_widths) != 1
+        or not all("pair_vector" in item for item in candidates)
+    ):
+        raise ValueError("pair_vector fields or dimensions are inconsistent")
+
+    production_index = normalized["production_det_index"]
+    production_cost = normalized["production_match_cost"]
+    selected = [item for item in candidates if item["production_selected"]]
+    if (production_index is None) != (production_cost is None):
+        raise ValueError("production detection and cost must both be null or present")
+    if production_index is None:
+        if selected:
+            raise ValueError("production_selected requires a production detection")
+    elif (
+        len(selected) != 1
+        or selected[0]["det_index"] != production_index
+        or not selected[0]["finite"]
+    ):
+        raise ValueError("production selection is inconsistent")
+
+    target_status = normalized["gt_target_status"]
+    target_index = normalized["gt_target_det_index"]
+    positives = [item for item in candidates if item["gt_label"] == 1]
+    if target_status == "matched":
+        if target_index is None or len(positives) != 1:
+            raise ValueError("matched target requires exactly one positive")
+        if positives[0]["det_index"] != target_index:
+            raise ValueError("matched target index does not identify the positive")
+        if any(item["gt_label"] is None for item in candidates):
+            raise ValueError("matched target labels must be definite")
+        if normalized["track_gt_token"] is None or (
+            positives[0]["det_gt_token"] != normalized["track_gt_token"]
+        ):
+            raise ValueError("matched target GT tokens are inconsistent")
+    elif target_status == "no_match":
+        if target_index is not None or positives or any(
+            item["gt_label"] != 0 for item in candidates
+        ):
+            raise ValueError("no_match target requires definite zero labels")
+        if normalized["track_gt_token"] is None:
+            raise ValueError("no_match target requires a known track GT token")
+        if any(
+            item["det_gt_token"] == normalized["track_gt_token"]
+            for item in candidates
+        ):
+            raise ValueError("no_match target cannot contain the track GT token")
+    elif target_index is not None or any(
+        item["gt_label"] is not None for item in candidates
+    ):
+        raise ValueError("unknown target requires null labels and target index")
+
+    normalized["candidates"] = candidates
+    canonical_json(normalized)
+    pickle.dumps(normalized, protocol=_PICKLE_PROTOCOL)
+    return normalized
+
+
+def validate_error_record(record):
+    """Normalize one bounded audit error sample."""
+    _require_exact_fields("error record", record, _ERROR_FIELDS)
+    return {
+        "scene_id": _canonical_string("scene_id", record["scene_id"]),
+        "sample_token": _canonical_string("sample_token", record["sample_token"]),
+        "frame_id": _strict_nonnegative_integer("frame_id", record["frame_id"]),
+        "stage": _canonical_string("stage", record["stage"]),
+        "error_type": _canonical_string("error_type", record["error_type"]),
+        "message": _canonical_string("message", record["message"], allow_empty=True)[
+            :1024
+        ],
+    }
+
+
+def canonical_json(value):
+    """Return stable compact JSON and reject non-finite or unsafe values."""
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+
+
+def _json_safe_copy(value):
+    return json.loads(canonical_json(value))
+
+
+def validate_accumulator_state(state):
+    """Strictly validate and detach an exported worker accumulator state."""
+    _require_exact_fields("accumulator state", state, _STATE_FIELDS)
+    schema_version = _strict_nonnegative_integer(
+        "schema_version", state["schema_version"]
+    )
+    if schema_version != INFERENCE_PAIR_CACHE_SCHEMA_VERSION:
+        raise ValueError("accumulator state has an unsupported schema_version")
+    if not isinstance(state["runtime_manifest"], Mapping):
+        raise TypeError("runtime_manifest must be a mapping")
+    runtime_manifest = _json_safe_copy(state["runtime_manifest"])
+    if type(state["groups"]) is not list:
+        raise TypeError("groups must be a built-in list")
+    groups = [validate_candidate_group(group) for group in state["groups"]]
+    seen_keys = set()
+    for group in groups:
+        key = _group_key(group)
+        if key in seen_keys:
+            raise ValueError(f"accumulator state contains duplicate group key {key}")
+        seen_keys.add(key)
+    groups.sort(key=_group_key)
+    error_count = _strict_nonnegative_integer("error_count", state["error_count"])
+    if type(state["error_samples"]) is not list:
+        raise TypeError("error_samples must be a built-in list")
+    error_samples = [validate_error_record(item) for item in state["error_samples"]]
+    if error_count < len(error_samples):
+        raise ValueError("error_count must be at least len(error_samples)")
+    return {
+        "schema_version": INFERENCE_PAIR_CACHE_SCHEMA_VERSION,
+        "runtime_manifest": runtime_manifest,
+        "groups": groups,
+        "error_count": error_count,
+        "error_samples": error_samples,
+    }
+
+
+def _error_key(record):
+    return (
+        record["scene_id"],
+        record["sample_token"],
+        record["frame_id"],
+        record["stage"],
+        record["error_type"],
+        record["message"],
+    )
+
+
+def _empty_counts():
+    return {
+        "observed_groups": 0,
+        "accepted_groups": 0,
+        "rejected_unknown_groups": 0,
+        "capped_groups": 0,
+        "matched_groups": 0,
+        "no_match_groups": 0,
+        "unknown_groups": 0,
+        "candidate_count": 0,
+        "finite_candidate_count": 0,
+        "gated_candidate_count": 0,
+        "production_selected_count": 0,
+        "positive_count": 0,
+        "negative_count": 0,
+        "unknown_label_count": 0,
+    }
+
+
+def _retained_counts(groups):
+    counts = _empty_counts()
+    counts["accepted_groups"] = len(groups)
+    for group in groups:
+        counts[f"{group['gt_target_status']}_groups"] += 1
+        counts["candidate_count"] += len(group["candidates"])
+        for candidate in group["candidates"]:
+            counts["finite_candidate_count"] += int(candidate["finite"])
+            counts["gated_candidate_count"] += int(
+                candidate["inside_geometric_gate"]
+            )
+            counts["production_selected_count"] += int(
+                candidate["production_selected"]
+            )
+            if candidate["gt_label"] == 1:
+                counts["positive_count"] += 1
+            elif candidate["gt_label"] == 0:
+                counts["negative_count"] += 1
+            else:
+                counts["unknown_label_count"] += 1
+    return counts
+
+
+def summarize_candidate_groups(
+    observed_groups,
+    retained_groups,
+    error_count,
+    error_samples,
+    runtime_manifest,
+):
+    """Recompute deterministic summary counts from validated serialized groups.
+
+    ``per_class_state`` uses canonical JSON keys of ``[class_id, state_bucket]``.
+    """
+    if type(observed_groups) is not list or type(retained_groups) is not list:
+        raise TypeError("observed_groups and retained_groups must be built-in lists")
+    observed = [validate_candidate_group(group) for group in observed_groups]
+    retained = [validate_candidate_group(group) for group in retained_groups]
+    observed_by_key = {_group_key(group): group for group in observed}
+    if len(observed_by_key) != len(observed):
+        raise ValueError("observed_groups contains duplicate stable keys")
+    for group in retained:
+        key = _group_key(group)
+        if observed_by_key.get(key) != group:
+            raise ValueError(
+                "retained_groups must be an exact subset of observed_groups"
+            )
+
+    class_names = {}
+    for group in observed + retained:
+        class_id = group["class_id"]
+        class_name = group["class_name"]
+        if class_id in class_names and class_names[class_id] != class_name:
+            raise ValueError(f"class_id {class_id} maps to inconsistent class names")
+        if (
+            class_name in class_names.values()
+            and class_names.get(class_id) != class_name
+        ):
+            raise ValueError(f"class_name {class_name} maps to inconsistent class ids")
+        class_names[class_id] = class_name
+
+    retained_keys = {_group_key(group) for group in retained}
+    missing_unknown_keys = {
+        _group_key(group)
+        for group in observed
+        if group["gt_target_status"] == "unknown"
+        and _group_key(group) not in retained_keys
+    }
+
+    def make_bucket(observed_bucket, retained_bucket):
+        counts = _retained_counts(retained_bucket)
+        counts["observed_groups"] = len(observed_bucket)
+        counts["rejected_unknown_groups"] = sum(
+            _group_key(group) in missing_unknown_keys for group in observed_bucket
+        )
+        counts["capped_groups"] = (
+            counts["observed_groups"]
+            - counts["accepted_groups"]
+            - counts["rejected_unknown_groups"]
+        )
+        if counts["capped_groups"] < 0:
+            raise ValueError("summary group counts cannot be reconciled")
+        return counts
+
+    overall = make_bucket(observed, retained)
+    overall["error_count"] = _strict_nonnegative_integer("error_count", error_count)
+
+    per_class = {}
+    per_class_state = {}
+    for class_id, class_name in sorted(class_names.items()):
+        observed_class = [group for group in observed if group["class_id"] == class_id]
+        retained_class = [group for group in retained if group["class_id"] == class_id]
+        per_class[class_name] = make_bucket(observed_class, retained_class)
+        states = sorted(
+            {
+                group["state_bucket"]
+                for group in observed_class + retained_class
+            }
+        )
+        for state in states:
+            bucket_key = canonical_json([class_id, state])
+            per_class_state[bucket_key] = make_bucket(
+                [group for group in observed_class if group["state_bucket"] == state],
+                [group for group in retained_class if group["state_bucket"] == state],
+            )
+
+    normalized_errors = sorted(
+        {
+            _error_key(item): item
+            for item in map(validate_error_record, error_samples)
+        }.values(),
+        key=_error_key,
+    )
+    if overall["error_count"] < len(normalized_errors):
+        raise ValueError("error_count must be at least the number of error samples")
+    return {
+        "schema_version": INFERENCE_PAIR_CACHE_SCHEMA_VERSION,
+        "runtime_manifest": _json_safe_copy(runtime_manifest or {}),
+        "overall": overall,
+        "per_class": per_class,
+        "per_class_state": dict(sorted(per_class_state.items())),
+        "error_samples": copy.deepcopy(normalized_errors),
+    }
+
+
+class InferencePairCacheAccumulator:
+    """Order-independent accumulator for audit-only association groups."""
+
+    def __init__(
+        self,
+        *,
+        runtime_manifest=None,
+        max_groups_per_class_state=0,
+        require_audit_gt=False,
+        max_error_samples=32,
+    ):
+        self.max_groups_per_class_state = _strict_nonnegative_integer(
+            "max_groups_per_class_state", max_groups_per_class_state
+        )
+        self.require_audit_gt = _strict_bool("require_audit_gt", require_audit_gt)
+        self.max_error_samples = _strict_nonnegative_integer(
+            "max_error_samples", max_error_samples
+        )
+        if runtime_manifest is None:
+            runtime_manifest = {}
+        if not isinstance(runtime_manifest, Mapping):
+            raise TypeError("runtime_manifest must be a mapping")
+        self.runtime_manifest = _json_safe_copy(runtime_manifest)
+        self._groups = {}
+        self._error_count = 0
+        self._error_samples = {}
+
+    def add_group(self, group):
+        normalized = validate_candidate_group(group)
+        key = _group_key(normalized)
+        existing = self._groups.get(key)
+        if existing is not None and existing != normalized:
+            raise ValueError(f"conflicting inference pair group: {key}")
+        if existing is None:
+            self._groups[key] = normalized
+        return not (
+            self.require_audit_gt and normalized["gt_target_status"] == "unknown"
+        )
+
+    def _retain_error_sample(self, record):
+        key = _error_key(record)
+        self._error_samples[key] = copy.deepcopy(record)
+        if len(self._error_samples) > self.max_error_samples:
+            for dropped_key in sorted(self._error_samples)[self.max_error_samples :]:
+                del self._error_samples[dropped_key]
+
+    def add_error(self, record):
+        normalized = validate_error_record(record)
+        self._error_count += 1
+        self._retain_error_sample(normalized)
+
+    def _sorted_error_samples(self):
+        return [
+            copy.deepcopy(self._error_samples[key])
+            for key in sorted(self._error_samples)
+        ]
+
+    def export_state(self):
+        return {
+            "schema_version": INFERENCE_PAIR_CACHE_SCHEMA_VERSION,
+            "runtime_manifest": copy.deepcopy(self.runtime_manifest),
+            "groups": [
+                copy.deepcopy(self._groups[key]) for key in sorted(self._groups)
+            ],
+            "error_count": self._error_count,
+            "error_samples": self._sorted_error_samples(),
+        }
+
+    def merge_state(self, state):
+        normalized = validate_accumulator_state(state)
+        if canonical_json(normalized["runtime_manifest"]) != canonical_json(
+            self.runtime_manifest
+        ):
+            raise ValueError("inference pair cache runtime manifest mismatch")
+        for group in normalized["groups"]:
+            key = _group_key(group)
+            existing = self._groups.get(key)
+            if existing is not None and existing != group:
+                raise ValueError(f"conflicting inference pair group: {key}")
+        for group in normalized["groups"]:
+            self.add_group(group)
+        self._error_count += normalized["error_count"]
+        for error in normalized["error_samples"]:
+            self._retain_error_sample(error)
+
+    def _retained_groups(self):
+        eligible = [self._groups[key] for key in sorted(self._groups)]
+        if self.require_audit_gt:
+            eligible = [
+                group
+                for group in eligible
+                if group["gt_target_status"] != "unknown"
+            ]
+        if self.max_groups_per_class_state:
+            buckets = defaultdict(list)
+            for group in eligible:
+                buckets[(group["class_id"], group["state_bucket"])].append(group)
+            eligible = [
+                group
+                for bucket in sorted(buckets)
+                for group in buckets[bucket][: self.max_groups_per_class_state]
+            ]
+        return sorted(eligible, key=_group_key)
+
+    def to_payload(self):
+        return {
+            "schema_version": INFERENCE_PAIR_CACHE_SCHEMA_VERSION,
+            "runtime_manifest": copy.deepcopy(self.runtime_manifest),
+            "groups": copy.deepcopy(self._retained_groups()),
+        }
+
+    def to_summary(self):
+        return summarize_candidate_groups(
+            observed_groups=[self._groups[key] for key in sorted(self._groups)],
+            retained_groups=self._retained_groups(),
+            error_count=self._error_count,
+            error_samples=self._sorted_error_samples(),
+            runtime_manifest=self.runtime_manifest,
+        )
+
+
+def sha256_file(path):
+    """Compute an exact SHA-256 digest using bounded reads."""
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as file_obj:
+        for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _config_section(cfg, name):
+    value = cfg.get(name, {}) or {}
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{name} must be a mapping")
+    return value
+
+
+def build_inference_pair_cache_manifest(
+    *, cfg, config_path, process_count, git_root, pair_vector_dim, embedding_dim
+):
+    """Build the exact runtime identity used to reject incompatible merges."""
+    if not isinstance(cfg, Mapping):
+        raise TypeError("cfg must be a mapping")
+    process_count = _strict_positive_integer("process_count", process_count)
+    pair_vector_dim = _strict_positive_integer("pair_vector_dim", pair_vector_dim)
+    embedding_dim = _strict_positive_integer("embedding_dim", embedding_dim)
+    config_file = Path(config_path).expanduser().resolve(strict=True)
+    normalized_git_root = Path(git_root).expanduser().resolve()
+
+    effective_config_json = canonical_json(cfg)
+
+    def resolve_checkpoint(section_name):
+        section = _config_section(cfg, section_name)
+        checkpoint_value = section.get("CHECKPOINT_PATH")
+        if checkpoint_value is None or checkpoint_value == "":
+            return None
+        if type(checkpoint_value) is not str:
+            raise TypeError(f"{section_name}.CHECKPOINT_PATH must be a string")
+        checkpoint = Path(checkpoint_value).expanduser()
+        if not checkpoint.is_absolute():
+            checkpoint = normalized_git_root / checkpoint
+        return checkpoint.resolve(strict=True)
+
+    mamba_checkpoint = resolve_checkpoint("MAMBA")
+    association_checkpoint = resolve_checkpoint("MAMBA_ASSOCIATION_HEAD")
+    try:
+        git_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(normalized_git_root),
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        git_commit = None
+
+    cache_cfg = _config_section(cfg, "INFERENCE_PAIR_CACHE")
+    export_options = {}
+    for key, default in (
+        ("INCLUDE_EMBEDDINGS", True),
+        ("INCLUDE_PAIR_VECTORS", True),
+        ("REQUIRE_AUDIT_GT", False),
+    ):
+        export_options[key.lower()] = _strict_bool(
+            f"INFERENCE_PAIR_CACHE.{key}", cache_cfg.get(key, default)
+        )
+    threshold_bev = _config_section(_config_section(cfg, "THRESHOLD"), "BEV")
+    matching_bev = _config_section(_config_section(cfg, "MATCHING"), "BEV")
+    bev_cost_mode = threshold_bev.get(
+        "COST_MODE", matching_bev.get("COST_MODE", "geometric")
+    )
+
+    manifest = {
+        "schema_version": INFERENCE_PAIR_CACHE_SCHEMA_VERSION,
+        "config_path": str(config_file),
+        "config_sha256": sha256_file(config_file),
+        "effective_config_sha256": hashlib.sha256(
+            effective_config_json.encode("utf-8")
+        ).hexdigest(),
+        "git_commit": git_commit,
+        "mamba_checkpoint_path": (
+            None if mamba_checkpoint is None else str(mamba_checkpoint)
+        ),
+        "mamba_checkpoint_sha256": (
+            None if mamba_checkpoint is None else sha256_file(mamba_checkpoint)
+        ),
+        "association_checkpoint_path": (
+            None if association_checkpoint is None else str(association_checkpoint)
+        ),
+        "association_checkpoint_sha256": (
+            None
+            if association_checkpoint is None
+            else sha256_file(association_checkpoint)
+        ),
+        "filter_mode": _canonical_string(
+            "FILTER_MODE", cfg.get("FILTER_MODE", ""), allow_empty=True
+        ).lower(),
+        "tracker_compat_mode": _canonical_string(
+            "TRACKER_COMPAT_MODE", cfg.get("TRACKER_COMPAT_MODE", "default")
+        ).lower(),
+        "bev_cost_mode": copy.deepcopy(bev_cost_mode),
+        "pair_vector_dim": pair_vector_dim,
+        "embedding_dim": embedding_dim,
+        "process_count": process_count,
+        "class_map": copy.deepcopy(cfg.get("CATEGORY_MAP_TO_NUMBER", {})),
+        "export_options": export_options,
+    }
+    return _json_safe_copy(manifest)
+
+
+def _atomic_write(path, write_value):
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=str(destination.parent),
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as file_obj:
+            write_value(file_obj)
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
+        os.replace(str(temporary), str(destination))
+    except BaseException:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def atomic_write_pickle(path, payload):
+    _atomic_write(
+        path,
+        lambda file_obj: pickle.dump(payload, file_obj, protocol=_PICKLE_PROTOCOL),
+    )
+
+
+def atomic_write_json(path, payload):
+    def write_json(file_obj):
+        serialized = json.dumps(
+            payload,
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=False,
+            allow_nan=False,
+        ) + "\n"
+        file_obj.write(serialized.encode("utf-8"))
+
+    _atomic_write(path, write_json)

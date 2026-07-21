@@ -1,8 +1,12 @@
 import copy
+import hashlib
 import json
 import pickle
+import subprocess
+import tempfile
 import unittest
 from fractions import Fraction
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
@@ -851,6 +855,464 @@ class InferencePairCacheGroupTest(unittest.TestCase):
         np.testing.assert_array_equal(production_matches, original_matches)
         np.testing.assert_array_equal(production_costs, original_costs)
         self.assertEqual(thresholds, original_thresholds)
+
+
+class InferencePairCacheTask3Test(unittest.TestCase):
+    def _group(
+        self,
+        *,
+        scene_id="scene-1",
+        sample_token="sample-1",
+        frame_id=1,
+        track_id=10,
+        class_id=5,
+        class_name="trailer",
+        state_bucket="unmatched",
+        status="matched",
+    ):
+        track_gt_token = None if status == "unknown" else "gt-track"
+        det_gt_tokens = ["gt-other", "gt-track"]
+        if status == "unknown":
+            det_gt_tokens = [None, None]
+        elif status == "no_match":
+            det_gt_tokens = ["gt-other", "gt-another"]
+        payload = {
+            "scene_id": scene_id,
+            "sample_token": sample_token,
+            "frame_id": frame_id,
+            "track_ids": [track_id],
+            "class_ids": [class_id],
+            "class_names": [class_name],
+            "state_buckets": [state_bucket],
+            "track_gt_tokens": [track_gt_token],
+            "det_gt_tokens": det_gt_tokens,
+            "pair_indices": [(0, 0), (0, 1)],
+            "pair_vectors": np.asarray([[1.0, 2.0], [3.0, 4.0]]),
+            "track_embeddings": np.asarray([[0.1, 0.2]]),
+            "det_embeddings": np.asarray([[0.3, 0.4], [0.5, 0.6]]),
+            "association_scores": np.asarray([[0.2, 0.8]]),
+        }
+        return build_candidate_groups(
+            payload=payload,
+            base_cost_matrix=np.asarray([[0.2, 0.3]]),
+            production_matches=np.asarray([[0, 0]]),
+            production_costs=np.asarray([0.2]),
+            thresholds={class_id: 0.25},
+        )[0]
+
+    @staticmethod
+    def _error(frame_id, message="message"):
+        return {
+            "scene_id": "scene-1",
+            "sample_token": "sample-1",
+            "frame_id": frame_id,
+            "stage": "association",
+            "error_type": "RuntimeError",
+            "message": message,
+        }
+
+    def test_candidate_group_validator_returns_independent_builtins(self):
+        group = self._group()
+        normalized = inference_pair_cache.validate_candidate_group(group)
+
+        group["candidates"][0]["pair_vector"][0] = 99.0
+        self.assertEqual(normalized["candidates"][0]["pair_vector"][0], 1.0)
+        json.dumps(normalized, allow_nan=False)
+        self.assertEqual(pickle.loads(pickle.dumps(normalized)), normalized)
+
+    def test_candidate_group_validator_rejects_cross_field_inconsistency(self):
+        cases = []
+        group = self._group()
+        group["candidate_count"] = 3
+        cases.append(group)
+        group = self._group()
+        group["candidates"][0]["inside_geometric_gate"] = False
+        cases.append(group)
+        group = self._group()
+        group["candidates"][1]["candidate_rank"] = 1
+        cases.append(group)
+        group = self._group()
+        group["production_match_cost"] = None
+        cases.append(group)
+        group = self._group()
+        group["candidates"][0]["gt_label"] = 1
+        cases.append(group)
+        group = self._group(status="unknown")
+        group["candidates"][0]["gt_label"] = 0
+        cases.append(group)
+        group = self._group()
+        group["candidates"][0]["det_index"] = True
+        cases.append(group)
+        group = self._group()
+        group["candidates"][0]["pair_vector"] = [1.0, np.inf]
+        cases.append(group)
+        group = self._group()
+        group["unexpected"] = "field"
+        cases.append(group)
+        group = self._group()
+        group["schema_version"] = np.bool_(True)
+        cases.append(group)
+
+        for group in cases:
+            with self.subTest(group=group):
+                with self.assertRaises((TypeError, ValueError)):
+                    inference_pair_cache.validate_candidate_group(group)
+
+    def test_error_and_state_validators_are_strict_and_defensive(self):
+        error = self._error(1, "x" * 1100)
+        normalized = inference_pair_cache.validate_error_record(error)
+        self.assertEqual(len(normalized["message"]), 1024)
+        error["message"] = "changed"
+        self.assertEqual(len(normalized["message"]), 1024)
+
+        invalid_errors = [
+            {**self._error(1), "frame_id": True},
+            {**self._error(1), "stage": " stage"},
+            {**self._error(1), "extra": "field"},
+        ]
+        for record in invalid_errors:
+            with self.subTest(record=record):
+                with self.assertRaises((TypeError, ValueError)):
+                    inference_pair_cache.validate_error_record(record)
+
+        state = {
+            "schema_version": inference_pair_cache.INFERENCE_PAIR_CACHE_SCHEMA_VERSION,
+            "runtime_manifest": {"run": 1},
+            "groups": [self._group()],
+            "error_count": 1,
+            "error_samples": [self._error(1)],
+        }
+        validated = inference_pair_cache.validate_accumulator_state(state)
+        state["groups"][0]["scene_id"] = "mutated"
+        self.assertEqual(validated["groups"][0]["scene_id"], "scene-1")
+
+        for field, value in (
+            ("schema_version", 999),
+            ("error_count", True),
+            ("error_count", -1),
+            ("error_samples", [self._error(1), self._error(2)]),
+        ):
+            with self.subTest(field=field, value=value):
+                invalid = copy.deepcopy(validated)
+                invalid[field] = value
+                with self.assertRaises((TypeError, ValueError)):
+                    inference_pair_cache.validate_accumulator_state(invalid)
+
+    def test_accumulator_options_fail_closed(self):
+        cls = inference_pair_cache.InferencePairCacheAccumulator
+        for kwargs in (
+            {"max_groups_per_class_state": True},
+            {"max_groups_per_class_state": -1},
+            {"max_error_samples": False},
+            {"max_error_samples": -1},
+            {"require_audit_gt": 1},
+        ):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises((TypeError, ValueError)):
+                    cls(**kwargs)
+
+    def test_duplicate_group_is_idempotent_but_conflict_raises(self):
+        accumulator = inference_pair_cache.InferencePairCacheAccumulator()
+        group = self._group()
+        self.assertTrue(accumulator.add_group(group))
+        self.assertTrue(accumulator.add_group(copy.deepcopy(group)))
+        self.assertEqual(len(accumulator.export_state()["groups"]), 1)
+
+        conflict = copy.deepcopy(group)
+        conflict["candidates"][0]["association_score"] = 0.9
+        with self.assertRaisesRegex(ValueError, "conflicting"):
+            accumulator.add_group(conflict)
+
+        payload = accumulator.to_payload()
+        payload["groups"][0]["scene_id"] = "mutated"
+        self.assertEqual(
+            accumulator.to_payload()["groups"][0]["scene_id"], "scene-1"
+        )
+
+    def test_require_gt_and_per_bucket_cap_are_deterministic(self):
+        accumulator = inference_pair_cache.InferencePairCacheAccumulator(
+            require_audit_gt=True, max_groups_per_class_state=2
+        )
+        groups = [
+            self._group(frame_id=4, track_id=40),
+            self._group(frame_id=2, track_id=20),
+            self._group(frame_id=3, track_id=30),
+            self._group(frame_id=1, track_id=10, status="unknown"),
+            self._group(
+                frame_id=5,
+                track_id=50,
+                class_id=1,
+                class_name="pedestrian",
+                state_bucket="matched",
+            ),
+        ]
+        for group in reversed(groups):
+            accumulator.add_group(group)
+
+        payload = accumulator.to_payload()
+        keys = [(group["frame_id"], group["track_id"]) for group in payload["groups"]]
+        self.assertEqual(keys, [(2, 20), (3, 30), (5, 50)])
+        self.assertEqual(len(accumulator.export_state()["groups"]), 5)
+        overall = accumulator.to_summary()["overall"]
+        self.assertEqual(overall["observed_groups"], 5)
+        self.assertEqual(overall["accepted_groups"], 3)
+        self.assertEqual(overall["rejected_unknown_groups"], 1)
+        self.assertEqual(overall["capped_groups"], 1)
+
+    def test_merge_order_does_not_change_outputs_or_error_samples(self):
+        manifest = {"run": "same"}
+        left = inference_pair_cache.InferencePairCacheAccumulator(
+            runtime_manifest=manifest, max_error_samples=2
+        )
+        right = inference_pair_cache.InferencePairCacheAccumulator(
+            runtime_manifest=manifest, max_error_samples=2
+        )
+        left.add_group(self._group(frame_id=2, track_id=20))
+        right.add_group(self._group(frame_id=1, track_id=10))
+        left.add_error(self._error(3, "z"))
+        left.add_error(self._error(1, "a"))
+        right.add_error(self._error(2, "b"))
+        right.add_error(self._error(1, "a"))
+
+        first = inference_pair_cache.InferencePairCacheAccumulator(
+            runtime_manifest=manifest, max_error_samples=2
+        )
+        second = inference_pair_cache.InferencePairCacheAccumulator(
+            runtime_manifest=manifest, max_error_samples=2
+        )
+        first.merge_state(left.export_state())
+        first.merge_state(right.export_state())
+        second.merge_state(right.export_state())
+        second.merge_state(left.export_state())
+
+        self.assertEqual(first.to_payload(), second.to_payload())
+        self.assertEqual(first.to_summary(), second.to_summary())
+        self.assertEqual(first.export_state(), second.export_state())
+        self.assertEqual(first.export_state()["error_count"], 4)
+        self.assertEqual(
+            [item["frame_id"] for item in first.export_state()["error_samples"]],
+            [1, 2],
+        )
+
+    def test_summary_reconciles_exactly_with_retained_payload(self):
+        accumulator = inference_pair_cache.InferencePairCacheAccumulator()
+        accumulator.add_group(self._group(frame_id=1, track_id=10))
+        accumulator.add_group(self._group(frame_id=2, track_id=20, status="no_match"))
+        accumulator.add_group(self._group(frame_id=3, track_id=30, status="unknown"))
+        payload = accumulator.to_payload()
+        summary = accumulator.to_summary()
+        candidates = [
+            candidate
+            for group in payload["groups"]
+            for candidate in group["candidates"]
+        ]
+        overall = summary["overall"]
+        self.assertEqual(overall["accepted_groups"], len(payload["groups"]))
+        self.assertEqual(overall["candidate_count"], len(candidates))
+        self.assertEqual(
+            overall["finite_candidate_count"],
+            sum(candidate["finite"] for candidate in candidates),
+        )
+        self.assertEqual(
+            overall["production_selected_count"],
+            sum(candidate["production_selected"] for candidate in candidates),
+        )
+        self.assertEqual(
+            overall["positive_count"],
+            sum(candidate["gt_label"] == 1 for candidate in candidates),
+        )
+        self.assertEqual(
+            overall["negative_count"],
+            sum(candidate["gt_label"] == 0 for candidate in candidates),
+        )
+        self.assertEqual(
+            overall["unknown_label_count"],
+            sum(candidate["gt_label"] is None for candidate in candidates),
+        )
+        for field in (
+            "accepted_groups",
+            "candidate_count",
+            "finite_candidate_count",
+            "production_selected_count",
+            "positive_count",
+            "negative_count",
+            "unknown_label_count",
+        ):
+            self.assertEqual(
+                overall[field],
+                sum(bucket[field] for bucket in summary["per_class"].values()),
+            )
+            self.assertEqual(
+                overall[field],
+                sum(bucket[field] for bucket in summary["per_class_state"].values()),
+            )
+
+    def test_manifest_hashes_files_and_effective_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_path = root / "config.yaml"
+            main_checkpoint = root / "main.pt"
+            association_checkpoint = root / "association.pt"
+            config_path.write_bytes(b"config-file\n")
+            main_checkpoint.write_bytes(b"main-checkpoint")
+            association_checkpoint.write_bytes(b"association-checkpoint")
+            cfg = {
+                "FILTER_MODE": "MAMBA",
+                "TRACKER_COMPAT_MODE": "MCTrack",
+                "CATEGORY_MAP_TO_NUMBER": {"car": 0},
+                "MAMBA": {"CHECKPOINT_PATH": "main.pt"},
+                "MAMBA_ASSOCIATION_HEAD": {
+                    "CHECKPOINT_PATH": "association.pt"
+                },
+                "THRESHOLD": {"BEV": {"COST_MODE": "geometric"}},
+                "INFERENCE_PAIR_CACHE": {
+                    "INCLUDE_EMBEDDINGS": True,
+                    "INCLUDE_PAIR_VECTORS": False,
+                    "REQUIRE_AUDIT_GT": True,
+                },
+            }
+            completed = subprocess.CompletedProcess(
+                ["git", "rev-parse", "HEAD"], 0, stdout="abc123\n"
+            )
+            with patch(
+                "tracker.inference_pair_cache.subprocess.run",
+                return_value=completed,
+            ):
+                manifest = inference_pair_cache.build_inference_pair_cache_manifest(
+                    cfg=cfg,
+                    config_path=config_path,
+                    process_count=2,
+                    git_root=root,
+                    pair_vector_dim=7,
+                    embedding_dim=64,
+                )
+
+            self.assertEqual(
+                manifest["config_sha256"], hashlib.sha256(b"config-file\n").hexdigest()
+            )
+            self.assertEqual(
+                manifest["effective_config_sha256"],
+                hashlib.sha256(
+                    inference_pair_cache.canonical_json(cfg).encode("utf-8")
+                ).hexdigest(),
+            )
+            self.assertEqual(
+                manifest["mamba_checkpoint_sha256"],
+                hashlib.sha256(b"main-checkpoint").hexdigest(),
+            )
+            self.assertEqual(
+                manifest["association_checkpoint_sha256"],
+                hashlib.sha256(b"association-checkpoint").hexdigest(),
+            )
+            self.assertEqual(manifest["git_commit"], "abc123")
+            json.dumps(manifest, allow_nan=False)
+
+            for field in (
+                "mamba_checkpoint_sha256",
+                "association_checkpoint_sha256",
+                "effective_config_sha256",
+            ):
+                with self.subTest(field=field):
+                    changed = copy.deepcopy(manifest)
+                    changed[field] = "different"
+                    accumulator = inference_pair_cache.InferencePairCacheAccumulator(
+                        runtime_manifest=manifest
+                    )
+                    state = inference_pair_cache.InferencePairCacheAccumulator(
+                        runtime_manifest=changed
+                    ).export_state()
+                    with self.assertRaisesRegex(ValueError, "manifest mismatch"):
+                        accumulator.merge_state(state)
+
+    def test_manifest_rejects_invalid_dimensions_and_missing_configured_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_path = root / "config.yaml"
+            config_path.write_text("config\n", encoding="utf-8")
+            base = {
+                "cfg": {},
+                "config_path": config_path,
+                "process_count": 1,
+                "git_root": root,
+                "pair_vector_dim": 7,
+                "embedding_dim": 64,
+            }
+            for field, value in (
+                ("process_count", True),
+                ("process_count", 0),
+                ("pair_vector_dim", False),
+                ("embedding_dim", -1),
+            ):
+                with self.subTest(field=field, value=value):
+                    kwargs = {**base, field: value}
+                    with self.assertRaises((TypeError, ValueError)):
+                        inference_pair_cache.build_inference_pair_cache_manifest(
+                            **kwargs
+                        )
+
+            missing = {**base, "cfg": {"MAMBA": {"CHECKPOINT_PATH": "missing.pt"}}}
+            with self.assertRaises(FileNotFoundError):
+                inference_pair_cache.build_inference_pair_cache_manifest(**missing)
+
+    def test_atomic_writers_replace_successfully_and_leave_no_temp_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pickle_path = root / "nested" / "payload.pkl"
+            json_path = root / "nested" / "payload.json"
+            pickle_path.parent.mkdir(parents=True)
+            pickle_path.write_bytes(b"old-pickle")
+            json_path.write_bytes(b"old-json")
+            inference_pair_cache.atomic_write_pickle(pickle_path, {"value": 1})
+            inference_pair_cache.atomic_write_json(json_path, {"z": 1, "a": "text"})
+
+            with pickle_path.open("rb") as file_obj:
+                self.assertEqual(pickle.load(file_obj), {"value": 1})
+            self.assertEqual(
+                json_path.read_bytes(), b'{\n  "a": "text",\n  "z": 1\n}\n'
+            )
+            self.assertEqual(list((root / "nested").glob("*.tmp")), [])
+
+    def test_atomic_writers_preserve_destination_on_serialization_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for writer, suffix, patch_target in (
+                (
+                    inference_pair_cache.atomic_write_pickle,
+                    ".pkl",
+                    "tracker.inference_pair_cache.pickle.dump",
+                ),
+                (
+                    inference_pair_cache.atomic_write_json,
+                    ".json",
+                    "tracker.inference_pair_cache.json.dumps",
+                ),
+            ):
+                with self.subTest(suffix=suffix):
+                    destination = root / f"existing{suffix}"
+                    destination.write_bytes(b"original-bytes")
+                    with patch(patch_target, side_effect=RuntimeError("injected")):
+                        with self.assertRaisesRegex(RuntimeError, "injected"):
+                            writer(destination, {"value": 2})
+                    self.assertEqual(destination.read_bytes(), b"original-bytes")
+                    self.assertEqual(list(root.glob(f".{destination.name}.*.tmp")), [])
+
+    def test_atomic_writer_preserves_destination_on_fsync_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "existing.pkl"
+            destination.write_bytes(b"original-bytes")
+
+            with patch(
+                "tracker.inference_pair_cache.os.fsync",
+                side_effect=OSError("injected write failure"),
+            ):
+                with self.assertRaisesRegex(OSError, "injected write failure"):
+                    inference_pair_cache.atomic_write_pickle(
+                        destination, {"value": 2}
+                    )
+
+            self.assertEqual(destination.read_bytes(), b"original-bytes")
+            self.assertEqual(list(root.glob(f".{destination.name}.*.tmp")), [])
 
 
 if __name__ == "__main__":
