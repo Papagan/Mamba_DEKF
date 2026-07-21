@@ -98,6 +98,32 @@ class InferencePairCacheGroupTest(unittest.TestCase):
             [None, None],
         )
 
+    def test_missing_candidate_gt_identity_makes_known_track_unknown(self):
+        payload = self._payload()
+        payload["det_gt_tokens"] = [None, None]
+
+        group = self._build(payload)[0]
+
+        self.assertEqual(group["gt_target_status"], "unknown")
+        self.assertIsNone(group["gt_target_det_index"])
+        self.assertEqual(
+            [candidate["gt_label"] for candidate in group["candidates"]],
+            [None, None],
+        )
+
+    def test_unknown_candidate_prevents_unique_positive_inference(self):
+        payload = self._payload()
+        payload["det_gt_tokens"] = [None, "gt-b"]
+
+        group = self._build(payload)[0]
+
+        self.assertEqual(group["gt_target_status"], "unknown")
+        self.assertIsNone(group["gt_target_det_index"])
+        self.assertEqual(
+            [candidate["gt_label"] for candidate in group["candidates"]],
+            [None, None],
+        )
+
     def test_ranks_finite_candidates_and_retains_non_finite_costs(self):
         payload = self._payload()
         payload["det_gt_tokens"] = ["gt-a", "gt-b", "gt-c"]
@@ -306,6 +332,40 @@ class InferencePairCacheGroupTest(unittest.TestCase):
                 with self.assertRaisesRegex((TypeError, ValueError), field):
                     self._build(payload)
 
+    def test_rejects_noncanonical_context_and_class_name_strings(self):
+        class StringSubclass(str):
+            pass
+
+        context_cases = (
+            ("scene_id", " "),
+            ("scene_id", " scene-1"),
+            ("scene_id", "scene-1 "),
+            ("scene_id", StringSubclass("scene-1")),
+            ("sample_token", "\t"),
+            ("sample_token", " sample-1"),
+            ("sample_token", "sample-1 "),
+            ("sample_token", StringSubclass("sample-1")),
+        )
+        for field, value in context_cases:
+            with self.subTest(field=field, value=value):
+                payload = self._payload()
+                payload[field] = value
+                with self.assertRaisesRegex(ValueError, field):
+                    self._build(payload)
+
+        for class_name in (
+            "",
+            " ",
+            " trailer",
+            "trailer ",
+            StringSubclass("trailer"),
+        ):
+            with self.subTest(class_name=class_name):
+                payload = self._payload()
+                payload["class_names"] = [class_name]
+                with self.assertRaisesRegex(ValueError, "class_names"):
+                    self._build(payload)
+
     def test_thresholds_require_finite_real_numeric_scalars_without_coercion(self):
         invalid_thresholds = (
             {5: True},
@@ -374,6 +434,65 @@ class InferencePairCacheGroupTest(unittest.TestCase):
                 ):
                     self._build(payload, **kwargs)
 
+    def test_rejects_nonzero_numeric_values_that_underflow_python_float(self):
+        underflowing = np.nextafter(
+            np.longdouble(0.0), np.longdouble(1.0), dtype=np.longdouble
+        )
+        self.assertNotEqual(underflowing, 0)
+        self.assertEqual(float(underflowing), 0.0)
+
+        cases = []
+        payload = self._payload()
+        cases.append(
+            (
+                "base_cost_matrix",
+                payload,
+                {"base_cost_matrix": np.asarray([[underflowing, 0.21]])},
+            )
+        )
+        payload = self._payload()
+        payload["track_embeddings"] = payload["track_embeddings"].astype(np.longdouble)
+        payload["track_embeddings"][0, 0] = underflowing
+        cases.append(("track_embeddings", payload, {}))
+        payload = self._payload()
+        payload["det_embeddings"] = payload["det_embeddings"].astype(np.longdouble)
+        payload["det_embeddings"][0, 0] = underflowing
+        cases.append(("det_embeddings", payload, {}))
+        payload = self._payload()
+        payload["pair_vectors"] = payload["pair_vectors"].astype(np.longdouble)
+        payload["pair_vectors"][0, 0] = underflowing
+        cases.append(("pair_vectors", payload, {}))
+        payload = self._payload()
+        payload["association_scores"] = payload["association_scores"].astype(
+            np.longdouble
+        )
+        payload["association_scores"][0, 0] = underflowing
+        cases.append(("association_scores", payload, {}))
+        cases.append(
+            (
+                "production_costs",
+                self._payload(),
+                {"production_costs": np.asarray([underflowing])},
+            )
+        )
+        cases.append(("threshold", self._payload(), {"thresholds": {5: underflowing}}))
+
+        for expected, payload, kwargs in cases:
+            with self.subTest(expected=expected):
+                with self.assertRaisesRegex(
+                    (TypeError, ValueError), f"{expected}.*underflow"
+                ):
+                    self._build(payload, **kwargs)
+
+    def test_rejects_distinct_costs_that_collapse_and_change_ranking(self):
+        lower = np.longdouble(1.0)
+        higher = np.nextafter(lower, np.longdouble(2.0), dtype=np.longdouble)
+        self.assertGreater(higher, lower)
+        self.assertEqual(float(higher), float(lower))
+
+        with self.assertRaisesRegex(ValueError, "base_cost_matrix.*same Python float"):
+            self._build(base_cost_matrix=np.asarray([[higher, lower]]))
+
     def test_rejects_cost_gap_that_overflows_python_float(self):
         maximum = np.finfo(float).max
         with self.assertRaisesRegex(ValueError, "cost_gap.*finite"):
@@ -416,6 +535,28 @@ class InferencePairCacheGroupTest(unittest.TestCase):
             with self.subTest(expected=expected):
                 with self.assertRaisesRegex((TypeError, ValueError), expected):
                     self._build(payload, **kwargs)
+
+    def test_rejects_zero_embedding_and_pair_vector_widths(self):
+        payload = self._payload()
+        payload["track_embeddings"] = np.empty((1, 0), dtype=np.float32)
+        payload["det_embeddings"] = np.empty((2, 0), dtype=np.float32)
+        with self.assertRaisesRegex(ValueError, "embedding width.*positive"):
+            self._build(payload)
+
+        payload = self._payload()
+        payload["pair_vectors"] = np.empty((2, 0), dtype=np.float32)
+        with self.assertRaisesRegex(ValueError, "pair_vectors.*width.*positive"):
+            self._build(payload)
+
+        payload = self._payload()
+        payload["pair_indices"] = []
+        payload["pair_vectors"] = np.empty((0, 0), dtype=np.float32)
+        with self.assertRaisesRegex(ValueError, "pair_vectors.*width.*positive"):
+            self._build(
+                payload,
+                production_matches=np.empty((0, 2), dtype=np.int64),
+                production_costs=np.empty((0,), dtype=np.float32),
+            )
 
     def test_rejects_misaligned_track_and_detection_metadata(self):
         cases = (
@@ -559,6 +700,14 @@ class InferencePairCacheGroupTest(unittest.TestCase):
         payload["pair_vectors"] = np.asarray([[3.0, 4.0]], dtype=np.float32)
         with self.assertRaisesRegex(ValueError, "pair_indices"):
             self._build(payload)
+
+    def test_rejects_production_match_with_non_finite_base_cost(self):
+        for base_cost in (np.nan, np.inf, -np.inf):
+            with self.subTest(base_cost=base_cost):
+                with self.assertRaisesRegex(
+                    ValueError, "production.*base_cost_matrix.*finite"
+                ):
+                    self._build(base_cost_matrix=np.asarray([[base_cost, 0.21]]))
 
     def test_requires_finite_threshold_for_every_track_class(self):
         for thresholds in ({}, {5: np.inf}, {5: "bad"}):

@@ -26,7 +26,6 @@ _REQUIRED_PAYLOAD_FIELDS = (
     "track_embeddings",
     "det_embeddings",
 )
-_PYTHON_FLOAT_MAX = np.finfo(np.float64).max
 
 
 def _native_scalar(value):
@@ -35,8 +34,8 @@ def _native_scalar(value):
 
 def _nonempty_string(name, value):
     value = _native_scalar(value)
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"{name} must be a non-empty string")
+    if type(value) is not str or not value.strip() or value.strip() != value:
+        raise ValueError(f"{name} must be a nonblank trimmed built-in string")
     return value
 
 
@@ -78,9 +77,7 @@ def _nonnegative_integers(name, values, expected_count=None, *, unique=False):
 
 def _class_names(values, expected_count):
     normalized = _sequence("class_names", values, expected_count)
-    if any(not isinstance(value, str) for value in normalized):
-        raise ValueError("class_names must contain strings")
-    return normalized
+    return [_nonempty_string("class_names", value) for value in normalized]
 
 
 def _states(values, expected_count):
@@ -112,19 +109,45 @@ def _matrix(name, value, *, shape=None, finite=False):
         raise ValueError(f"{name} must have shape {shape}, got {array.shape}")
     if finite and not np.all(np.isfinite(array)):
         raise ValueError(f"{name} must contain only finite values")
-    _validate_python_float_range(name, array)
+    _validate_python_float_values(name, array)
     return np.array(array, copy=True)
 
 
-def _validate_python_float_range(name, array):
-    finite_values = array[np.isfinite(array)]
-    if finite_values.size and (
-        np.any(finite_values > _PYTHON_FLOAT_MAX)
-        or np.any(finite_values < -_PYTHON_FLOAT_MAX)
-    ):
-        raise ValueError(
-            f"{name} contains a finite value outside the Python float range"
-        )
+def _finite_python_float(name, value):
+    try:
+        converted = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} cannot convert to Python float") from exc
+    if not np.isfinite(converted):
+        raise ValueError(f"{name} must convert to a finite Python float")
+    if converted == 0.0 and value != 0:
+        raise ValueError(f"{name} underflows Python float")
+    return converted
+
+
+def _validate_python_float_values(name, array):
+    for value in array.flat:
+        if np.isfinite(value):
+            _finite_python_float(name, value)
+
+
+def _ranked_finite_entries(base_costs, track_index, pair_entries):
+    entries = []
+    originals_by_float = {}
+    for det_index, _ in pair_entries:
+        original = base_costs[track_index, det_index]
+        if not np.isfinite(original):
+            continue
+        converted = _finite_python_float("base_cost_matrix", original)
+        prior = originals_by_float.get(converted)
+        if prior is not None and original != prior:
+            raise ValueError(
+                "base_cost_matrix has distinct candidate costs that convert to "
+                "the same Python float"
+            )
+        originals_by_float[converted] = original
+        entries.append((converted, det_index))
+    return sorted(entries, key=lambda item: (item[0], item[1]))
 
 
 def _contains_raw_boolean(value):
@@ -184,7 +207,7 @@ def _production_cost_array(value, match_count):
         raise TypeError("production_costs must contain real numeric values")
     if not np.all(np.isfinite(array)):
         raise ValueError("production_costs must contain only finite values")
-    _validate_python_float_range("production_costs", array)
+    _validate_python_float_values("production_costs", array)
     return np.array(array, copy=True)
 
 
@@ -217,7 +240,10 @@ def _assignment_map(matches, costs, track_count, det_count, candidate_pairs):
                 "production match "
                 f"({track_index}, {det_index}) is not represented by pair_indices"
             )
-        result[track_index] = (det_index, float(cost))
+        result[track_index] = (
+            det_index,
+            _finite_python_float("production_costs", cost),
+        )
         seen_detections.add(det_index)
     return result
 
@@ -241,16 +267,9 @@ def _thresholds_by_class(thresholds, class_ids):
             raise TypeError(
                 f"threshold for class id {class_id} must be a real numeric scalar"
             )
-        try:
-            threshold = float(raw_threshold)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError(
-                f"threshold for class id {class_id} cannot convert to Python float"
-            ) from exc
-        if not np.isfinite(threshold):
-            raise ValueError(
-                f"threshold for class id {class_id} must be a finite Python float"
-            )
+        threshold = _finite_python_float(
+            f"threshold for class id {class_id}", raw_threshold
+        )
         normalized[class_id] = threshold
 
     for class_id in set(class_ids):
@@ -261,6 +280,8 @@ def _thresholds_by_class(thresholds, class_ids):
 
 def _candidate_target(track_gt_token, pair_entries, det_gt_tokens):
     if track_gt_token is None:
+        return "unknown", None
+    if any(det_gt_tokens[det_index] is None for det_index, _ in pair_entries):
         return "unknown", None
     matching_det_indices = [
         det_index
@@ -314,6 +335,8 @@ def build_candidate_groups(
             f"track_embeddings must have {track_count} rows, "
             f"got {track_embeddings.shape[0]}"
         )
+    if track_embeddings.shape[1] == 0:
+        raise ValueError("embedding width must be positive")
     det_embeddings = _matrix("det_embeddings", payload["det_embeddings"], finite=True)
     det_count = det_embeddings.shape[0]
     if det_embeddings.shape[1] != track_embeddings.shape[1]:
@@ -333,6 +356,8 @@ def build_candidate_groups(
             "pair_vectors must contain one row per pair_indices entry "
             f"({pair_indices.shape[0]})"
         )
+    if pair_vectors.shape[1] == 0:
+        raise ValueError("pair_vectors width must be positive")
 
     scores_value = payload.get("association_scores")
     scores = (
@@ -347,6 +372,11 @@ def build_candidate_groups(
     assignments = _assignment_map(
         matches, costs, track_count, det_count, candidate_pairs
     )
+    for track_index, (det_index, _) in assignments.items():
+        if not np.isfinite(base_costs[track_index, det_index]):
+            raise ValueError(
+                "production assignment base_cost_matrix value must be finite"
+            )
 
     pairs_by_track = {track_index: [] for track_index in range(track_count)}
     for pair_position, (track_index, det_index) in enumerate(pair_indices):
@@ -359,14 +389,7 @@ def build_candidate_groups(
     groups = []
     for track_index in range(track_count):
         pair_entries = sorted(pairs_by_track[track_index])
-        finite_entries = sorted(
-            (
-                (float(base_costs[track_index, det_index]), det_index)
-                for det_index, _ in pair_entries
-                if np.isfinite(base_costs[track_index, det_index])
-            ),
-            key=lambda item: (item[0], item[1]),
-        )
+        finite_entries = _ranked_finite_entries(base_costs, track_index, pair_entries)
         ranks = {
             det_index: rank
             for rank, (_, det_index) in enumerate(finite_entries, start=1)
@@ -381,13 +404,19 @@ def build_candidate_groups(
         threshold = threshold_by_class[class_ids[track_index]]
         candidates = []
         for det_index, pair_position in pair_entries:
-            raw_cost = float(base_costs[track_index, det_index])
-            finite = bool(np.isfinite(raw_cost))
+            base_cost = base_costs[track_index, det_index]
+            finite = bool(np.isfinite(base_cost))
+            raw_cost = (
+                _finite_python_float("base_cost_matrix", base_cost) if finite else None
+            )
             cost_gap = None
             if finite and best_cost is not None:
-                cost_gap = raw_cost - best_cost
-                if not np.isfinite(cost_gap):
-                    raise ValueError("cost_gap must remain finite")
+                cost_gap = _finite_python_float("cost_gap", raw_cost - best_cost)
+            association_score = None
+            if scores is not None and np.isfinite(scores[track_index, det_index]):
+                association_score = _finite_python_float(
+                    "association_scores", scores[track_index, det_index]
+                )
             candidate = {
                 "det_index": det_index,
                 "geometric_cost": raw_cost if finite else None,
@@ -397,11 +426,7 @@ def build_candidate_groups(
                 "candidate_rank": ranks.get(det_index),
                 "best_cost": best_cost,
                 "cost_gap": cost_gap,
-                "association_score": (
-                    None
-                    if scores is None or not np.isfinite(scores[track_index, det_index])
-                    else float(scores[track_index, det_index])
-                ),
+                "association_score": association_score,
                 "production_selected": det_index == selected_det_index,
                 "det_gt_token": det_gt_tokens[det_index],
                 "gt_label": (
@@ -414,11 +439,13 @@ def build_candidate_groups(
             }
             if include_embeddings:
                 candidate["det_embedding"] = [
-                    float(value) for value in det_embeddings[det_index]
+                    _finite_python_float("det_embeddings", value)
+                    for value in det_embeddings[det_index]
                 ]
             if include_pair_vectors:
                 candidate["pair_vector"] = [
-                    float(value) for value in pair_vectors[pair_position]
+                    _finite_python_float("pair_vectors", value)
+                    for value in pair_vectors[pair_position]
                 ]
             candidates.append(candidate)
 
@@ -442,7 +469,8 @@ def build_candidate_groups(
         }
         if include_embeddings:
             group["track_embedding"] = [
-                float(value) for value in track_embeddings[track_index]
+                _finite_python_float("track_embeddings", value)
+                for value in track_embeddings[track_index]
             ]
         groups.append(group)
 
