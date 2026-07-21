@@ -2,6 +2,7 @@ import copy
 import json
 import pickle
 import unittest
+from fractions import Fraction
 
 import numpy as np
 
@@ -317,6 +318,14 @@ class InferencePairCacheGroupTest(unittest.TestCase):
             with self.subTest(thresholds=thresholds):
                 with self.assertRaisesRegex((TypeError, ValueError), "threshold"):
                     self._build(thresholds=thresholds)
+
+    def test_accepts_fraction_threshold_as_finite_python_float(self):
+        groups = self._build(thresholds={5: Fraction(5, 4)})
+
+        for candidate in groups[0]["candidates"]:
+            self.assertIs(type(candidate["geometric_threshold"]), float)
+            self.assertEqual(candidate["geometric_threshold"], 1.25)
+        json.dumps(groups, allow_nan=False)
 
     def test_rejects_finite_numeric_values_that_overflow_python_float(self):
         overflowing = np.longdouble(np.finfo(float).max) * np.longdouble(2.0)

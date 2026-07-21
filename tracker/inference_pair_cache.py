@@ -241,13 +241,16 @@ def _thresholds_by_class(thresholds, class_ids):
             raise TypeError(
                 f"threshold for class id {class_id} must be a real numeric scalar"
             )
-        if not np.isfinite(raw_threshold):
-            raise ValueError(f"threshold for class id {class_id} must be finite")
-        if raw_threshold > _PYTHON_FLOAT_MAX or raw_threshold < -_PYTHON_FLOAT_MAX:
+        try:
+            threshold = float(raw_threshold)
+        except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError(
-                f"threshold for class id {class_id} is outside the Python float range"
+                f"threshold for class id {class_id} cannot convert to Python float"
+            ) from exc
+        if not np.isfinite(threshold):
+            raise ValueError(
+                f"threshold for class id {class_id} must be a finite Python float"
             )
-        threshold = float(raw_threshold)
         normalized[class_id] = threshold
 
     for class_id in set(class_ids):
