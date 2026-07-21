@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
-from numbers import Integral
+from numbers import Integral, Real
 
 import numpy as np
 
@@ -27,20 +26,27 @@ _REQUIRED_PAYLOAD_FIELDS = (
     "track_embeddings",
     "det_embeddings",
 )
+_PYTHON_FLOAT_MAX = np.finfo(np.float64).max
 
 
 def _native_scalar(value):
     return value.item() if isinstance(value, np.generic) else value
 
 
-def _json_safe_scalar(name, value):
+def _nonempty_string(name, value):
     value = _native_scalar(value)
-    try:
-        json.dumps(value, allow_nan=False)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be a JSON-safe scalar") from exc
-    if isinstance(value, (dict, list, tuple)):
-        raise ValueError(f"{name} must be a JSON-safe scalar")
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{name} must be a non-empty string")
+    return value
+
+
+def _frame_id(value):
+    value = _native_scalar(value)
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
+        raise ValueError("frame_id must be a non-negative integer")
+    value = int(value)
+    if value < 0:
+        raise ValueError("frame_id must be a non-negative integer")
     return value
 
 
@@ -106,10 +112,38 @@ def _matrix(name, value, *, shape=None, finite=False):
         raise ValueError(f"{name} must have shape {shape}, got {array.shape}")
     if finite and not np.all(np.isfinite(array)):
         raise ValueError(f"{name} must contain only finite values")
+    _validate_python_float_range(name, array)
     return np.array(array, copy=True)
 
 
+def _validate_python_float_range(name, array):
+    finite_values = array[np.isfinite(array)]
+    if finite_values.size and (
+        np.any(finite_values > _PYTHON_FLOAT_MAX)
+        or np.any(finite_values < -_PYTHON_FLOAT_MAX)
+    ):
+        raise ValueError(
+            f"{name} contains a finite value outside the Python float range"
+        )
+
+
+def _contains_raw_boolean(value):
+    if isinstance(value, (bool, np.bool_)):
+        return True
+    if isinstance(value, np.ndarray):
+        if np.issubdtype(value.dtype, np.bool_):
+            return bool(value.size)
+        if value.dtype == object:
+            return any(_contains_raw_boolean(item) for item in value.flat)
+        return False
+    if isinstance(value, (list, tuple)):
+        return any(_contains_raw_boolean(item) for item in value)
+    return False
+
+
 def _index_pairs(name, value):
+    if _contains_raw_boolean(value):
+        raise TypeError(f"{name} must not contain boolean indices")
     array = np.asarray(value)
     if array.ndim == 1 and array.size == 0:
         return np.empty((0, 2), dtype=np.int64)
@@ -150,6 +184,7 @@ def _production_cost_array(value, match_count):
         raise TypeError("production_costs must contain real numeric values")
     if not np.all(np.isfinite(array)):
         raise ValueError("production_costs must contain only finite values")
+    _validate_python_float_range("production_costs", array)
     return np.array(array, copy=True)
 
 
@@ -199,14 +234,20 @@ def _thresholds_by_class(thresholds, class_ids):
         class_id = int(class_id)
         if class_id < 0:
             raise ValueError("threshold keys must be non-negative integer class ids")
-        try:
-            threshold = float(raw_threshold)
-        except (TypeError, ValueError) as exc:
+        raw_threshold = _native_scalar(raw_threshold)
+        if isinstance(raw_threshold, (bool, np.bool_)) or not isinstance(
+            raw_threshold, Real
+        ):
             raise TypeError(
-                f"threshold for class id {class_id} must be numeric"
-            ) from exc
-        if not np.isfinite(threshold):
+                f"threshold for class id {class_id} must be a real numeric scalar"
+            )
+        if not np.isfinite(raw_threshold):
             raise ValueError(f"threshold for class id {class_id} must be finite")
+        if raw_threshold > _PYTHON_FLOAT_MAX or raw_threshold < -_PYTHON_FLOAT_MAX:
+            raise ValueError(
+                f"threshold for class id {class_id} is outside the Python float range"
+            )
+        threshold = float(raw_threshold)
         normalized[class_id] = threshold
 
     for class_id in set(class_ids):
@@ -308,9 +349,9 @@ def build_candidate_groups(
     for pair_position, (track_index, det_index) in enumerate(pair_indices):
         pairs_by_track[int(track_index)].append((int(det_index), pair_position))
 
-    scene_id = _json_safe_scalar("scene_id", payload["scene_id"])
-    sample_token = _json_safe_scalar("sample_token", payload["sample_token"])
-    frame_id = _json_safe_scalar("frame_id", payload["frame_id"])
+    scene_id = _nonempty_string("scene_id", payload["scene_id"])
+    sample_token = _nonempty_string("sample_token", payload["sample_token"])
+    frame_id = _frame_id(payload["frame_id"])
 
     groups = []
     for track_index in range(track_count):
@@ -339,6 +380,11 @@ def build_candidate_groups(
         for det_index, pair_position in pair_entries:
             raw_cost = float(base_costs[track_index, det_index])
             finite = bool(np.isfinite(raw_cost))
+            cost_gap = None
+            if finite and best_cost is not None:
+                cost_gap = raw_cost - best_cost
+                if not np.isfinite(cost_gap):
+                    raise ValueError("cost_gap must remain finite")
             candidate = {
                 "det_index": det_index,
                 "geometric_cost": raw_cost if finite else None,
@@ -347,9 +393,7 @@ def build_candidate_groups(
                 "inside_geometric_gate": bool(finite and raw_cost <= threshold),
                 "candidate_rank": ranks.get(det_index),
                 "best_cost": best_cost,
-                "cost_gap": (
-                    raw_cost - best_cost if finite and best_cost is not None else None
-                ),
+                "cost_gap": cost_gap,
                 "association_score": (
                     None
                     if scores is None or not np.isfinite(scores[track_index, det_index])

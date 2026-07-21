@@ -263,6 +263,124 @@ class InferencePairCacheGroupTest(unittest.TestCase):
         self.assertEqual(pickle.loads(pickle.dumps(groups)), groups)
         self.assertIs(type(groups[0]["frame_id"]), int)
 
+    def test_rejects_raw_boolean_pair_and_assignment_indices(self):
+        pair_cases = (
+            [(False, 0), (0, 1)],
+            [(0, False), (0, 1)],
+        )
+        for pair_indices in pair_cases:
+            with self.subTest(pair_indices=pair_indices):
+                payload = self._payload()
+                payload["pair_indices"] = pair_indices
+                with self.assertRaisesRegex(
+                    (TypeError, ValueError), "pair_indices.*bool"
+                ):
+                    self._build(payload)
+
+        match_cases = ([(False, 0)], [(0, False)])
+        for production_matches in match_cases:
+            with self.subTest(production_matches=production_matches):
+                with self.assertRaisesRegex(
+                    (TypeError, ValueError), "production_matches.*bool"
+                ):
+                    self._build(production_matches=production_matches)
+
+    def test_rejects_invalid_context_metadata(self):
+        cases = (
+            ("scene_id", None),
+            ("scene_id", True),
+            ("scene_id", ""),
+            ("sample_token", None),
+            ("sample_token", False),
+            ("sample_token", ""),
+            ("frame_id", None),
+            ("frame_id", True),
+            ("frame_id", -1),
+            ("frame_id", 3.0),
+        )
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                payload = self._payload()
+                payload[field] = value
+                with self.assertRaisesRegex((TypeError, ValueError), field):
+                    self._build(payload)
+
+    def test_thresholds_require_finite_real_numeric_scalars_without_coercion(self):
+        invalid_thresholds = (
+            {5: True},
+            {5: "1.26"},
+            {5: np.nan},
+            {5: np.inf},
+            {5: np.asarray([1.26])},
+        )
+        for thresholds in invalid_thresholds:
+            with self.subTest(thresholds=thresholds):
+                with self.assertRaisesRegex((TypeError, ValueError), "threshold"):
+                    self._build(thresholds=thresholds)
+
+    def test_rejects_finite_numeric_values_that_overflow_python_float(self):
+        overflowing = np.longdouble(np.finfo(float).max) * np.longdouble(2.0)
+        self.assertTrue(np.isfinite(overflowing))
+
+        cases = []
+        payload = self._payload()
+        cases.append(
+            (
+                "base_cost_matrix",
+                payload,
+                {"base_cost_matrix": np.asarray([[overflowing, 0.21]])},
+            )
+        )
+        payload = self._payload()
+        payload["track_embeddings"] = payload["track_embeddings"].astype(np.longdouble)
+        payload["track_embeddings"][0, 0] = overflowing
+        cases.append(("track_embeddings", payload, {}))
+        payload = self._payload()
+        payload["det_embeddings"] = payload["det_embeddings"].astype(np.longdouble)
+        payload["det_embeddings"][0, 0] = overflowing
+        cases.append(("det_embeddings", payload, {}))
+        payload = self._payload()
+        payload["pair_vectors"] = payload["pair_vectors"].astype(np.longdouble)
+        payload["pair_vectors"][0, 0] = overflowing
+        cases.append(("pair_vectors", payload, {}))
+        payload = self._payload()
+        payload["association_scores"] = payload["association_scores"].astype(
+            np.longdouble
+        )
+        payload["association_scores"][0, 0] = overflowing
+        cases.append(("association_scores", payload, {}))
+        cases.append(
+            (
+                "production_costs",
+                self._payload(),
+                {"production_costs": np.asarray([overflowing])},
+            )
+        )
+        cases.append(("threshold", self._payload(), {"thresholds": {5: overflowing}}))
+
+        for expected, payload, kwargs in cases:
+            with self.subTest(expected=expected):
+                with self.assertRaisesRegex(
+                    (TypeError, ValueError), f"{expected}.*Python float"
+                ):
+                    self._build(payload, **kwargs)
+
+    def test_rejects_cost_gap_that_overflows_python_float(self):
+        maximum = np.finfo(float).max
+        with self.assertRaisesRegex(ValueError, "cost_gap.*finite"):
+            self._build(base_cost_matrix=np.asarray([[maximum, -maximum]]))
+
+    def test_non_finite_association_scores_remain_json_safe_nulls(self):
+        for score in (np.nan, np.inf, -np.inf):
+            with self.subTest(score=score):
+                payload = self._payload()
+                payload["association_scores"][0, 0] = score
+
+                groups = self._build(payload)
+
+                self.assertIsNone(groups[0]["candidates"][0]["association_score"])
+                json.dumps(groups, allow_nan=False)
+
     def test_rejects_malformed_matrix_vector_and_embedding_shapes(self):
         cases = []
         payload = self._payload()
