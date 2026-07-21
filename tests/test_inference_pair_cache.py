@@ -1232,6 +1232,141 @@ class InferencePairCacheTask3Test(unittest.TestCase):
                 with self.assertRaises((TypeError, ValueError)):
                     cls(**kwargs)
 
+    def test_manifest_require_audit_gt_must_match_accumulator_option(self):
+        for manifest_value, accumulator_value in ((True, False), (False, True)):
+            with self.subTest(
+                manifest_value=manifest_value,
+                accumulator_value=accumulator_value,
+            ):
+                manifest = {
+                    "export_options": {"require_audit_gt": manifest_value}
+                }
+                with self.assertRaisesRegex(ValueError, "require_audit_gt"):
+                    inference_pair_cache.InferencePairCacheAccumulator(
+                        runtime_manifest=manifest,
+                        require_audit_gt=accumulator_value,
+                    )
+
+        inference_pair_cache.InferencePairCacheAccumulator(
+            runtime_manifest={}, require_audit_gt=True
+        )
+        for manifest in (
+            {"export_options": None},
+            {"export_options": {}},
+        ):
+            with self.subTest(manifest=manifest):
+                with self.assertRaises((TypeError, ValueError)):
+                    inference_pair_cache.InferencePairCacheAccumulator(
+                        runtime_manifest=manifest
+                    )
+
+    def test_manifest_require_gt_never_retains_unknown_group_from_state(self):
+        manifest = {"export_options": {"require_audit_gt": True}}
+        unknown = self._group(status="unknown")
+        worker = inference_pair_cache.InferencePairCacheAccumulator()
+        worker.add_group(unknown)
+        state = worker.export_state()
+        state["runtime_manifest"] = copy.deepcopy(manifest)
+
+        receiver = inference_pair_cache.InferencePairCacheAccumulator(
+            runtime_manifest=manifest, require_audit_gt=True
+        )
+        receiver.merge_state(state)
+
+        self.assertEqual(receiver.to_payload()["groups"], [])
+        self.assertEqual(receiver.to_summary()["overall"]["observed_groups"], 1)
+        self.assertEqual(
+            receiver.to_summary()["overall"]["rejected_unknown_groups"], 1
+        )
+
+        mismatched = inference_pair_cache.InferencePairCacheAccumulator(
+            runtime_manifest={
+                "export_options": {"require_audit_gt": False}
+            },
+            require_audit_gt=False,
+        ).export_state()
+        before = receiver.export_state()
+        with self.assertRaisesRegex(ValueError, "manifest mismatch"):
+            receiver.merge_state(mismatched)
+        self.assertEqual(receiver.export_state(), before)
+
+    def test_state_rejects_manifest_inconsistent_evicted_metadata(self):
+        manifest = {
+            "class_map": {"trailer": 5},
+            "export_options": {"require_audit_gt": False},
+        }
+        worker = inference_pair_cache.InferencePairCacheAccumulator(
+            runtime_manifest=manifest,
+            max_groups_per_class_state=1,
+        )
+        worker.add_group(self._group(frame_id=1, track_id=1))
+        worker.add_group(self._group(frame_id=2, track_id=2))
+        state = worker.export_state()
+        self.assertEqual(len(state["groups"]), 1)
+        evicted = next(
+            item
+            for item in state["observed_metadata"]
+            if item["frame_id"] == 2
+        )
+        evicted["class_id"] = 4
+
+        receiver = inference_pair_cache.InferencePairCacheAccumulator(
+            runtime_manifest=manifest,
+            max_groups_per_class_state=1,
+        )
+        before = receiver.export_state()
+        with self.assertRaisesRegex(ValueError, "class_map"):
+            receiver.merge_state(state)
+        self.assertEqual(receiver.export_state(), before)
+
+    def test_merge_rejects_altered_evicted_metadata_with_same_fingerprint(self):
+        worker = inference_pair_cache.InferencePairCacheAccumulator(
+            max_groups_per_class_state=1
+        )
+        first = self._group(frame_id=1, track_id=1)
+        evicted = self._group(frame_id=2, track_id=2)
+        worker.add_group(first)
+        worker.add_group(evicted)
+        state = worker.export_state()
+
+        receiver = inference_pair_cache.InferencePairCacheAccumulator(
+            max_groups_per_class_state=1
+        )
+        receiver.merge_state(state)
+        changed = copy.deepcopy(state)
+        metadata = next(
+            item
+            for item in changed["observed_metadata"]
+            if item["frame_id"] == 2
+        )
+        metadata["state_bucket"] = "matched"
+
+        before = receiver.export_state()
+        with self.assertRaisesRegex(ValueError, "conflicting"):
+            receiver.merge_state(changed)
+        self.assertEqual(receiver.export_state(), before)
+
+    def test_runtime_outputs_reject_non_string_manifest_keys(self):
+        for manifest in ({1: "integer"}, {"nested": {1: "integer", "1": "text"}}):
+            with self.subTest(manifest=manifest):
+                with self.assertRaisesRegex(TypeError, "string mapping keys"):
+                    inference_pair_cache.InferencePairCacheAccumulator(
+                        runtime_manifest=manifest
+                    )
+
+                state = {
+                    "schema_version": (
+                        inference_pair_cache.INFERENCE_PAIR_CACHE_SCHEMA_VERSION
+                    ),
+                    "runtime_manifest": manifest,
+                    "observed_metadata": [],
+                    "groups": [],
+                    "error_count": 0,
+                    "error_samples": [],
+                }
+                with self.assertRaisesRegex(TypeError, "string mapping keys"):
+                    inference_pair_cache.validate_accumulator_state(state)
+
     def test_duplicate_group_is_idempotent_but_conflict_raises(self):
         accumulator = inference_pair_cache.InferencePairCacheAccumulator()
         group = self._group()
@@ -1258,6 +1393,7 @@ class InferencePairCacheTask3Test(unittest.TestCase):
             "export_options": {
                 "include_embeddings": True,
                 "include_pair_vectors": True,
+                "require_audit_gt": False,
             },
         }
         cases = []
@@ -1735,7 +1871,7 @@ class InferencePairCacheTask3Test(unittest.TestCase):
                 "MAMBA_ASSOCIATION_HEAD": {
                     "CHECKPOINT_PATH": "association.pt"
                 },
-                "THRESHOLD": {"BEV": {"COST_MODE": "geometric"}},
+                "THRESHOLD": {"BEV": {}},
                 "MATCHING": {"BEV": {"COST_MODE": {0: "geometric"}}},
                 "INFERENCE_PAIR_CACHE": {
                     "INCLUDE_EMBEDDINGS": True,
@@ -1782,6 +1918,7 @@ class InferencePairCacheTask3Test(unittest.TestCase):
             self.assertEqual(manifest["git_commit"], "abc123")
             self.assertFalse(manifest["git_dirty"])
             self.assertEqual(len(manifest["git_worktree_sha256"]), 64)
+            self.assertEqual(manifest["bev_cost_mode"], {"0": "geometric"})
             json.dumps(manifest, allow_nan=False)
 
             mismatches = {
@@ -1797,10 +1934,10 @@ class InferencePairCacheTask3Test(unittest.TestCase):
                     changed = copy.deepcopy(manifest)
                     changed[field] = different_value
                     accumulator = inference_pair_cache.InferencePairCacheAccumulator(
-                        runtime_manifest=manifest
+                        runtime_manifest=manifest, require_audit_gt=True
                     )
                     state = inference_pair_cache.InferencePairCacheAccumulator(
-                        runtime_manifest=changed
+                        runtime_manifest=changed, require_audit_gt=True
                     ).export_state()
                     with self.assertRaisesRegex(ValueError, "manifest mismatch"):
                         accumulator.merge_state(state)
@@ -1943,6 +2080,21 @@ class InferencePairCacheTask3Test(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 inference_pair_cache.build_inference_pair_cache_manifest(**missing)
 
+            for class_map in ({1: 0}, {"trailer": 5, 1: 0}):
+                with self.subTest(class_map=class_map), patch(
+                    "tracker.inference_pair_cache.subprocess.run",
+                    side_effect=[
+                        subprocess.CompletedProcess([], 0, stdout="commit\n"),
+                        subprocess.CompletedProcess([], 0, stdout=""),
+                        subprocess.CompletedProcess([], 0, stdout=b""),
+                        subprocess.CompletedProcess([], 0, stdout=""),
+                    ],
+                ):
+                    with self.assertRaisesRegex(TypeError, "class_map"):
+                        inference_pair_cache.build_inference_pair_cache_manifest(
+                            **{**base, "cfg": {"CATEGORY_MAP_TO_NUMBER": class_map}}
+                        )
+
     def test_atomic_writers_replace_successfully_and_leave_no_temp_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1960,6 +2112,7 @@ class InferencePairCacheTask3Test(unittest.TestCase):
                 json_path.read_bytes(), b'{\n  "a": "text",\n  "z": 1\n}\n'
             )
             self.assertEqual(list((root / "nested").glob("*.tmp")), [])
+            self.assertEqual(list((root / "nested").glob("*.bak")), [])
 
     def test_atomic_writers_preserve_destination_on_serialization_failure(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1985,6 +2138,24 @@ class InferencePairCacheTask3Test(unittest.TestCase):
                     self.assertEqual(destination.read_bytes(), b"original-bytes")
                     self.assertEqual(list(root.glob(f".{destination.name}.*.tmp")), [])
 
+    def test_atomic_json_rejects_non_string_keys_before_creating_temp(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "payload.json"
+            destination.write_bytes(b"original-bytes")
+            for payload in (
+                {1: "integer"},
+                {"nested": {1: "integer"}},
+                {"nonfinite": math.nan},
+            ):
+                with self.subTest(payload=payload), patch(
+                    "tracker.inference_pair_cache.tempfile.mkstemp"
+                ) as mkstemp_mock:
+                    with self.assertRaises((TypeError, ValueError)):
+                        inference_pair_cache.atomic_write_json(destination, payload)
+                    mkstemp_mock.assert_not_called()
+                    self.assertEqual(destination.read_bytes(), b"original-bytes")
+
     def test_atomic_writer_preserves_destination_on_fsync_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2002,6 +2173,7 @@ class InferencePairCacheTask3Test(unittest.TestCase):
 
             self.assertEqual(destination.read_bytes(), b"original-bytes")
             self.assertEqual(list(root.glob(f".{destination.name}.*.tmp")), [])
+            self.assertEqual(list(root.glob(f".{destination.name}.*.bak")), [])
 
     def test_atomic_writer_fsyncs_parent_directory_and_closes_descriptor(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2056,20 +2228,39 @@ class InferencePairCacheTask3Test(unittest.TestCase):
                         destination, {"value": 2}
                     )
 
-            temporary_descriptor = created_descriptors[0]
-            with self.assertRaises(OSError):
-                os.fstat(temporary_descriptor)
+            for created_descriptor in created_descriptors:
+                with self.assertRaises(OSError):
+                    os.fstat(created_descriptor)
             self.assertEqual(destination.read_bytes(), b"original-bytes")
             self.assertEqual(list(root.glob(f".{destination.name}.*.tmp")), [])
+            self.assertEqual(list(root.glob(f".{destination.name}.*.bak")), [])
 
-    def test_parent_fsync_failure_reports_after_destination_was_replaced(self):
+    def test_atomic_writer_falls_back_to_streamed_backup_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "payload.pkl"
+            destination.write_bytes(b"original-bytes")
+            with patch(
+                "tracker.inference_pair_cache.os.link",
+                side_effect=OSError("hard links unavailable"),
+            ):
+                inference_pair_cache.atomic_write_pickle(
+                    destination, {"value": 2}
+                )
+
+            with destination.open("rb") as file_obj:
+                self.assertEqual(pickle.load(file_obj), {"value": 2})
+            self.assertEqual(list(root.glob(f".{destination.name}.*.tmp")), [])
+            self.assertEqual(list(root.glob(f".{destination.name}.*.bak")), [])
+
+    def test_parent_fsync_failure_rolls_back_existing_destination(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             destination = root / "payload.pkl"
             destination.write_bytes(b"original-bytes")
             with patch(
                 "tracker.inference_pair_cache.os.fsync",
-                side_effect=[None, OSError("parent fsync failed")],
+                side_effect=[None, OSError("parent fsync failed"), None],
             ), patch(
                 "tracker.inference_pair_cache.os.close", wraps=os.close
             ) as close_mock:
@@ -2078,10 +2269,27 @@ class InferencePairCacheTask3Test(unittest.TestCase):
                         destination, {"value": 2}
                     )
 
-            with destination.open("rb") as file_obj:
-                self.assertEqual(pickle.load(file_obj), {"value": 2})
+            self.assertEqual(destination.read_bytes(), b"original-bytes")
             self.assertTrue(close_mock.called)
             self.assertEqual(list(root.glob(f".{destination.name}.*.tmp")), [])
+            self.assertEqual(list(root.glob(f".{destination.name}.*.bak")), [])
+
+    def test_parent_fsync_failure_removes_new_destination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "payload.pkl"
+            with patch(
+                "tracker.inference_pair_cache.os.fsync",
+                side_effect=[None, OSError("parent fsync failed"), None],
+            ):
+                with self.assertRaisesRegex(OSError, "parent fsync failed"):
+                    inference_pair_cache.atomic_write_pickle(
+                        destination, {"value": 2}
+                    )
+
+            self.assertFalse(destination.exists())
+            self.assertEqual(list(root.glob(f".{destination.name}.*.tmp")), [])
+            self.assertEqual(list(root.glob(f".{destination.name}.*.bak")), [])
 
 
 if __name__ == "__main__":

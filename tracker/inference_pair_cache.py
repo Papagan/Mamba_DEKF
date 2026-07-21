@@ -890,8 +890,8 @@ def _validate_group_ingestion_contract(group, runtime_manifest):
             "all candidates in a group must use one geometric_threshold"
         )
 
-    embedding_dim = runtime_manifest.get("embedding_dim")
-    if embedding_dim is not None:
+    if "embedding_dim" in runtime_manifest:
+        embedding_dim = runtime_manifest["embedding_dim"]
         embedding_dim = _strict_positive_integer("embedding_dim", embedding_dim)
         if "track_embedding" in group and (
             len(group["track_embedding"]) != embedding_dim
@@ -904,8 +904,8 @@ def _validate_group_ingestion_contract(group, runtime_manifest):
         ):
             raise ValueError("det_embedding width does not match embedding_dim")
 
-    pair_vector_dim = runtime_manifest.get("pair_vector_dim")
-    if pair_vector_dim is not None:
+    if "pair_vector_dim" in runtime_manifest:
+        pair_vector_dim = runtime_manifest["pair_vector_dim"]
         pair_vector_dim = _strict_positive_integer(
             "pair_vector_dim", pair_vector_dim
         )
@@ -916,8 +916,8 @@ def _validate_group_ingestion_contract(group, runtime_manifest):
         ):
             raise ValueError("pair_vector width does not match pair_vector_dim")
 
-    export_options = runtime_manifest.get("export_options")
-    if export_options is not None:
+    if "export_options" in runtime_manifest:
+        export_options = runtime_manifest["export_options"]
         if not isinstance(export_options, Mapping):
             raise TypeError("runtime manifest export_options must be a mapping")
         if "include_embeddings" in export_options:
@@ -955,8 +955,8 @@ def _validate_group_ingestion_contract(group, runtime_manifest):
                     "include_pair_vectors=false forbids pair_vector fields"
                 )
 
-    class_map = runtime_manifest.get("class_map")
-    if class_map is not None:
+    if "class_map" in runtime_manifest:
+        class_map = runtime_manifest["class_map"]
         if not isinstance(class_map, Mapping):
             raise TypeError("runtime manifest class_map must be a mapping")
         if group["class_name"] not in class_map:
@@ -1038,31 +1038,30 @@ def canonical_json(value):
     )
 
 
-def _json_safe_value(value):
-    value = _native_scalar(value)
+def _json_output_value(value):
     if isinstance(value, Mapping):
         normalized = {}
         for key, item in value.items():
-            key = _native_scalar(key)
-            if type(key) not in (str, int, float, bool) and key is not None:
-                raise TypeError("JSON-safe mapping keys must be scalar values")
-            if type(key) is float:
-                key = _finite_python_float("mapping key", key)
-            normalized[key] = _json_safe_value(item)
+            if type(key) is not str:
+                raise TypeError(
+                    "JSON output mappings require exact built-in string mapping keys"
+                )
+            normalized[key] = _json_output_value(item)
         return normalized
     if isinstance(value, (list, tuple)):
-        return [_json_safe_value(item) for item in value]
+        return [_json_output_value(item) for item in value]
+    value = _native_scalar(value)
     if value is None or type(value) in (bool, str):
         return value
     if isinstance(value, Integral) and not isinstance(value, (bool, np.bool_)):
         return int(value)
     if isinstance(value, Real) and not isinstance(value, (bool, np.bool_)):
-        return _finite_python_float("JSON-safe value", value)
+        return _finite_python_float("JSON output value", value)
     raise TypeError(f"value of type {type(value).__name__} is not JSON-safe")
 
 
-def _json_safe_copy(value):
-    normalized = _json_safe_value(value)
+def _json_output_copy(value):
+    normalized = _json_output_value(value)
     json.dumps(normalized, ensure_ascii=True, allow_nan=False)
     return normalized
 
@@ -1108,6 +1107,38 @@ def _validate_observed_metadata(metadata):
     return normalized
 
 
+def _validate_metadata_manifest_contract(metadata, runtime_manifest):
+    if "class_map" not in runtime_manifest:
+        return
+    class_map = runtime_manifest["class_map"]
+    if not isinstance(class_map, Mapping):
+        raise TypeError("runtime manifest class_map must be a mapping")
+    class_name = metadata["class_name"]
+    if class_name not in class_map:
+        raise ValueError("class_map does not contain observed class_name")
+    expected_class_id = _strict_nonnegative_integer(
+        "class_map value", class_map[class_name]
+    )
+    if expected_class_id != metadata["class_id"]:
+        raise ValueError("class_map class id does not match observed class_id")
+
+
+def _manifest_require_audit_gt(runtime_manifest):
+    if "export_options" not in runtime_manifest:
+        return None
+    export_options = runtime_manifest["export_options"]
+    if not isinstance(export_options, Mapping):
+        raise TypeError("runtime manifest export_options must be a mapping")
+    if "require_audit_gt" not in export_options:
+        raise ValueError(
+            "runtime manifest export_options must declare require_audit_gt"
+        )
+    return _strict_bool(
+        "export_options.require_audit_gt",
+        export_options["require_audit_gt"],
+    )
+
+
 def _observed_item_metadata(value):
     if isinstance(value, Mapping) and set(value.keys()) == _OBSERVED_METADATA_FIELDS:
         return _validate_observed_metadata(value)
@@ -1135,12 +1166,15 @@ def validate_accumulator_state(state, max_error_samples=32):
         )
     if not isinstance(state["runtime_manifest"], Mapping):
         raise TypeError("runtime_manifest must be a mapping")
-    runtime_manifest = _json_safe_copy(state["runtime_manifest"])
+    runtime_manifest = _json_output_copy(state["runtime_manifest"])
+    _manifest_require_audit_gt(runtime_manifest)
     if type(state["observed_metadata"]) is not list:
         raise TypeError("observed_metadata must be a built-in list")
     observed_metadata = [
         _validate_observed_metadata(item) for item in state["observed_metadata"]
     ]
+    for metadata in observed_metadata:
+        _validate_metadata_manifest_contract(metadata, runtime_manifest)
     observed_by_key = {}
     for metadata in observed_metadata:
         key = _group_key(metadata)
@@ -1332,7 +1366,7 @@ def summarize_candidate_groups(
         raise ValueError("error_count must be at least the number of error samples")
     return {
         "schema_version": INFERENCE_PAIR_CACHE_SCHEMA_VERSION,
-        "runtime_manifest": _json_safe_copy(runtime_manifest or {}),
+        "runtime_manifest": _json_output_copy(runtime_manifest or {}),
         "overall": overall,
         "per_class": per_class,
         "per_class_state": dict(sorted(per_class_state.items())),
@@ -1362,7 +1396,17 @@ class InferencePairCacheAccumulator:
             runtime_manifest = {}
         if not isinstance(runtime_manifest, Mapping):
             raise TypeError("runtime_manifest must be a mapping")
-        self.runtime_manifest = _json_safe_copy(runtime_manifest)
+        self.runtime_manifest = _json_output_copy(runtime_manifest)
+        manifest_require_audit_gt = _manifest_require_audit_gt(
+            self.runtime_manifest
+        )
+        if (
+            manifest_require_audit_gt is not None
+            and manifest_require_audit_gt != self.require_audit_gt
+        ):
+            raise ValueError(
+                "accumulator require_audit_gt does not match runtime manifest"
+            )
         self._observed_metadata = {}
         self._groups = {}
         self._error_count = 0
@@ -1408,6 +1452,7 @@ class InferencePairCacheAccumulator:
         _validate_group_ingestion_contract(normalized, self.runtime_manifest)
         key = _group_key(normalized)
         metadata = _metadata_from_group(normalized)
+        _validate_metadata_manifest_contract(metadata, self.runtime_manifest)
         existing = self._observed_metadata.get(key)
         if existing is not None and existing["fingerprint"] != metadata["fingerprint"]:
             raise ValueError(f"conflicting inference pair group: {key}")
@@ -1462,9 +1507,7 @@ class InferencePairCacheAccumulator:
         for metadata in normalized["observed_metadata"]:
             key = _group_key(metadata)
             existing = self._observed_metadata.get(key)
-            if existing is not None and (
-                existing["fingerprint"] != metadata["fingerprint"]
-            ):
+            if existing is not None and existing != metadata:
                 raise ValueError(f"conflicting inference pair group: {key}")
         for metadata in normalized["observed_metadata"]:
             key = _group_key(metadata)
@@ -1645,6 +1688,50 @@ def _build_git_source_identity(cfg, git_root):
     return commit, bool(status.strip()), digest.hexdigest()
 
 
+def _manifest_config_value(value, name):
+    """Normalize a selected config value to an unambiguous JSON object."""
+    if isinstance(value, Mapping):
+        normalized = {}
+        for key, item in value.items():
+            key = _native_scalar(key)
+            if type(key) is str:
+                output_key = key
+            elif isinstance(key, Integral) and not isinstance(
+                key, (bool, np.bool_)
+            ):
+                output_key = str(int(key))
+            else:
+                raise TypeError(
+                    f"{name} mapping keys must be strings or integers"
+                )
+            if output_key in normalized:
+                raise ValueError(f"{name} contains colliding mapping keys")
+            normalized[output_key] = _manifest_config_value(
+                item, f"{name}.{output_key}"
+            )
+        return normalized
+    if isinstance(value, (list, tuple)):
+        return [
+            _manifest_config_value(item, f"{name} item") for item in value
+        ]
+    return _json_output_value(value)
+
+
+def _manifest_class_map(cfg):
+    class_map = cfg.get("CATEGORY_MAP_TO_NUMBER", {})
+    if not isinstance(class_map, Mapping):
+        raise TypeError("class_map source CATEGORY_MAP_TO_NUMBER must be a mapping")
+    normalized = {}
+    for class_name, class_id in class_map.items():
+        if type(class_name) is not str:
+            raise TypeError("class_map keys must be exact built-in class-name strings")
+        normalized_name = _canonical_string("class_map key", class_name)
+        normalized[normalized_name] = _strict_nonnegative_integer(
+            "class_map value", class_id
+        )
+    return normalized
+
+
 def build_inference_pair_cache_manifest(
     *, cfg, config_path, process_count, git_root, pair_vector_dim, embedding_dim
 ):
@@ -1723,22 +1810,61 @@ def build_inference_pair_cache_manifest(
         "tracker_compat_mode": _canonical_string(
             "TRACKER_COMPAT_MODE", cfg.get("TRACKER_COMPAT_MODE", "default")
         ).lower(),
-        "bev_cost_mode": copy.deepcopy(bev_cost_mode),
+        "bev_cost_mode": _manifest_config_value(bev_cost_mode, "bev_cost_mode"),
         "pair_vector_dim": pair_vector_dim,
         "embedding_dim": embedding_dim,
         "process_count": process_count,
-        "class_map": copy.deepcopy(cfg.get("CATEGORY_MAP_TO_NUMBER", {})),
+        "class_map": _manifest_class_map(cfg),
         "export_options": export_options,
     }
-    return _json_safe_copy(manifest)
+    return _json_output_copy(manifest)
+
+
+def _fsync_directory(directory):
+    descriptor = os.open(
+        str(directory), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    )
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _backup_destination(destination):
+    descriptor, backup_name = tempfile.mkstemp(
+        dir=str(destination.parent),
+        prefix=f".{destination.name}.",
+        suffix=".bak",
+    )
+    backup = Path(backup_name)
+    try:
+        os.close(descriptor)
+        descriptor = None
+        backup.unlink()
+        try:
+            os.link(str(destination), str(backup))
+        except OSError:
+            with destination.open("rb") as source, backup.open("xb") as target:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    target.write(chunk)
+                target.flush()
+                os.fsync(target.fileno())
+        return backup
+    except BaseException:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        try:
+            backup.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def _atomic_write(path, write_value):
-    """Write atomically and durably.
-
-    A parent-directory fsync failure is reported after replacement, so in that
-    specific failure mode the destination already contains the new bytes.
-    """
+    """Write atomically, restoring the previous path if durability fails."""
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -1747,6 +1873,7 @@ def _atomic_write(path, write_value):
         suffix=".tmp",
     )
     temporary = Path(temporary_name)
+    backup = None
     try:
         file_obj = os.fdopen(descriptor, "wb")
         descriptor = None
@@ -1754,15 +1881,28 @@ def _atomic_write(path, write_value):
             write_value(file_obj)
             file_obj.flush()
             os.fsync(file_obj.fileno())
+        if destination.exists():
+            backup = _backup_destination(destination)
         os.replace(str(temporary), str(destination))
-        parent_descriptor = os.open(
-            str(destination.parent),
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
-        )
         try:
-            os.fsync(parent_descriptor)
-        finally:
-            os.close(parent_descriptor)
+            _fsync_directory(destination.parent)
+        except BaseException:
+            try:
+                if backup is not None:
+                    os.replace(str(backup), str(destination))
+                    backup = None
+                else:
+                    destination.unlink()
+            except OSError:
+                pass
+            try:
+                _fsync_directory(destination.parent)
+            except OSError:
+                pass
+            raise
+        if backup is not None:
+            backup.unlink()
+            backup = None
     except BaseException:
         if descriptor is not None:
             try:
@@ -1773,6 +1913,11 @@ def _atomic_write(path, write_value):
             temporary.unlink()
         except FileNotFoundError:
             pass
+        if backup is not None:
+            try:
+                backup.unlink()
+            except FileNotFoundError:
+                pass
         raise
 
 
@@ -1784,9 +1929,11 @@ def atomic_write_pickle(path, payload):
 
 
 def atomic_write_json(path, payload):
+    normalized = _json_output_copy(payload)
+
     def write_json(file_obj):
         serialized = json.dumps(
-            payload,
+            normalized,
             indent=2,
             sort_keys=True,
             ensure_ascii=False,
