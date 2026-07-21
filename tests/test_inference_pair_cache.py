@@ -1268,58 +1268,171 @@ class InferencePairCacheTask3Test(unittest.TestCase):
         )
 
     def test_summary_reconciles_exactly_with_retained_payload(self):
-        accumulator = inference_pair_cache.InferencePairCacheAccumulator()
-        accumulator.add_group(self._group(frame_id=1, track_id=10))
-        accumulator.add_group(self._group(frame_id=2, track_id=20, status="no_match"))
-        accumulator.add_group(self._group(frame_id=3, track_id=30, status="unknown"))
-        payload = accumulator.to_payload()
-        summary = accumulator.to_summary()
-        candidates = [
-            candidate
-            for group in payload["groups"]
-            for candidate in group["candidates"]
+        groups = [
+            self._group(frame_id=1, track_id=10),
+            self._group(frame_id=4, track_id=40, status="no_match"),
+            self._group(
+                frame_id=2,
+                track_id=20,
+                state_bucket="matched",
+                status="no_match",
+            ),
+            self._group(
+                frame_id=3,
+                track_id=30,
+                class_id=1,
+                class_name="pedestrian",
+                state_bucket="matched",
+                status="unknown",
+            ),
         ]
-        overall = summary["overall"]
-        self.assertEqual(overall["accepted_groups"], len(payload["groups"]))
-        self.assertEqual(overall["candidate_count"], len(candidates))
-        self.assertEqual(
-            overall["finite_candidate_count"],
-            sum(candidate["finite"] for candidate in candidates),
-        )
-        self.assertEqual(
-            overall["production_selected_count"],
-            sum(candidate["production_selected"] for candidate in candidates),
-        )
-        self.assertEqual(
-            overall["positive_count"],
-            sum(candidate["gt_label"] == 1 for candidate in candidates),
-        )
-        self.assertEqual(
-            overall["negative_count"],
-            sum(candidate["gt_label"] == 0 for candidate in candidates),
-        )
-        self.assertEqual(
-            overall["unknown_label_count"],
-            sum(candidate["gt_label"] is None for candidate in candidates),
-        )
-        for field in (
-            "accepted_groups",
-            "candidate_count",
-            "finite_candidate_count",
-            "gated_candidate_count",
-            "production_selected_count",
-            "positive_count",
-            "negative_count",
-            "unknown_label_count",
-        ):
-            self.assertEqual(
-                overall[field],
-                sum(bucket[field] for bucket in summary["per_class"].values()),
-            )
-            self.assertEqual(
-                overall[field],
-                sum(bucket[field] for bucket in summary["per_class_state"].values()),
-            )
+
+        def expected_counts(observed_groups, retained_groups, require_audit_gt):
+            candidates = [
+                candidate
+                for group in retained_groups
+                for candidate in group["candidates"]
+            ]
+            eligible_groups = [
+                group
+                for group in observed_groups
+                if not (
+                    require_audit_gt
+                    and group["gt_target_status"] == "unknown"
+                )
+            ]
+            return {
+                "observed_groups": len(observed_groups),
+                "accepted_groups": len(retained_groups),
+                "rejected_unknown_groups": (
+                    len(observed_groups) - len(eligible_groups)
+                ),
+                "capped_groups": len(eligible_groups) - len(retained_groups),
+                "matched_groups": sum(
+                    group["gt_target_status"] == "matched"
+                    for group in retained_groups
+                ),
+                "no_match_groups": sum(
+                    group["gt_target_status"] == "no_match"
+                    for group in retained_groups
+                ),
+                "unknown_groups": sum(
+                    group["gt_target_status"] == "unknown"
+                    for group in retained_groups
+                ),
+                "candidate_count": len(candidates),
+                "finite_candidate_count": sum(
+                    candidate["finite"] for candidate in candidates
+                ),
+                "gated_candidate_count": sum(
+                    candidate["inside_geometric_gate"]
+                    for candidate in candidates
+                ),
+                "production_selected_count": sum(
+                    candidate["production_selected"]
+                    for candidate in candidates
+                ),
+                "positive_count": sum(
+                    candidate["gt_label"] == 1 for candidate in candidates
+                ),
+                "negative_count": sum(
+                    candidate["gt_label"] == 0 for candidate in candidates
+                ),
+                "unknown_label_count": sum(
+                    candidate["gt_label"] is None for candidate in candidates
+                ),
+            }
+
+        for require_audit_gt in (False, True):
+            with self.subTest(require_audit_gt=require_audit_gt):
+                accumulator = inference_pair_cache.InferencePairCacheAccumulator(
+                    max_groups_per_class_state=1,
+                    require_audit_gt=require_audit_gt,
+                )
+                for group in reversed(groups):
+                    accumulator.add_group(group)
+
+                observed = accumulator.export_state()["groups"]
+                retained = accumulator.to_payload()["groups"]
+                summary = accumulator.to_summary()
+                overall_expected = expected_counts(
+                    observed, retained, require_audit_gt
+                )
+                self.assertEqual(
+                    summary["overall"], {**overall_expected, "error_count": 0}
+                )
+                self.assertEqual(
+                    summary["overall"]["gated_candidate_count"],
+                    sum(
+                        candidate["inside_geometric_gate"]
+                        for group in retained
+                        for candidate in group["candidates"]
+                    ),
+                )
+
+                class_names = sorted({group["class_name"] for group in observed})
+                expected_per_class = {
+                    class_name: expected_counts(
+                        [
+                            group
+                            for group in observed
+                            if group["class_name"] == class_name
+                        ],
+                        [
+                            group
+                            for group in retained
+                            if group["class_name"] == class_name
+                        ],
+                        require_audit_gt,
+                    )
+                    for class_name in class_names
+                }
+                self.assertEqual(summary["per_class"], expected_per_class)
+
+                class_states = sorted(
+                    {
+                        (group["class_id"], group["state_bucket"])
+                        for group in observed
+                    }
+                )
+                expected_per_class_state = {}
+                for class_id, state_bucket in class_states:
+                    key = json.dumps(
+                        [class_id, state_bucket], separators=(",", ":")
+                    )
+                    expected_per_class_state[key] = expected_counts(
+                        [
+                            group
+                            for group in observed
+                            if group["class_id"] == class_id
+                            and group["state_bucket"] == state_bucket
+                        ],
+                        [
+                            group
+                            for group in retained
+                            if group["class_id"] == class_id
+                            and group["state_bucket"] == state_bucket
+                        ],
+                        require_audit_gt,
+                    )
+                self.assertEqual(
+                    summary["per_class_state"], expected_per_class_state
+                )
+                for field, expected_value in overall_expected.items():
+                    self.assertEqual(
+                        sum(
+                            bucket[field]
+                            for bucket in summary["per_class"].values()
+                        ),
+                        expected_value,
+                    )
+                    self.assertEqual(
+                        sum(
+                            bucket[field]
+                            for bucket in summary["per_class_state"].values()
+                        ),
+                        expected_value,
+                    )
 
     def test_manifest_hashes_files_and_effective_configuration(self):
         with tempfile.TemporaryDirectory() as directory:
