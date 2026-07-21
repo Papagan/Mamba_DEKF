@@ -900,6 +900,30 @@ class InferencePairCacheTask3Test(unittest.TestCase):
             thresholds={class_id: 0.25},
         )[0]
 
+    def _zero_candidate_group(self, *, known_track_gt):
+        payload = {
+            "scene_id": "scene-zero",
+            "sample_token": "sample-zero",
+            "frame_id": 1,
+            "track_ids": [10],
+            "class_ids": [5],
+            "class_names": ["trailer"],
+            "state_buckets": ["unmatched"],
+            "track_gt_tokens": ["gt-track" if known_track_gt else None],
+            "det_gt_tokens": [],
+            "pair_indices": [],
+            "pair_vectors": np.empty((0, 2)),
+            "track_embeddings": np.asarray([[0.1, 0.2]]),
+            "det_embeddings": np.empty((0, 2)),
+        }
+        return build_candidate_groups(
+            payload=payload,
+            base_cost_matrix=np.empty((1, 0)),
+            production_matches=np.empty((0, 2), dtype=np.int64),
+            production_costs=np.empty((0,)),
+            thresholds={5: 0.25},
+        )[0]
+
     @staticmethod
     def _error(frame_id, message="message"):
         return {
@@ -958,6 +982,64 @@ class InferencePairCacheTask3Test(unittest.TestCase):
                 with self.assertRaises((TypeError, ValueError)):
                     inference_pair_cache.validate_candidate_group(group)
 
+    def test_candidate_group_validator_rederives_gt_semantics(self):
+        cases = []
+
+        matched_with_missing_token = self._group()
+        matched_with_missing_token["candidates"][0]["det_gt_token"] = None
+        cases.append(matched_with_missing_token)
+
+        no_match_with_missing_token = self._group(status="no_match")
+        no_match_with_missing_token["candidates"][0]["det_gt_token"] = None
+        cases.append(no_match_with_missing_token)
+
+        duplicate_track_tokens = self._group()
+        duplicate_track_tokens["candidates"][0]["det_gt_token"] = "gt-track"
+        cases.append(duplicate_track_tokens)
+
+        unjustified_matched_unknown = self._group()
+        unjustified_matched_unknown["gt_target_status"] = "unknown"
+        unjustified_matched_unknown["gt_target_det_index"] = None
+        for candidate in unjustified_matched_unknown["candidates"]:
+            candidate["gt_label"] = None
+        cases.append(unjustified_matched_unknown)
+
+        unjustified_no_match_unknown = self._group(status="no_match")
+        unjustified_no_match_unknown["gt_target_status"] = "unknown"
+        for candidate in unjustified_no_match_unknown["candidates"]:
+            candidate["gt_label"] = None
+        cases.append(unjustified_no_match_unknown)
+
+        for group in cases:
+            with self.subTest(group=group):
+                with self.assertRaisesRegex(ValueError, "GT|gt_target|status|label"):
+                    inference_pair_cache.validate_candidate_group(group)
+
+    def test_candidate_group_validator_rederives_zero_candidate_status(self):
+        known = self._zero_candidate_group(known_track_gt=True)
+        unknown = self._zero_candidate_group(known_track_gt=False)
+        self.assertEqual(
+            inference_pair_cache.validate_candidate_group(known)[
+                "gt_target_status"
+            ],
+            "no_match",
+        )
+        self.assertEqual(
+            inference_pair_cache.validate_candidate_group(unknown)[
+                "gt_target_status"
+            ],
+            "unknown",
+        )
+
+        invalid_known = copy.deepcopy(known)
+        invalid_known["gt_target_status"] = "unknown"
+        invalid_unknown = copy.deepcopy(unknown)
+        invalid_unknown["gt_target_status"] = "no_match"
+        for group in (invalid_known, invalid_unknown):
+            with self.subTest(group=group):
+                with self.assertRaisesRegex(ValueError, "status"):
+                    inference_pair_cache.validate_candidate_group(group)
+
     def test_error_and_state_validators_are_strict_and_defensive(self):
         error = self._error(1, "x" * 1100)
         normalized = inference_pair_cache.validate_error_record(error)
@@ -997,6 +1079,40 @@ class InferencePairCacheTask3Test(unittest.TestCase):
                 invalid[field] = value
                 with self.assertRaises((TypeError, ValueError)):
                     inference_pair_cache.validate_accumulator_state(invalid)
+
+    def test_state_validator_enforces_default_and_custom_error_sample_bounds(self):
+        samples = [self._error(index) for index in range(33)]
+        state = {
+            "schema_version": inference_pair_cache.INFERENCE_PAIR_CACHE_SCHEMA_VERSION,
+            "runtime_manifest": {},
+            "groups": [],
+            "error_count": len(samples),
+            "error_samples": samples,
+        }
+        with self.assertRaisesRegex(ValueError, "max_error_samples"):
+            inference_pair_cache.validate_accumulator_state(state)
+
+        validated = inference_pair_cache.validate_accumulator_state(
+            state, max_error_samples=33
+        )
+        self.assertEqual(len(validated["error_samples"]), 33)
+
+        source = inference_pair_cache.InferencePairCacheAccumulator(
+            max_error_samples=3
+        )
+        for sample in samples[:3]:
+            source.add_error(sample)
+        receiver = inference_pair_cache.InferencePairCacheAccumulator(
+            max_error_samples=2
+        )
+        with self.assertRaisesRegex(ValueError, "max_error_samples"):
+            receiver.merge_state(source.export_state())
+        self.assertEqual(receiver.export_state()["error_count"], 0)
+
+        with self.assertRaises((TypeError, ValueError)):
+            inference_pair_cache.validate_accumulator_state(
+                {**state, "error_samples": []}, max_error_samples=True
+            )
 
     def test_accumulator_options_fail_closed(self):
         cls = inference_pair_cache.InferencePairCacheAccumulator
@@ -1058,6 +1174,63 @@ class InferencePairCacheTask3Test(unittest.TestCase):
         self.assertEqual(overall["accepted_groups"], 3)
         self.assertEqual(overall["rejected_unknown_groups"], 1)
         self.assertEqual(overall["capped_groups"], 1)
+
+    def test_capped_unknown_attribution_and_merge_order_for_both_gt_modes(self):
+        known = self._group(frame_id=1, track_id=10)
+        unknown = self._group(frame_id=2, track_id=20, status="unknown")
+
+        for require_audit_gt, expected_rejected, expected_capped in (
+            (False, 0, 1),
+            (True, 1, 0),
+        ):
+            with self.subTest(require_audit_gt=require_audit_gt):
+                worker_states = []
+                for group in (known, unknown):
+                    worker = inference_pair_cache.InferencePairCacheAccumulator()
+                    worker.add_group(group)
+                    worker_states.append(worker.export_state())
+
+                outputs = []
+                for states in (worker_states, list(reversed(worker_states))):
+                    accumulator = inference_pair_cache.InferencePairCacheAccumulator(
+                        max_groups_per_class_state=1,
+                        require_audit_gt=require_audit_gt,
+                    )
+                    for state in states:
+                        accumulator.merge_state(state)
+                    outputs.append(
+                        (
+                            accumulator.to_payload(),
+                            accumulator.to_summary(),
+                            accumulator.export_state(),
+                        )
+                    )
+
+                self.assertEqual(outputs[0], outputs[1])
+                overall = outputs[0][1]["overall"]
+                self.assertEqual(
+                    overall["rejected_unknown_groups"], expected_rejected
+                )
+                self.assertEqual(overall["capped_groups"], expected_capped)
+                self.assertEqual(overall["accepted_groups"], 1)
+                for buckets in (
+                    outputs[0][1]["per_class"],
+                    outputs[0][1]["per_class_state"],
+                ):
+                    self.assertEqual(
+                        sum(
+                            bucket["rejected_unknown_groups"]
+                            for bucket in buckets.values()
+                        ),
+                        expected_rejected,
+                    )
+                    self.assertEqual(
+                        sum(
+                            bucket["capped_groups"]
+                            for bucket in buckets.values()
+                        ),
+                        expected_capped,
+                    )
 
     def test_merge_order_does_not_change_outputs_or_error_samples(self):
         manifest = {"run": "same"}
@@ -1133,6 +1306,7 @@ class InferencePairCacheTask3Test(unittest.TestCase):
             "accepted_groups",
             "candidate_count",
             "finite_candidate_count",
+            "gated_candidate_count",
             "production_selected_count",
             "positive_count",
             "negative_count",

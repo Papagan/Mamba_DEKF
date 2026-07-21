@@ -616,6 +616,32 @@ def _group_key(group):
     )
 
 
+def _derived_gt_target(track_gt_token, candidates):
+    if not candidates:
+        status = "no_match" if track_gt_token is not None else "unknown"
+        return status, None, []
+    if track_gt_token is None or any(
+        candidate["det_gt_token"] is None for candidate in candidates
+    ):
+        return "unknown", None, [None] * len(candidates)
+
+    matching_positions = [
+        position
+        for position, candidate in enumerate(candidates)
+        if candidate["det_gt_token"] == track_gt_token
+    ]
+    if len(matching_positions) == 1:
+        target_position = matching_positions[0]
+        return (
+            "matched",
+            candidates[target_position]["det_index"],
+            [int(position == target_position) for position in range(len(candidates))],
+        )
+    if not matching_positions:
+        return "no_match", None, [0] * len(candidates)
+    return "unknown", None, [None] * len(candidates)
+
+
 def validate_candidate_group(group):
     """Strictly normalize one Task 2 group to independent built-in values."""
     _require_exact_fields("candidate group", group, _GROUP_FIELDS, {"track_embedding"})
@@ -809,36 +835,15 @@ def validate_candidate_group(group):
     ):
         raise ValueError("production selection is inconsistent")
 
-    target_status = normalized["gt_target_status"]
-    target_index = normalized["gt_target_det_index"]
-    positives = [item for item in candidates if item["gt_label"] == 1]
-    if target_status == "matched":
-        if target_index is None or len(positives) != 1:
-            raise ValueError("matched target requires exactly one positive")
-        if positives[0]["det_index"] != target_index:
-            raise ValueError("matched target index does not identify the positive")
-        if any(item["gt_label"] is None for item in candidates):
-            raise ValueError("matched target labels must be definite")
-        if normalized["track_gt_token"] is None or (
-            positives[0]["det_gt_token"] != normalized["track_gt_token"]
-        ):
-            raise ValueError("matched target GT tokens are inconsistent")
-    elif target_status == "no_match":
-        if target_index is not None or positives or any(
-            item["gt_label"] != 0 for item in candidates
-        ):
-            raise ValueError("no_match target requires definite zero labels")
-        if normalized["track_gt_token"] is None:
-            raise ValueError("no_match target requires a known track GT token")
-        if any(
-            item["det_gt_token"] == normalized["track_gt_token"]
-            for item in candidates
-        ):
-            raise ValueError("no_match target cannot contain the track GT token")
-    elif target_index is not None or any(
-        item["gt_label"] is not None for item in candidates
-    ):
-        raise ValueError("unknown target requires null labels and target index")
+    expected_status, expected_target_index, expected_labels = _derived_gt_target(
+        normalized["track_gt_token"], candidates
+    )
+    if normalized["gt_target_status"] != expected_status:
+        raise ValueError("gt_target_status is inconsistent with GT tokens")
+    if normalized["gt_target_det_index"] != expected_target_index:
+        raise ValueError("gt_target_det_index is inconsistent with GT tokens")
+    if [item["gt_label"] for item in candidates] != expected_labels:
+        raise ValueError("candidate gt_label values are inconsistent with GT tokens")
 
     normalized["candidates"] = candidates
     canonical_json(normalized)
@@ -876,14 +881,25 @@ def _json_safe_copy(value):
     return json.loads(canonical_json(value))
 
 
-def validate_accumulator_state(state):
+def validate_accumulator_state(state, max_error_samples=32):
     """Strictly validate and detach an exported worker accumulator state."""
+    max_error_samples = _strict_nonnegative_integer(
+        "max_error_samples", max_error_samples
+    )
     _require_exact_fields("accumulator state", state, _STATE_FIELDS)
     schema_version = _strict_nonnegative_integer(
         "schema_version", state["schema_version"]
     )
     if schema_version != INFERENCE_PAIR_CACHE_SCHEMA_VERSION:
         raise ValueError("accumulator state has an unsupported schema_version")
+    error_count = _strict_nonnegative_integer("error_count", state["error_count"])
+    if type(state["error_samples"]) is not list:
+        raise TypeError("error_samples must be a built-in list")
+    if len(state["error_samples"]) > max_error_samples:
+        raise ValueError(
+            "error_samples exceeds max_error_samples "
+            f"({len(state['error_samples'])} > {max_error_samples})"
+        )
     if not isinstance(state["runtime_manifest"], Mapping):
         raise TypeError("runtime_manifest must be a mapping")
     runtime_manifest = _json_safe_copy(state["runtime_manifest"])
@@ -897,9 +913,6 @@ def validate_accumulator_state(state):
             raise ValueError(f"accumulator state contains duplicate group key {key}")
         seen_keys.add(key)
     groups.sort(key=_group_key)
-    error_count = _strict_nonnegative_integer("error_count", state["error_count"])
-    if type(state["error_samples"]) is not list:
-        raise TypeError("error_samples must be a built-in list")
     error_samples = [validate_error_record(item) for item in state["error_samples"]]
     if error_count < len(error_samples):
         raise ValueError("error_count must be at least len(error_samples)")
@@ -971,6 +984,7 @@ def summarize_candidate_groups(
     error_count,
     error_samples,
     runtime_manifest,
+    require_audit_gt,
 ):
     """Recompute deterministic summary counts from validated serialized groups.
 
@@ -978,16 +992,25 @@ def summarize_candidate_groups(
     """
     if type(observed_groups) is not list or type(retained_groups) is not list:
         raise TypeError("observed_groups and retained_groups must be built-in lists")
+    require_audit_gt = _strict_bool("require_audit_gt", require_audit_gt)
     observed = [validate_candidate_group(group) for group in observed_groups]
     retained = [validate_candidate_group(group) for group in retained_groups]
     observed_by_key = {_group_key(group): group for group in observed}
     if len(observed_by_key) != len(observed):
         raise ValueError("observed_groups contains duplicate stable keys")
+    eligible = [
+        group
+        for group in observed
+        if not (
+            require_audit_gt and group["gt_target_status"] == "unknown"
+        )
+    ]
+    eligible_by_key = {_group_key(group): group for group in eligible}
     for group in retained:
         key = _group_key(group)
-        if observed_by_key.get(key) != group:
+        if eligible_by_key.get(key) != group:
             raise ValueError(
-                "retained_groups must be an exact subset of observed_groups"
+                "retained_groups must be an exact subset of eligible groups"
             )
 
     class_names = {}
@@ -1003,25 +1026,20 @@ def summarize_candidate_groups(
             raise ValueError(f"class_name {class_name} maps to inconsistent class ids")
         class_names[class_id] = class_name
 
-    retained_keys = {_group_key(group) for group in retained}
-    missing_unknown_keys = {
-        _group_key(group)
-        for group in observed
-        if group["gt_target_status"] == "unknown"
-        and _group_key(group) not in retained_keys
-    }
-
     def make_bucket(observed_bucket, retained_bucket):
+        eligible_bucket = [
+            group
+            for group in observed_bucket
+            if not (
+                require_audit_gt and group["gt_target_status"] == "unknown"
+            )
+        ]
         counts = _retained_counts(retained_bucket)
         counts["observed_groups"] = len(observed_bucket)
-        counts["rejected_unknown_groups"] = sum(
-            _group_key(group) in missing_unknown_keys for group in observed_bucket
+        counts["rejected_unknown_groups"] = (
+            len(observed_bucket) - len(eligible_bucket)
         )
-        counts["capped_groups"] = (
-            counts["observed_groups"]
-            - counts["accepted_groups"]
-            - counts["rejected_unknown_groups"]
-        )
+        counts["capped_groups"] = len(eligible_bucket) - counts["accepted_groups"]
         if counts["capped_groups"] < 0:
             raise ValueError("summary group counts cannot be reconciled")
         return counts
@@ -1136,7 +1154,9 @@ class InferencePairCacheAccumulator:
         }
 
     def merge_state(self, state):
-        normalized = validate_accumulator_state(state)
+        normalized = validate_accumulator_state(
+            state, max_error_samples=self.max_error_samples
+        )
         if canonical_json(normalized["runtime_manifest"]) != canonical_json(
             self.runtime_manifest
         ):
@@ -1185,6 +1205,7 @@ class InferencePairCacheAccumulator:
             error_count=self._error_count,
             error_samples=self._sorted_error_samples(),
             runtime_manifest=self.runtime_manifest,
+            require_audit_gt=self.require_audit_gt,
         )
 
 
