@@ -9,7 +9,6 @@ import os
 import pickle
 import subprocess
 import tempfile
-from collections import defaultdict
 from collections.abc import Mapping
 from numbers import Integral, Real
 from pathlib import Path
@@ -131,7 +130,7 @@ def _finite_python_float(name, value):
         raise ValueError(f"{name} must convert to a finite Python float")
     if converted == 0.0 and value != 0:
         raise ValueError(f"{name} underflows Python float")
-    return converted
+    return 0.0 if converted == 0.0 else converted
 
 
 def _normalized_float64_array(name, array, *, finite):
@@ -144,6 +143,7 @@ def _normalized_float64_array(name, array, *, finite):
         raise ValueError(f"{name} must convert to finite Python float values")
     if np.any(original_finite & (array != 0) & (normalized == 0.0)):
         raise ValueError(f"{name} underflows Python float")
+    normalized[normalized == 0.0] = 0.0
     return normalized
 
 
@@ -525,9 +525,21 @@ _ERROR_FIELDS = {
 _STATE_FIELDS = {
     "schema_version",
     "runtime_manifest",
+    "observed_metadata",
     "groups",
     "error_count",
     "error_samples",
+}
+_OBSERVED_METADATA_FIELDS = {
+    "scene_id",
+    "sample_token",
+    "frame_id",
+    "track_id",
+    "fingerprint",
+    "class_id",
+    "class_name",
+    "state_bucket",
+    "gt_target_status",
 }
 _GROUP_STATUSES = {"matched", "no_match", "unknown"}
 _PICKLE_PROTOCOL = 4
@@ -614,6 +626,24 @@ def _group_key(group):
         group["frame_id"],
         group["track_id"],
     )
+
+
+def _group_fingerprint(group):
+    return hashlib.sha256(canonical_json(group).encode("utf-8")).hexdigest()
+
+
+def _metadata_from_group(group):
+    return {
+        "scene_id": group["scene_id"],
+        "sample_token": group["sample_token"],
+        "frame_id": group["frame_id"],
+        "track_id": group["track_id"],
+        "fingerprint": _group_fingerprint(group),
+        "class_id": group["class_id"],
+        "class_name": group["class_name"],
+        "state_bucket": group["state_bucket"],
+        "gt_target_status": group["gt_target_status"],
+    }
 
 
 def _derived_gt_target(track_gt_token, candidates):
@@ -851,6 +881,93 @@ def validate_candidate_group(group):
     return normalized
 
 
+def _validate_group_ingestion_contract(group, runtime_manifest):
+    thresholds = {
+        candidate["geometric_threshold"] for candidate in group["candidates"]
+    }
+    if len(thresholds) > 1:
+        raise ValueError(
+            "all candidates in a group must use one geometric_threshold"
+        )
+
+    embedding_dim = runtime_manifest.get("embedding_dim")
+    if embedding_dim is not None:
+        embedding_dim = _strict_positive_integer("embedding_dim", embedding_dim)
+        if "track_embedding" in group and (
+            len(group["track_embedding"]) != embedding_dim
+        ):
+            raise ValueError("track_embedding width does not match embedding_dim")
+        if any(
+            "det_embedding" in candidate
+            and len(candidate["det_embedding"]) != embedding_dim
+            for candidate in group["candidates"]
+        ):
+            raise ValueError("det_embedding width does not match embedding_dim")
+
+    pair_vector_dim = runtime_manifest.get("pair_vector_dim")
+    if pair_vector_dim is not None:
+        pair_vector_dim = _strict_positive_integer(
+            "pair_vector_dim", pair_vector_dim
+        )
+        if any(
+            "pair_vector" in candidate
+            and len(candidate["pair_vector"]) != pair_vector_dim
+            for candidate in group["candidates"]
+        ):
+            raise ValueError("pair_vector width does not match pair_vector_dim")
+
+    export_options = runtime_manifest.get("export_options")
+    if export_options is not None:
+        if not isinstance(export_options, Mapping):
+            raise TypeError("runtime manifest export_options must be a mapping")
+        if "include_embeddings" in export_options:
+            include_embeddings = _strict_bool(
+                "export_options.include_embeddings",
+                export_options["include_embeddings"],
+            )
+            has_embeddings = "track_embedding" in group and all(
+                "det_embedding" in candidate
+                for candidate in group["candidates"]
+            )
+            no_embeddings = "track_embedding" not in group and all(
+                "det_embedding" not in candidate
+                for candidate in group["candidates"]
+            )
+            if include_embeddings and not has_embeddings:
+                raise ValueError("include_embeddings requires embedding fields")
+            if not include_embeddings and not no_embeddings:
+                raise ValueError("include_embeddings=false forbids embedding fields")
+        if "include_pair_vectors" in export_options:
+            include_pair_vectors = _strict_bool(
+                "export_options.include_pair_vectors",
+                export_options["include_pair_vectors"],
+            )
+            has_pair_vectors = all(
+                "pair_vector" in candidate for candidate in group["candidates"]
+            )
+            no_pair_vectors = all(
+                "pair_vector" not in candidate for candidate in group["candidates"]
+            )
+            if include_pair_vectors and not has_pair_vectors:
+                raise ValueError("include_pair_vectors requires pair_vector fields")
+            if not include_pair_vectors and not no_pair_vectors:
+                raise ValueError(
+                    "include_pair_vectors=false forbids pair_vector fields"
+                )
+
+    class_map = runtime_manifest.get("class_map")
+    if class_map is not None:
+        if not isinstance(class_map, Mapping):
+            raise TypeError("runtime manifest class_map must be a mapping")
+        if group["class_name"] not in class_map:
+            raise ValueError("class_map does not contain group class_name")
+        expected_class_id = _strict_nonnegative_integer(
+            "class_map value", class_map[group["class_name"]]
+        )
+        if expected_class_id != group["class_id"]:
+            raise ValueError("class_map class id does not match group class_id")
+
+
 def validate_error_record(record):
     """Normalize one bounded audit error sample."""
     _require_exact_fields("error record", record, _ERROR_FIELDS)
@@ -866,10 +983,54 @@ def validate_error_record(record):
     }
 
 
+def _canonical_mapping_key(value):
+    value = _native_scalar(value)
+    if value is None:
+        return ["null", None]
+    if type(value) is bool:
+        return ["bool", value]
+    if isinstance(value, Integral):
+        return ["int", str(int(value))]
+    if isinstance(value, Real):
+        normalized = _finite_python_float("mapping key", value)
+        return ["float", normalized.hex()]
+    if type(value) is str:
+        return ["str", value]
+    raise TypeError(
+        "canonical JSON mapping keys must be built-in strings or scalar values"
+    )
+
+
+def _canonical_json_value(value):
+    value = _native_scalar(value)
+    if isinstance(value, Mapping):
+        items = []
+        for key, item in value.items():
+            canonical_key = _canonical_mapping_key(key)
+            items.append((canonical_json(canonical_key), canonical_key, item))
+        items.sort(key=lambda entry: entry[0])
+        return {
+            "__type__": "mapping",
+            "items": [
+                [canonical_key, _canonical_json_value(item)]
+                for _, canonical_key, item in items
+            ],
+        }
+    if isinstance(value, (list, tuple)):
+        return [_canonical_json_value(item) for item in value]
+    if value is None or type(value) in (bool, str):
+        return value
+    if isinstance(value, Integral) and not isinstance(value, (bool, np.bool_)):
+        return int(value)
+    if isinstance(value, Real) and not isinstance(value, (bool, np.bool_)):
+        return _finite_python_float("canonical JSON value", value)
+    raise TypeError(f"value of type {type(value).__name__} is not JSON-safe")
+
+
 def canonical_json(value):
-    """Return stable compact JSON and reject non-finite or unsafe values."""
+    """Return stable type-tagged JSON without ambiguous mapping keys."""
     return json.dumps(
-        value,
+        _canonical_json_value(value),
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=True,
@@ -877,8 +1038,80 @@ def canonical_json(value):
     )
 
 
+def _json_safe_value(value):
+    value = _native_scalar(value)
+    if isinstance(value, Mapping):
+        normalized = {}
+        for key, item in value.items():
+            key = _native_scalar(key)
+            if type(key) not in (str, int, float, bool) and key is not None:
+                raise TypeError("JSON-safe mapping keys must be scalar values")
+            if type(key) is float:
+                key = _finite_python_float("mapping key", key)
+            normalized[key] = _json_safe_value(item)
+        return normalized
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_value(item) for item in value]
+    if value is None or type(value) in (bool, str):
+        return value
+    if isinstance(value, Integral) and not isinstance(value, (bool, np.bool_)):
+        return int(value)
+    if isinstance(value, Real) and not isinstance(value, (bool, np.bool_)):
+        return _finite_python_float("JSON-safe value", value)
+    raise TypeError(f"value of type {type(value).__name__} is not JSON-safe")
+
+
 def _json_safe_copy(value):
-    return json.loads(canonical_json(value))
+    normalized = _json_safe_value(value)
+    json.dumps(normalized, ensure_ascii=True, allow_nan=False)
+    return normalized
+
+
+def _validate_observed_metadata(metadata):
+    _require_exact_fields(
+        "observed metadata", metadata, _OBSERVED_METADATA_FIELDS
+    )
+    normalized = {
+        "scene_id": _canonical_string("scene_id", metadata["scene_id"]),
+        "sample_token": _canonical_string(
+            "sample_token", metadata["sample_token"]
+        ),
+        "frame_id": _strict_nonnegative_integer(
+            "frame_id", metadata["frame_id"]
+        ),
+        "track_id": _strict_nonnegative_integer(
+            "track_id", metadata["track_id"]
+        ),
+        "fingerprint": _canonical_string(
+            "fingerprint", metadata["fingerprint"]
+        ),
+        "class_id": _strict_nonnegative_integer(
+            "class_id", metadata["class_id"]
+        ),
+        "class_name": _canonical_string("class_name", metadata["class_name"]),
+        "state_bucket": _canonical_string(
+            "state_bucket", metadata["state_bucket"]
+        ),
+        "gt_target_status": _canonical_string(
+            "gt_target_status", metadata["gt_target_status"]
+        ),
+    }
+    fingerprint = normalized["fingerprint"]
+    if len(fingerprint) != 64 or any(
+        character not in "0123456789abcdef" for character in fingerprint
+    ):
+        raise ValueError("fingerprint must be a lowercase SHA-256 digest")
+    if normalized["state_bucket"] not in TRACK_STATES:
+        raise ValueError("state_bucket must be matched or unmatched")
+    if normalized["gt_target_status"] not in _GROUP_STATUSES:
+        raise ValueError("gt_target_status must be matched, no_match, or unknown")
+    return normalized
+
+
+def _observed_item_metadata(value):
+    if isinstance(value, Mapping) and set(value.keys()) == _OBSERVED_METADATA_FIELDS:
+        return _validate_observed_metadata(value)
+    return _metadata_from_group(validate_candidate_group(value))
 
 
 def validate_accumulator_state(state, max_error_samples=32):
@@ -903,6 +1136,20 @@ def validate_accumulator_state(state, max_error_samples=32):
     if not isinstance(state["runtime_manifest"], Mapping):
         raise TypeError("runtime_manifest must be a mapping")
     runtime_manifest = _json_safe_copy(state["runtime_manifest"])
+    if type(state["observed_metadata"]) is not list:
+        raise TypeError("observed_metadata must be a built-in list")
+    observed_metadata = [
+        _validate_observed_metadata(item) for item in state["observed_metadata"]
+    ]
+    observed_by_key = {}
+    for metadata in observed_metadata:
+        key = _group_key(metadata)
+        if key in observed_by_key:
+            raise ValueError(
+                f"accumulator state contains duplicate observed key {key}"
+            )
+        observed_by_key[key] = metadata
+    observed_metadata.sort(key=_group_key)
     if type(state["groups"]) is not list:
         raise TypeError("groups must be a built-in list")
     groups = [validate_candidate_group(group) for group in state["groups"]]
@@ -911,6 +1158,10 @@ def validate_accumulator_state(state, max_error_samples=32):
         key = _group_key(group)
         if key in seen_keys:
             raise ValueError(f"accumulator state contains duplicate group key {key}")
+        if observed_by_key.get(key) != _metadata_from_group(group):
+            raise ValueError(
+                f"full group does not match observed metadata for key {key}"
+            )
         seen_keys.add(key)
     groups.sort(key=_group_key)
     error_samples = [validate_error_record(item) for item in state["error_samples"]]
@@ -919,6 +1170,7 @@ def validate_accumulator_state(state, max_error_samples=32):
     return {
         "schema_version": INFERENCE_PAIR_CACHE_SCHEMA_VERSION,
         "runtime_manifest": runtime_manifest,
+        "observed_metadata": observed_metadata,
         "groups": groups,
         "error_count": error_count,
         "error_samples": error_samples,
@@ -993,11 +1245,14 @@ def summarize_candidate_groups(
     if type(observed_groups) is not list or type(retained_groups) is not list:
         raise TypeError("observed_groups and retained_groups must be built-in lists")
     require_audit_gt = _strict_bool("require_audit_gt", require_audit_gt)
-    observed = [validate_candidate_group(group) for group in observed_groups]
+    observed = [_observed_item_metadata(item) for item in observed_groups]
     retained = [validate_candidate_group(group) for group in retained_groups]
-    observed_by_key = {_group_key(group): group for group in observed}
+    observed_by_key = {_group_key(metadata): metadata for metadata in observed}
     if len(observed_by_key) != len(observed):
         raise ValueError("observed_groups contains duplicate stable keys")
+    retained_by_key = {_group_key(group): group for group in retained}
+    if len(retained_by_key) != len(retained):
+        raise ValueError("duplicate retained stable keys are not allowed")
     eligible = [
         group
         for group in observed
@@ -1008,7 +1263,7 @@ def summarize_candidate_groups(
     eligible_by_key = {_group_key(group): group for group in eligible}
     for group in retained:
         key = _group_key(group)
-        if eligible_by_key.get(key) != group:
+        if eligible_by_key.get(key) != _metadata_from_group(group):
             raise ValueError(
                 "retained_groups must be an exact subset of eligible groups"
             )
@@ -1108,21 +1363,58 @@ class InferencePairCacheAccumulator:
         if not isinstance(runtime_manifest, Mapping):
             raise TypeError("runtime_manifest must be a mapping")
         self.runtime_manifest = _json_safe_copy(runtime_manifest)
+        self._observed_metadata = {}
         self._groups = {}
         self._error_count = 0
         self._error_samples = {}
 
+    def _eligible(self, metadata):
+        return not (
+            self.require_audit_gt
+            and metadata["gt_target_status"] == "unknown"
+        )
+
+    def _consider_group(self, group):
+        metadata = _metadata_from_group(group)
+        if not self._eligible(metadata):
+            return
+        key = _group_key(group)
+        if key in self._groups:
+            return
+        if not self.max_groups_per_class_state:
+            self._groups[key] = group
+            return
+
+        bucket = (group["class_id"], group["state_bucket"])
+        bucket_keys = [
+            retained_key
+            for retained_key, retained_group in self._groups.items()
+            if (
+                retained_group["class_id"],
+                retained_group["state_bucket"],
+            )
+            == bucket
+        ]
+        if len(bucket_keys) < self.max_groups_per_class_state:
+            self._groups[key] = group
+            return
+        largest_key = max(bucket_keys)
+        if key < largest_key:
+            del self._groups[largest_key]
+            self._groups[key] = group
+
     def add_group(self, group):
         normalized = validate_candidate_group(group)
+        _validate_group_ingestion_contract(normalized, self.runtime_manifest)
         key = _group_key(normalized)
-        existing = self._groups.get(key)
-        if existing is not None and existing != normalized:
+        metadata = _metadata_from_group(normalized)
+        existing = self._observed_metadata.get(key)
+        if existing is not None and existing["fingerprint"] != metadata["fingerprint"]:
             raise ValueError(f"conflicting inference pair group: {key}")
         if existing is None:
-            self._groups[key] = normalized
-        return not (
-            self.require_audit_gt and normalized["gt_target_status"] == "unknown"
-        )
+            self._observed_metadata[key] = metadata
+        self._consider_group(normalized)
+        return self._eligible(metadata)
 
     def _retain_error_sample(self, record):
         key = _error_key(record)
@@ -1146,6 +1438,10 @@ class InferencePairCacheAccumulator:
         return {
             "schema_version": INFERENCE_PAIR_CACHE_SCHEMA_VERSION,
             "runtime_manifest": copy.deepcopy(self.runtime_manifest),
+            "observed_metadata": [
+                copy.deepcopy(self._observed_metadata[key])
+                for key in sorted(self._observed_metadata)
+            ],
             "groups": [
                 copy.deepcopy(self._groups[key]) for key in sorted(self._groups)
             ],
@@ -1162,34 +1458,26 @@ class InferencePairCacheAccumulator:
         ):
             raise ValueError("inference pair cache runtime manifest mismatch")
         for group in normalized["groups"]:
-            key = _group_key(group)
-            existing = self._groups.get(key)
-            if existing is not None and existing != group:
+            _validate_group_ingestion_contract(group, self.runtime_manifest)
+        for metadata in normalized["observed_metadata"]:
+            key = _group_key(metadata)
+            existing = self._observed_metadata.get(key)
+            if existing is not None and (
+                existing["fingerprint"] != metadata["fingerprint"]
+            ):
                 raise ValueError(f"conflicting inference pair group: {key}")
+        for metadata in normalized["observed_metadata"]:
+            key = _group_key(metadata)
+            if key not in self._observed_metadata:
+                self._observed_metadata[key] = metadata
         for group in normalized["groups"]:
-            self.add_group(group)
+            self._consider_group(group)
         self._error_count += normalized["error_count"]
         for error in normalized["error_samples"]:
             self._retain_error_sample(error)
 
     def _retained_groups(self):
-        eligible = [self._groups[key] for key in sorted(self._groups)]
-        if self.require_audit_gt:
-            eligible = [
-                group
-                for group in eligible
-                if group["gt_target_status"] != "unknown"
-            ]
-        if self.max_groups_per_class_state:
-            buckets = defaultdict(list)
-            for group in eligible:
-                buckets[(group["class_id"], group["state_bucket"])].append(group)
-            eligible = [
-                group
-                for bucket in sorted(buckets)
-                for group in buckets[bucket][: self.max_groups_per_class_state]
-            ]
-        return sorted(eligible, key=_group_key)
+        return [self._groups[key] for key in sorted(self._groups)]
 
     def to_payload(self):
         return {
@@ -1200,7 +1488,10 @@ class InferencePairCacheAccumulator:
 
     def to_summary(self):
         return summarize_candidate_groups(
-            observed_groups=[self._groups[key] for key in sorted(self._groups)],
+            observed_groups=[
+                self._observed_metadata[key]
+                for key in sorted(self._observed_metadata)
+            ],
             retained_groups=self._retained_groups(),
             error_count=self._error_count,
             error_samples=self._sorted_error_samples(),
@@ -1223,6 +1514,135 @@ def _config_section(cfg, name):
     if not isinstance(value, Mapping):
         raise TypeError(f"{name} must be a mapping")
     return value
+
+
+def _git_identity_output(git_root, args, *, text):
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=str(git_root),
+            check=True,
+            text=text,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(
+            f"git identity command failed: git {' '.join(args)}"
+        ) from exc
+    output = result.stdout
+    if text:
+        if isinstance(output, bytes):
+            output = output.decode("utf-8")
+        if type(output) is not str:
+            raise RuntimeError("git identity command returned invalid text output")
+    else:
+        if isinstance(output, str):
+            output = output.encode("utf-8")
+        if type(output) is not bytes:
+            raise RuntimeError("git identity command returned invalid binary output")
+    return output
+
+
+def _configured_output_paths(cfg, git_root):
+    cache_cfg = _config_section(cfg, "INFERENCE_PAIR_CACHE")
+    paths = set()
+    for key, value in cache_cfg.items():
+        upper_key = str(key).upper()
+        if type(value) is not str or not upper_key.endswith("PATH"):
+            continue
+        if not any(token in upper_key for token in ("OUTPUT", "CACHE", "SUMMARY")):
+            continue
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = git_root / path
+        paths.add(path.resolve())
+    return paths
+
+
+def _build_git_source_identity(cfg, git_root):
+    commit = _git_identity_output(git_root, ["rev-parse", "HEAD"], text=True).strip()
+    if not commit:
+        raise RuntimeError("git identity command returned an empty commit")
+    status = _git_identity_output(
+        git_root,
+        ["status", "--porcelain=v1", "--untracked-files=all"],
+        text=True,
+    )
+    tracked_diff = _git_identity_output(
+        git_root,
+        ["diff", "--binary", "--no-ext-diff", "HEAD", "--"],
+        text=False,
+    )
+    untracked_output = _git_identity_output(
+        git_root,
+        [
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "--",
+            "*.py",
+            "*.yaml",
+            "*.yml",
+            "*.json",
+        ],
+        text=True,
+    )
+
+    output_paths = _configured_output_paths(cfg, git_root)
+    relevant_suffixes = {".py", ".yaml", ".yml", ".json"}
+    identity_status_lines = []
+    for line in status.splitlines():
+        path_text = line[3:] if len(line) >= 3 else ""
+        status_paths = [path_text]
+        if " -> " in path_text:
+            status_paths = path_text.split(" -> ", 1)
+        resolved_paths = []
+        for status_path in status_paths:
+            candidate = Path(status_path)
+            if not candidate.is_absolute():
+                candidate = git_root / candidate
+            resolved_paths.append(candidate.resolve())
+        if any(path in output_paths for path in resolved_paths):
+            continue
+        if line.startswith("?? ") and not any(
+            path.suffix.lower() in relevant_suffixes for path in resolved_paths
+        ):
+            continue
+        identity_status_lines.append(line)
+    identity_status = "\n".join(identity_status_lines)
+    if identity_status_lines:
+        identity_status += "\n"
+
+    digest = hashlib.sha256()
+    digest.update(b"git-worktree-v1\0status\0")
+    digest.update(identity_status.encode("utf-8"))
+    digest.update(b"\0tracked-diff\0")
+    digest.update(tracked_diff)
+    root_prefix = str(git_root) + os.sep
+    for relative_name in sorted(set(untracked_output.splitlines())):
+        if not relative_name:
+            continue
+        relative = Path(relative_name)
+        if relative.suffix.lower() not in relevant_suffixes:
+            continue
+        source_path = (git_root / relative).resolve()
+        if str(source_path) != str(git_root) and not str(source_path).startswith(
+            root_prefix
+        ):
+            raise RuntimeError("git identity reported an out-of-root source path")
+        if source_path in output_paths:
+            continue
+        digest.update(b"\0untracked\0")
+        digest.update(relative.as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        try:
+            digest.update(bytes.fromhex(sha256_file(source_path)))
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(
+                f"git identity could not hash untracked source {relative_name}"
+            ) from exc
+    return commit, bool(status.strip()), digest.hexdigest()
 
 
 def build_inference_pair_cache_manifest(
@@ -1253,17 +1673,9 @@ def build_inference_pair_cache_manifest(
 
     mamba_checkpoint = resolve_checkpoint("MAMBA")
     association_checkpoint = resolve_checkpoint("MAMBA_ASSOCIATION_HEAD")
-    try:
-        git_commit = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(normalized_git_root),
-            check=True,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        ).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        git_commit = None
+    git_commit, git_dirty, git_worktree_sha256 = _build_git_source_identity(
+        cfg, normalized_git_root
+    )
 
     cache_cfg = _config_section(cfg, "INFERENCE_PAIR_CACHE")
     export_options = {}
@@ -1289,6 +1701,8 @@ def build_inference_pair_cache_manifest(
             effective_config_json.encode("utf-8")
         ).hexdigest(),
         "git_commit": git_commit,
+        "git_dirty": git_dirty,
+        "git_worktree_sha256": git_worktree_sha256,
         "mamba_checkpoint_path": (
             None if mamba_checkpoint is None else str(mamba_checkpoint)
         ),
@@ -1320,6 +1734,11 @@ def build_inference_pair_cache_manifest(
 
 
 def _atomic_write(path, write_value):
+    """Write atomically and durably.
+
+    A parent-directory fsync failure is reported after replacement, so in that
+    specific failure mode the destination already contains the new bytes.
+    """
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -1329,16 +1748,27 @@ def _atomic_write(path, write_value):
     )
     temporary = Path(temporary_name)
     try:
-        with os.fdopen(descriptor, "wb") as file_obj:
+        file_obj = os.fdopen(descriptor, "wb")
+        descriptor = None
+        with file_obj:
             write_value(file_obj)
             file_obj.flush()
             os.fsync(file_obj.fileno())
         os.replace(str(temporary), str(destination))
-    except BaseException:
+        parent_descriptor = os.open(
+            str(destination.parent),
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
         try:
-            os.close(descriptor)
-        except OSError:
-            pass
+            os.fsync(parent_descriptor)
+        finally:
+            os.close(parent_descriptor)
+    except BaseException:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
         try:
             temporary.unlink()
         except FileNotFoundError:
