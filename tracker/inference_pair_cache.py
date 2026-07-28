@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import pickle
+import stat
 import subprocess
 import tempfile
 from collections.abc import Mapping
@@ -525,10 +526,16 @@ _ERROR_FIELDS = {
 _STATE_FIELDS = {
     "schema_version",
     "runtime_manifest",
+    "accumulator_policy",
     "observed_metadata",
     "groups",
     "error_count",
     "error_samples",
+}
+_ACCUMULATOR_POLICY_FIELDS = {
+    "max_groups_per_class_state",
+    "require_audit_gt",
+    "max_error_samples",
 }
 _OBSERVED_METADATA_FIELDS = {
     "scene_id",
@@ -628,17 +635,19 @@ def _group_key(group):
     )
 
 
-def _group_fingerprint(group):
-    return hashlib.sha256(canonical_json(group).encode("utf-8")).hexdigest()
+def _group_fingerprint(group, canonical_group=None):
+    if canonical_group is None:
+        canonical_group = canonical_json(group)
+    return hashlib.sha256(canonical_group.encode("utf-8")).hexdigest()
 
 
-def _metadata_from_group(group):
+def _metadata_from_group(group, canonical_group=None):
     return {
         "scene_id": group["scene_id"],
         "sample_token": group["sample_token"],
         "frame_id": group["frame_id"],
         "track_id": group["track_id"],
-        "fingerprint": _group_fingerprint(group),
+        "fingerprint": _group_fingerprint(group, canonical_group),
         "class_id": group["class_id"],
         "class_name": group["class_name"],
         "state_bucket": group["state_bucket"],
@@ -876,8 +885,6 @@ def validate_candidate_group(group):
         raise ValueError("candidate gt_label values are inconsistent with GT tokens")
 
     normalized["candidates"] = candidates
-    canonical_json(normalized)
-    pickle.dumps(normalized, protocol=_PICKLE_PROTOCOL)
     return normalized
 
 
@@ -1007,7 +1014,13 @@ def _canonical_json_value(value):
         items = []
         for key, item in value.items():
             canonical_key = _canonical_mapping_key(key)
-            items.append((canonical_json(canonical_key), canonical_key, item))
+            key_text = json.dumps(
+                canonical_key,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+            items.append((key_text, canonical_key, item))
         items.sort(key=lambda entry: entry[0])
         return {
             "__type__": "mapping",
@@ -1040,14 +1053,17 @@ def canonical_json(value):
 
 def _json_output_value(value):
     if isinstance(value, Mapping):
-        normalized = {}
+        items = []
         for key, item in value.items():
             if type(key) is not str:
                 raise TypeError(
                     "JSON output mappings require exact built-in string mapping keys"
                 )
-            normalized[key] = _json_output_value(item)
-        return normalized
+            items.append((key, item))
+        return {
+            key: _json_output_value(item)
+            for key, item in sorted(items, key=lambda entry: entry[0])
+        }
     if isinstance(value, (list, tuple)):
         return [_json_output_value(item) for item in value]
     value = _native_scalar(value)
@@ -1061,9 +1077,7 @@ def _json_output_value(value):
 
 
 def _json_output_copy(value):
-    normalized = _json_output_value(value)
-    json.dumps(normalized, ensure_ascii=True, allow_nan=False)
-    return normalized
+    return _json_output_value(value)
 
 
 def _validate_observed_metadata(metadata):
@@ -1142,32 +1156,76 @@ def _manifest_require_audit_gt(runtime_manifest):
 def _observed_item_metadata(value):
     if isinstance(value, Mapping) and set(value.keys()) == _OBSERVED_METADATA_FIELDS:
         return _validate_observed_metadata(value)
-    return _metadata_from_group(validate_candidate_group(value))
+    group = validate_candidate_group(value)
+    return _metadata_from_group(group)
 
 
-def validate_accumulator_state(state, max_error_samples=32):
-    """Strictly validate and detach an exported worker accumulator state."""
-    max_error_samples = _strict_nonnegative_integer(
-        "max_error_samples", max_error_samples
+def _validate_accumulator_policy(policy):
+    _require_exact_fields(
+        "accumulator_policy", policy, _ACCUMULATOR_POLICY_FIELDS
     )
+    return {
+        "max_groups_per_class_state": _strict_nonnegative_integer(
+            "accumulator_policy.max_groups_per_class_state",
+            policy["max_groups_per_class_state"],
+        ),
+        "require_audit_gt": _strict_bool(
+            "accumulator_policy.require_audit_gt",
+            policy["require_audit_gt"],
+        ),
+        "max_error_samples": _strict_nonnegative_integer(
+            "accumulator_policy.max_error_samples",
+            policy["max_error_samples"],
+        ),
+    }
+
+
+def validate_accumulator_state(state, max_error_samples=None):
+    """Strictly validate and detach an exported worker accumulator state."""
     _require_exact_fields("accumulator state", state, _STATE_FIELDS)
     schema_version = _strict_nonnegative_integer(
         "schema_version", state["schema_version"]
     )
     if schema_version != INFERENCE_PAIR_CACHE_SCHEMA_VERSION:
         raise ValueError("accumulator state has an unsupported schema_version")
+    accumulator_policy = _validate_accumulator_policy(
+        state["accumulator_policy"]
+    )
+    if max_error_samples is not None:
+        expected_max_error_samples = _strict_nonnegative_integer(
+            "max_error_samples", max_error_samples
+        )
+        if (
+            accumulator_policy["max_error_samples"]
+            != expected_max_error_samples
+        ):
+            raise ValueError(
+                "accumulator policy max_error_samples mismatch"
+            )
     error_count = _strict_nonnegative_integer("error_count", state["error_count"])
     if type(state["error_samples"]) is not list:
         raise TypeError("error_samples must be a built-in list")
-    if len(state["error_samples"]) > max_error_samples:
+    if (
+        len(state["error_samples"])
+        > accumulator_policy["max_error_samples"]
+    ):
         raise ValueError(
             "error_samples exceeds max_error_samples "
-            f"({len(state['error_samples'])} > {max_error_samples})"
+            f"({len(state['error_samples'])} > "
+            f"{accumulator_policy['max_error_samples']})"
         )
     if not isinstance(state["runtime_manifest"], Mapping):
         raise TypeError("runtime_manifest must be a mapping")
     runtime_manifest = _json_output_copy(state["runtime_manifest"])
-    _manifest_require_audit_gt(runtime_manifest)
+    manifest_require_audit_gt = _manifest_require_audit_gt(runtime_manifest)
+    if (
+        manifest_require_audit_gt is not None
+        and manifest_require_audit_gt
+        != accumulator_policy["require_audit_gt"]
+    ):
+        raise ValueError(
+            "accumulator policy require_audit_gt does not match runtime manifest"
+        )
     if type(state["observed_metadata"]) is not list:
         raise TypeError("observed_metadata must be a built-in list")
     observed_metadata = [
@@ -1186,9 +1244,10 @@ def validate_accumulator_state(state, max_error_samples=32):
     observed_metadata.sort(key=_group_key)
     if type(state["groups"]) is not list:
         raise TypeError("groups must be a built-in list")
-    groups = [validate_candidate_group(group) for group in state["groups"]]
+    groups = []
     seen_keys = set()
-    for group in groups:
+    for value in state["groups"]:
+        group = validate_candidate_group(value)
         key = _group_key(group)
         if key in seen_keys:
             raise ValueError(f"accumulator state contains duplicate group key {key}")
@@ -1197,6 +1256,23 @@ def validate_accumulator_state(state, max_error_samples=32):
                 f"full group does not match observed metadata for key {key}"
             )
         seen_keys.add(key)
+        groups.append(group)
+    if accumulator_policy["require_audit_gt"] and any(
+        group["gt_target_status"] == "unknown" for group in groups
+    ):
+        raise ValueError(
+            "accumulator state retains a group rejected by require_audit_gt"
+        )
+    max_groups = accumulator_policy["max_groups_per_class_state"]
+    if max_groups:
+        bucket_counts = {}
+        for group in groups:
+            bucket = (group["class_id"], group["state_bucket"])
+            bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
+        if any(count > max_groups for count in bucket_counts.values()):
+            raise ValueError(
+                "accumulator state groups exceed max_groups_per_class_state"
+            )
     groups.sort(key=_group_key)
     error_samples = [validate_error_record(item) for item in state["error_samples"]]
     if error_count < len(error_samples):
@@ -1204,6 +1280,7 @@ def validate_accumulator_state(state, max_error_samples=32):
     return {
         "schema_version": INFERENCE_PAIR_CACHE_SCHEMA_VERSION,
         "runtime_manifest": runtime_manifest,
+        "accumulator_policy": accumulator_policy,
         "observed_metadata": observed_metadata,
         "groups": groups,
         "error_count": error_count,
@@ -1397,6 +1474,9 @@ class InferencePairCacheAccumulator:
         if not isinstance(runtime_manifest, Mapping):
             raise TypeError("runtime_manifest must be a mapping")
         self.runtime_manifest = _json_output_copy(runtime_manifest)
+        self._runtime_manifest_canonical = canonical_json(
+            self.runtime_manifest
+        )
         manifest_require_audit_gt = _manifest_require_audit_gt(
             self.runtime_manifest
         )
@@ -1412,14 +1492,20 @@ class InferencePairCacheAccumulator:
         self._error_count = 0
         self._error_samples = {}
 
+    def _policy(self):
+        return {
+            "max_groups_per_class_state": self.max_groups_per_class_state,
+            "require_audit_gt": self.require_audit_gt,
+            "max_error_samples": self.max_error_samples,
+        }
+
     def _eligible(self, metadata):
         return not (
             self.require_audit_gt
             and metadata["gt_target_status"] == "unknown"
         )
 
-    def _consider_group(self, group):
-        metadata = _metadata_from_group(group)
+    def _consider_group(self, group, metadata):
         if not self._eligible(metadata):
             return
         key = _group_key(group)
@@ -1451,14 +1537,15 @@ class InferencePairCacheAccumulator:
         normalized = validate_candidate_group(group)
         _validate_group_ingestion_contract(normalized, self.runtime_manifest)
         key = _group_key(normalized)
-        metadata = _metadata_from_group(normalized)
+        canonical_group = canonical_json(normalized)
+        metadata = _metadata_from_group(normalized, canonical_group)
         _validate_metadata_manifest_contract(metadata, self.runtime_manifest)
         existing = self._observed_metadata.get(key)
         if existing is not None and existing["fingerprint"] != metadata["fingerprint"]:
             raise ValueError(f"conflicting inference pair group: {key}")
         if existing is None:
             self._observed_metadata[key] = metadata
-        self._consider_group(normalized)
+        self._consider_group(normalized, metadata)
         return self._eligible(metadata)
 
     def _retain_error_sample(self, record):
@@ -1483,6 +1570,7 @@ class InferencePairCacheAccumulator:
         return {
             "schema_version": INFERENCE_PAIR_CACHE_SCHEMA_VERSION,
             "runtime_manifest": copy.deepcopy(self.runtime_manifest),
+            "accumulator_policy": self._policy(),
             "observed_metadata": [
                 copy.deepcopy(self._observed_metadata[key])
                 for key in sorted(self._observed_metadata)
@@ -1495,11 +1583,12 @@ class InferencePairCacheAccumulator:
         }
 
     def merge_state(self, state):
-        normalized = validate_accumulator_state(
-            state, max_error_samples=self.max_error_samples
-        )
-        if canonical_json(normalized["runtime_manifest"]) != canonical_json(
-            self.runtime_manifest
+        normalized = validate_accumulator_state(state)
+        if normalized["accumulator_policy"] != self._policy():
+            raise ValueError("inference pair cache accumulator policy mismatch")
+        if (
+            canonical_json(normalized["runtime_manifest"])
+            != self._runtime_manifest_canonical
         ):
             raise ValueError("inference pair cache runtime manifest mismatch")
         for group in normalized["groups"]:
@@ -1514,7 +1603,9 @@ class InferencePairCacheAccumulator:
             if key not in self._observed_metadata:
                 self._observed_metadata[key] = metadata
         for group in normalized["groups"]:
-            self._consider_group(group)
+            self._consider_group(
+                group, self._observed_metadata[_group_key(group)]
+            )
         self._error_count += normalized["error_count"]
         for error in normalized["error_samples"]:
             self._retain_error_sample(error)
@@ -1603,18 +1694,46 @@ def _configured_output_paths(cfg, git_root):
     return paths
 
 
+def _git_identity_pathspecs(git_root, output_paths):
+    pathspecs = ["."]
+    for output_path in sorted(output_paths, key=str):
+        try:
+            relative = output_path.relative_to(git_root)
+        except ValueError:
+            continue
+        if not relative.parts:
+            raise ValueError("configured output path cannot be the git root")
+        pathspecs.append(f":(exclude,literal){relative.as_posix()}")
+    return pathspecs
+
+
 def _build_git_source_identity(cfg, git_root):
+    output_paths = _configured_output_paths(cfg, git_root)
+    pathspecs = _git_identity_pathspecs(git_root, output_paths)
     commit = _git_identity_output(git_root, ["rev-parse", "HEAD"], text=True).strip()
     if not commit:
         raise RuntimeError("git identity command returned an empty commit")
     status = _git_identity_output(
         git_root,
-        ["status", "--porcelain=v1", "--untracked-files=all"],
+        [
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--",
+            *pathspecs,
+        ],
         text=True,
     )
     tracked_diff = _git_identity_output(
         git_root,
-        ["diff", "--binary", "--no-ext-diff", "HEAD", "--"],
+        [
+            "diff",
+            "--binary",
+            "--no-ext-diff",
+            "HEAD",
+            "--",
+            *pathspecs,
+        ],
         text=False,
     )
     untracked_output = _git_identity_output(
@@ -1624,15 +1743,11 @@ def _build_git_source_identity(cfg, git_root):
             "--others",
             "--exclude-standard",
             "--",
-            "*.py",
-            "*.yaml",
-            "*.yml",
-            "*.json",
+            *pathspecs,
         ],
         text=True,
     )
 
-    output_paths = _configured_output_paths(cfg, git_root)
     relevant_suffixes = {".py", ".yaml", ".yml", ".json"}
     identity_status_lines = []
     for line in status.splitlines():
@@ -1663,6 +1778,7 @@ def _build_git_source_identity(cfg, git_root):
     digest.update(b"\0tracked-diff\0")
     digest.update(tracked_diff)
     root_prefix = str(git_root) + os.sep
+    included_untracked = []
     for relative_name in sorted(set(untracked_output.splitlines())):
         if not relative_name:
             continue
@@ -1676,6 +1792,7 @@ def _build_git_source_identity(cfg, git_root):
             raise RuntimeError("git identity reported an out-of-root source path")
         if source_path in output_paths:
             continue
+        included_untracked.append(relative_name)
         digest.update(b"\0untracked\0")
         digest.update(relative.as_posix().encode("utf-8"))
         digest.update(b"\0")
@@ -1685,7 +1802,10 @@ def _build_git_source_identity(cfg, git_root):
             raise RuntimeError(
                 f"git identity could not hash untracked source {relative_name}"
             ) from exc
-    return commit, bool(status.strip()), digest.hexdigest()
+    git_dirty = bool(
+        identity_status_lines or tracked_diff or included_untracked
+    )
+    return commit, git_dirty, digest.hexdigest()
 
 
 def _manifest_config_value(value, name):
@@ -1826,8 +1946,53 @@ def _fsync_directory(directory):
     )
     try:
         os.fsync(descriptor)
-    finally:
+    except BaseException as primary_error:
+        try:
+            os.close(descriptor)
+        except BaseException as cleanup_error:
+            raise AtomicWriteCleanupError(
+                directory,
+                primary_error,
+                [("close_directory_descriptor", directory, cleanup_error)],
+            ) from primary_error
+        raise
+    else:
         os.close(descriptor)
+
+
+def _ensure_durable_directory(directory):
+    directory = Path(directory)
+    missing = []
+    current = directory
+    while True:
+        try:
+            current_stat = current.stat()
+        except FileNotFoundError:
+            missing.append(current)
+            parent = current.parent
+            if parent == current:
+                raise
+            current = parent
+            continue
+        if not stat.S_ISDIR(current_stat.st_mode):
+            raise NotADirectoryError(
+                f"directory path component is not a directory: {current}"
+            )
+        break
+
+    for created in reversed(missing):
+        try:
+            created.mkdir()
+        except FileExistsError:
+            try:
+                created_stat = created.stat()
+            except FileNotFoundError:
+                raise
+            if not stat.S_ISDIR(created_stat.st_mode):
+                raise NotADirectoryError(
+                    f"directory path component is not a directory: {created}"
+                )
+        _fsync_directory(created.parent)
 
 
 def _backup_destination(destination):
@@ -1850,16 +2015,27 @@ def _backup_destination(destination):
                 target.flush()
                 os.fsync(target.fileno())
         return backup
-    except BaseException:
+    except BaseException as primary_error:
+        cleanup_failures = []
         if descriptor is not None:
             try:
                 os.close(descriptor)
-            except OSError:
-                pass
+            except BaseException as cleanup_error:
+                cleanup_failures.append(
+                    ("close_backup_descriptor", backup, cleanup_error)
+                )
         try:
             backup.unlink()
         except FileNotFoundError:
             pass
+        except BaseException as cleanup_error:
+            cleanup_failures.append(
+                ("unlink_backup", backup, cleanup_error)
+            )
+        if cleanup_failures:
+            raise AtomicWriteCleanupError(
+                destination, primary_error, cleanup_failures
+            ) from primary_error
         raise
 
 
@@ -1887,10 +2063,46 @@ class AtomicWriteRollbackError(RuntimeError):
         super().__init__(message)
 
 
+class AtomicWriteCleanupError(RuntimeError):
+    """Retain an atomic-write failure together with deterministic cleanup errors."""
+
+    def __init__(self, destination, primary_error, cleanup_failures):
+        self.destination = Path(destination)
+        self.primary_error = primary_error
+        self.cleanup_failures = sorted(
+            [
+                {
+                    "action": action,
+                    "path": Path(path),
+                    "error": error,
+                }
+                for action, path, error in cleanup_failures
+            ],
+            key=lambda item: (item["action"], str(item["path"])),
+        )
+        self.leaked_paths = [
+            item["path"]
+            for item in self.cleanup_failures
+            if item["action"].startswith("unlink_")
+        ]
+        details = "; ".join(
+            f"{item['action']} {item['path']}: {item['error']}"
+            for item in self.cleanup_failures
+        )
+        super().__init__(
+            f"atomic write failed for {self.destination}: {primary_error}; "
+            f"cleanup failed: {details}"
+        )
+
+
 def _atomic_write(path, write_value):
     """Write atomically, restoring the previous path if durability fails."""
     destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_durable_directory(destination.parent)
+    try:
+        destination_mode = stat.S_IMODE(destination.stat().st_mode)
+    except FileNotFoundError:
+        destination_mode = None
     descriptor, temporary_name = tempfile.mkstemp(
         dir=str(destination.parent),
         prefix=f".{destination.name}.",
@@ -1898,13 +2110,17 @@ def _atomic_write(path, write_value):
     )
     temporary = Path(temporary_name)
     backup = None
+    file_obj = None
     try:
         file_obj = os.fdopen(descriptor, "wb")
         descriptor = None
-        with file_obj:
-            write_value(file_obj)
-            file_obj.flush()
-            os.fsync(file_obj.fileno())
+        write_value(file_obj)
+        file_obj.flush()
+        if destination_mode is not None:
+            os.fchmod(file_obj.fileno(), destination_mode)
+        os.fsync(file_obj.fileno())
+        file_obj.close()
+        file_obj = None
         if destination.exists():
             backup = _backup_destination(destination)
         os.replace(str(temporary), str(destination))
@@ -1928,7 +2144,7 @@ def _atomic_write(path, write_value):
                 ) from rollback_error
             try:
                 _fsync_directory(destination.parent)
-            except OSError:
+            except (OSError, AtomicWriteCleanupError):
                 pass
             raise
         if backup is not None:
@@ -1938,21 +2154,48 @@ def _atomic_write(path, write_value):
                 committed_backup.unlink()
             except OSError:
                 pass
-    except BaseException:
+    except BaseException as primary_error:
+        cleanup_failures = []
+        if file_obj is not None and not file_obj.closed:
+            try:
+                file_obj.close()
+            except BaseException as cleanup_error:
+                cleanup_failures.append(
+                    ("close_temporary_file", temporary, cleanup_error)
+                )
         if descriptor is not None:
             try:
                 os.close(descriptor)
-            except OSError:
-                pass
+            except BaseException as cleanup_error:
+                cleanup_failures.append(
+                    ("close_temporary_descriptor", temporary, cleanup_error)
+                )
         try:
             temporary.unlink()
         except FileNotFoundError:
             pass
-        if backup is not None:
+        except BaseException as cleanup_error:
+            cleanup_failures.append(
+                ("unlink_temporary", temporary, cleanup_error)
+            )
+        cleanup_backup = (
+            None
+            if isinstance(primary_error, AtomicWriteRollbackError)
+            else backup
+        )
+        if cleanup_backup is not None:
             try:
-                backup.unlink()
+                cleanup_backup.unlink()
             except FileNotFoundError:
                 pass
+            except BaseException as cleanup_error:
+                cleanup_failures.append(
+                    ("unlink_backup", cleanup_backup, cleanup_error)
+                )
+        if cleanup_failures:
+            raise AtomicWriteCleanupError(
+                destination, primary_error, cleanup_failures
+            ) from primary_error
         raise
 
 
