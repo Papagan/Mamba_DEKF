@@ -1,12 +1,17 @@
 import ast
 import copy
+import hashlib
 import json
+import multiprocessing
 import os
 import pickle
+import shutil
+import socket
 import tempfile
 import types
 import typing
 import unittest
+import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from unittest.mock import Mock
@@ -19,6 +24,8 @@ from tracker.inference_pair_cache import (
     InferencePairCacheAccumulator,
     atomic_write_json,
     atomic_write_pickle,
+    atomic_write_pickle_json_pair,
+    paths_refer_to_same_file,
     validate_error_record,
 )
 
@@ -50,11 +57,18 @@ def _load_main_functions(*names, extra_globals=None):
         raise AssertionError(f"Missing main functions: {sorted(missing)}")
     namespace = {
         "copy": copy,
+        "hashlib": hashlib,
         "os": os,
         "Path": Path,
+        "pickle": pickle,
+        "shutil": shutil,
+        "tempfile": tempfile,
+        "uuid": uuid,
         "InferencePairCacheAccumulator": InferencePairCacheAccumulator,
         "atomic_write_pickle": atomic_write_pickle,
         "atomic_write_json": atomic_write_json,
+        "atomic_write_pickle_json_pair": atomic_write_pickle_json_pair,
+        "paths_refer_to_same_file": paths_refer_to_same_file,
     }
     namespace.update(extra_globals or {})
     exec(
@@ -367,6 +381,34 @@ class ExactPayloadTest(unittest.TestCase):
         )
         self.assertIsNone(scores)
         self.assertIsNone(payload)
+
+    def test_cache_does_not_swallow_head_embedding_conversion_error(self):
+        class InvalidFloat:
+            def __float__(self):
+                raise RuntimeError("embedding conversion failed")
+
+        for head, should_raise in ((_Head(), True), (None, False)):
+            tracker = self._tracker(head=head, cache=True)
+            errors = []
+            tracker._record_inference_pair_payload_error = (
+                lambda frame, message: errors.append(message)
+            )
+            call = lambda: tracker._compute_pairwise_association_payload(
+                [_traj(1, "bicycle", (0.0, 0.0, 0.0))],
+                [_bbox("bicycle", (1.0, 0.0, 0.0))],
+                [[InvalidFloat()]],
+                [[1.0]],
+                ["matched"],
+                types.SimpleNamespace(),
+            )
+            if should_raise:
+                with self.assertRaisesRegex(
+                    RuntimeError, "embedding conversion failed"
+                ):
+                    call()
+            else:
+                self.assertEqual(call(), (None, None))
+            self.assertEqual(len(errors), 1)
 
     def test_head_and_cache_disabled_keep_fast_return(self):
         tracker = self._tracker(head=None, cache=False)
@@ -696,8 +738,13 @@ class MainCacheOutputWiringTest(unittest.TestCase):
         "_apply_inference_pair_cache_cli_overrides",
         "_effective_cfg_for_runtime_manifest",
         "_build_runtime_manifests",
-        "_collect_scene_inference_pair_cache_state",
+        "_create_inference_pair_cache_spool",
+        "_cleanup_inference_pair_cache_spool",
+        "_scene_inference_pair_cache_spool_path",
+        "_publish_scene_inference_pair_cache_marker",
+        "_spool_scene_inference_pair_cache_state",
         "_inference_pair_cache_error_record",
+        "_write_merged_inference_pair_cache_impl",
         "_write_merged_inference_pair_cache",
     )
 
@@ -781,6 +828,36 @@ class MainCacheOutputWiringTest(unittest.TestCase):
                 summary_path="debug/runtime_pairs.pkl",
             )
 
+    def test_output_path_validation_rejects_symlink_alias(self):
+        helpers = self._helpers(
+            build_inference_pair_cache_manifest=Mock(),
+            build_association_runtime_manifest=Mock(),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "pairs.pkl"
+            alias = Path(directory) / "summary.json"
+            target.write_bytes(b"old")
+            alias.symlink_to(target)
+            with self.assertRaisesRegex(ValueError, "paths must differ"):
+                helpers["_validate_inference_pair_cache_output_paths"](
+                    str(target), str(alias)
+                )
+            cfg = self._base_cfg()
+            cfg["INFERENCE_PAIR_CACHE"].update(
+                {
+                    "ENABLED": True,
+                    "OUTPUT_PATH": str(target),
+                    "SUMMARY_PATH": str(alias),
+                    "STRICT": True,
+                }
+            )
+            spool = helpers["_create_inference_pair_cache_spool"](
+                cfg, directory
+            )
+            with self.assertRaisesRegex(ValueError, "paths must differ"):
+                helpers["_write_merged_inference_pair_cache"](cfg, {})
+            self.assertFalse(Path(spool).exists())
+
     def test_runtime_manifest_uses_overridden_cfg_once_without_hidden_self_reference(self):
         pair_calls = []
         association_calls = []
@@ -809,6 +886,7 @@ class MainCacheOutputWiringTest(unittest.TestCase):
         )
         cfg["_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST"] = {"stale": True}
         cfg["_ASSOCIATION_AUDIT_RUNTIME_MANIFEST"] = {"stale": True}
+        cfg["_INFERENCE_PAIR_CACHE_SPOOL_DIR"] = "/tmp/stale-spool"
         helpers["_build_runtime_manifests"](
             cfg,
             config_path="actual.yaml",
@@ -828,6 +906,9 @@ class MainCacheOutputWiringTest(unittest.TestCase):
         )
         self.assertNotIn(
             "_ASSOCIATION_AUDIT_RUNTIME_MANIFEST", pair_kwargs["cfg"]
+        )
+        self.assertNotIn(
+            "_INFERENCE_PAIR_CACHE_SPOOL_DIR", pair_kwargs["cfg"]
         )
         self.assertEqual(
             cfg["_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST"], {"kind": "pair"}
@@ -855,7 +936,7 @@ class MainCacheOutputWiringTest(unittest.TestCase):
         self.assertNotIn("_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST", cfg)
         association_builder.assert_called_once()
 
-    def test_collect_scene_state_is_disabled_noop_and_enabled_export(self):
+    def test_scene_state_is_spooled_and_manager_keeps_only_small_marker(self):
         helpers = self._helpers(
             build_inference_pair_cache_manifest=Mock(),
             build_association_runtime_manifest=Mock(),
@@ -864,18 +945,132 @@ class MainCacheOutputWiringTest(unittest.TestCase):
             export_inference_pair_cache_state=Mock(return_value={"groups": []})
         )
         states = {}
-        helpers["_collect_scene_inference_pair_cache_state"](
+        helpers["_spool_scene_inference_pair_cache_state"](
             "scene-a", tracker, self._base_cfg(), states
         )
         self.assertEqual(states, {})
         tracker.export_inference_pair_cache_state.assert_not_called()
 
-        cfg = self._base_cfg()
-        cfg["INFERENCE_PAIR_CACHE"]["ENABLED"] = True
-        helpers["_collect_scene_inference_pair_cache_state"](
-            "scene-a", tracker, cfg, states
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = self._base_cfg()
+            cfg["INFERENCE_PAIR_CACHE"]["ENABLED"] = True
+            helpers["_create_inference_pair_cache_spool"](cfg, directory)
+            helpers["_spool_scene_inference_pair_cache_state"](
+                "scene-a", tracker, cfg, states
+            )
+            marker = states["scene-a"]
+            self.assertEqual(marker["kind"], "state")
+            self.assertNotIn("groups", marker)
+            self.assertEqual(set(marker), {"kind", "scene_id", "state_path"})
+            self.assertNotIn("scene-a", Path(marker["state_path"]).name)
+            with Path(marker["state_path"]).open("rb") as file_obj:
+                self.assertEqual(pickle.load(file_obj), {"groups": []})
+
+    def test_real_manager_round_trip_contains_marker_not_full_state(self):
+        helpers = self._helpers(
+            build_inference_pair_cache_manifest=Mock(),
+            build_association_runtime_manifest=Mock(),
         )
-        self.assertEqual(states, {"scene-a": {"groups": []}})
+        try:
+            with socket.socket() as probe:
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            manager = multiprocessing.Manager()
+        except (EOFError, OSError, PermissionError) as exc:
+            self.skipTest(f"multiprocessing.Manager unavailable: {exc}")
+        self.addCleanup(manager.shutdown)
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = self._base_cfg()
+            cfg["INFERENCE_PAIR_CACHE"]["ENABLED"] = True
+            helpers["_create_inference_pair_cache_spool"](cfg, directory)
+            states = manager.dict()
+            tracker = types.SimpleNamespace(
+                export_inference_pair_cache_state=lambda: {
+                    "groups": [{"large": "state"}]
+                }
+            )
+            helpers["_spool_scene_inference_pair_cache_state"](
+                "scene-a", tracker, cfg, states
+            )
+            marker = states["scene-a"]
+            self.assertEqual(marker["kind"], "state")
+            self.assertNotIn("groups", marker)
+            self.assertTrue(Path(marker["state_path"]).is_file())
+
+    def test_non_strict_worker_failures_do_not_escape_or_mutate_tracking_result(self):
+        helpers = self._helpers(
+            build_inference_pair_cache_manifest=Mock(),
+            build_association_runtime_manifest=Mock(),
+        )
+        tracking_results = {"scene-a": {"finished": True}}
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = self._base_cfg()
+            cfg["INFERENCE_PAIR_CACHE"].update(
+                {"ENABLED": True, "STRICT": False}
+            )
+            helpers["_create_inference_pair_cache_spool"](cfg, directory)
+            states = {}
+            tracker = types.SimpleNamespace(
+                export_inference_pair_cache_state=Mock(
+                    side_effect=RuntimeError("export failed")
+                )
+            )
+            helpers["_spool_scene_inference_pair_cache_state"](
+                "scene-a", tracker, cfg, states
+            )
+            self.assertEqual(tracking_results, {"scene-a": {"finished": True}})
+            self.assertEqual(states["scene-a"]["kind"], "error")
+            self.assertEqual(
+                states["scene-a"]["error"]["stage"], "worker_export"
+            )
+
+            class BrokenManager:
+                def __setitem__(self, key, value):
+                    raise RuntimeError("manager failed")
+
+            tracker.export_inference_pair_cache_state = Mock(
+                return_value={"groups": []}
+            )
+            helpers["_spool_scene_inference_pair_cache_state"](
+                "scene-b", tracker, cfg, BrokenManager()
+            )
+            self.assertEqual(tracking_results, {"scene-a": {"finished": True}})
+            self.assertEqual(
+                list(Path(cfg["_INFERENCE_PAIR_CACHE_SPOOL_DIR"]).glob("*.pkl")),
+                [],
+            )
+
+    def test_strict_worker_export_and_manager_failures_raise(self):
+        helpers = self._helpers(
+            build_inference_pair_cache_manifest=Mock(),
+            build_association_runtime_manifest=Mock(),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = self._base_cfg()
+            cfg["INFERENCE_PAIR_CACHE"].update(
+                {"ENABLED": True, "STRICT": True}
+            )
+            helpers["_create_inference_pair_cache_spool"](cfg, directory)
+            tracker = types.SimpleNamespace(
+                export_inference_pair_cache_state=Mock(
+                    side_effect=RuntimeError("export failed")
+                )
+            )
+            with self.assertRaisesRegex(RuntimeError, "export failed"):
+                helpers["_spool_scene_inference_pair_cache_state"](
+                    "scene-a", tracker, cfg, {}
+                )
+
+            class BrokenManager:
+                def __setitem__(self, key, value):
+                    raise RuntimeError("manager failed")
+
+            tracker.export_inference_pair_cache_state = Mock(
+                return_value={"groups": []}
+            )
+            with self.assertRaisesRegex(RuntimeError, "manager failed"):
+                helpers["_spool_scene_inference_pair_cache_state"](
+                    "scene-b", tracker, cfg, BrokenManager()
+                )
 
     def test_merge_is_sorted_and_atomic_writer_argument_order_is_path_payload(self):
         merge_order = []
@@ -901,40 +1096,46 @@ class MainCacheOutputWiringTest(unittest.TestCase):
             build_inference_pair_cache_manifest=Mock(),
             build_association_runtime_manifest=Mock(),
             InferencePairCacheAccumulator=Accumulator,
-            atomic_write_pickle=lambda path, payload: writes.append(
-                ("pickle", path, payload)
-            ),
-            atomic_write_json=lambda path, payload: writes.append(
-                ("json", path, payload)
-            ),
+            atomic_write_pickle_json_pair=lambda *args: writes.append(args),
         )
-        cfg = self._base_cfg()
-        cfg["INFERENCE_PAIR_CACHE"].update(
-            {
-                "ENABLED": True,
-                "OUTPUT_PATH": "pairs.pkl",
-                "SUMMARY_PATH": "summary.json",
-            }
-        )
-        cfg["_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST"] = {"manifest": 1}
-        result = helpers["_write_merged_inference_pair_cache"](
-            cfg,
-            {
-                "scene-b": {"scene": "scene-b"},
-                "scene-a": {"scene": "scene-a"},
-            },
-        )
-        self.assertEqual(merge_order, ["scene-a", "scene-b"])
-        self.assertEqual(writes[0], ("pickle", "pairs.pkl", result[0]))
-        self.assertEqual(writes[1], ("json", "summary.json", result[1]))
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = self._base_cfg()
+            cfg["INFERENCE_PAIR_CACHE"].update(
+                {
+                    "ENABLED": True,
+                    "OUTPUT_PATH": "pairs.pkl",
+                    "SUMMARY_PATH": "summary.json",
+                }
+            )
+            cfg["_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST"] = {"manifest": 1}
+            spool = helpers["_create_inference_pair_cache_spool"](
+                cfg, directory
+            )
+            markers = {}
+            for scene_id in ("scene-b", "scene-a"):
+                state_path = Path(spool) / f"{scene_id}.pkl"
+                atomic_write_pickle(state_path, {"scene": scene_id})
+                markers[scene_id] = {
+                    "kind": "state",
+                    "scene_id": scene_id,
+                    "state_path": str(state_path),
+                }
+            result = helpers["_write_merged_inference_pair_cache"](
+                cfg, markers
+            )
+            self.assertEqual(merge_order, ["scene-a", "scene-b"])
+            self.assertEqual(
+                writes[0],
+                ("pairs.pkl", result[0], "summary.json", result[1]),
+            )
+            self.assertFalse(Path(spool).exists())
 
     def test_disabled_write_is_noop(self):
         writer = Mock(side_effect=AssertionError("must not write"))
         helpers = self._helpers(
             build_inference_pair_cache_manifest=Mock(),
             build_association_runtime_manifest=Mock(),
-            atomic_write_pickle=writer,
-            atomic_write_json=writer,
+            atomic_write_pickle_json_pair=writer,
         )
         self.assertIsNone(
             helpers["_write_merged_inference_pair_cache"](
@@ -951,25 +1152,37 @@ class MainCacheOutputWiringTest(unittest.TestCase):
             def merge_state(self, state):
                 raise RuntimeError("merge failed")
 
-        cfg = self._base_cfg()
-        cfg["INFERENCE_PAIR_CACHE"].update(
-            {
-                "ENABLED": True,
-                "OUTPUT_PATH": "pairs.pkl",
-                "SUMMARY_PATH": "summary.json",
-                "STRICT": True,
-            }
-        )
-        cfg["_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST"] = {}
-        helpers = self._helpers(
-            build_inference_pair_cache_manifest=Mock(),
-            build_association_runtime_manifest=Mock(),
-            InferencePairCacheAccumulator=MergeFailureAccumulator,
-        )
-        with self.assertRaisesRegex(RuntimeError, "merge failed"):
-            helpers["_write_merged_inference_pair_cache"](
-                cfg, {"scene-a": {"bad": True}}
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = self._base_cfg()
+            cfg["INFERENCE_PAIR_CACHE"].update(
+                {
+                    "ENABLED": True,
+                    "OUTPUT_PATH": "pairs.pkl",
+                    "SUMMARY_PATH": "summary.json",
+                    "STRICT": True,
+                }
             )
+            cfg["_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST"] = {}
+            helpers = self._helpers(
+                build_inference_pair_cache_manifest=Mock(),
+                build_association_runtime_manifest=Mock(),
+                InferencePairCacheAccumulator=MergeFailureAccumulator,
+            )
+            spool = helpers["_create_inference_pair_cache_spool"](
+                cfg, directory
+            )
+            state_path = Path(spool) / "state.pkl"
+            atomic_write_pickle(state_path, {"bad": True})
+            marker = {
+                "scene-a": {
+                    "kind": "state",
+                    "scene_id": "scene-a",
+                    "state_path": str(state_path),
+                }
+            }
+            with self.assertRaisesRegex(RuntimeError, "merge failed"):
+                helpers["_write_merged_inference_pair_cache"](cfg, marker)
+            self.assertFalse(Path(spool).exists())
 
         class WriteAccumulator:
             def __init__(self, **kwargs):
@@ -988,8 +1201,9 @@ class MainCacheOutputWiringTest(unittest.TestCase):
             build_inference_pair_cache_manifest=Mock(),
             build_association_runtime_manifest=Mock(),
             InferencePairCacheAccumulator=WriteAccumulator,
-            atomic_write_pickle=Mock(side_effect=OSError("write failed")),
-            atomic_write_json=Mock(),
+            atomic_write_pickle_json_pair=Mock(
+                side_effect=OSError("write failed")
+            ),
         )
         with self.assertRaisesRegex(OSError, "write failed"):
             helpers["_write_merged_inference_pair_cache"](cfg, {})
@@ -1016,18 +1230,81 @@ class MainCacheOutputWiringTest(unittest.TestCase):
             def to_summary(self):
                 return {"groups": list(self.valid), "errors": copy.deepcopy(errors)}
 
-        def fail_pickle(path, payload):
-            writes.append(("pickle", path, payload))
+        def fail_pair(*args):
+            writes.append(args)
             raise OSError("disk full")
 
         helpers = self._helpers(
             build_inference_pair_cache_manifest=Mock(),
             build_association_runtime_manifest=Mock(),
             InferencePairCacheAccumulator=Accumulator,
-            atomic_write_pickle=fail_pickle,
-            atomic_write_json=lambda path, payload: writes.append(
-                ("json", path, payload)
-            ),
+            atomic_write_pickle_json_pair=fail_pair,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = self._base_cfg()
+            cfg["INFERENCE_PAIR_CACHE"].update(
+                {
+                    "ENABLED": True,
+                    "OUTPUT_PATH": "pairs.pkl",
+                    "SUMMARY_PATH": "summary.json",
+                    "STRICT": False,
+                }
+            )
+            cfg["_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST"] = {}
+            spool = helpers["_create_inference_pair_cache_spool"](
+                cfg, directory
+            )
+            valid_path = Path(spool) / "valid.pkl"
+            atomic_write_pickle(valid_path, {"scene": "scene-b"})
+            payload, summary = helpers["_write_merged_inference_pair_cache"](
+                cfg,
+                {
+                    "scene-b": {
+                        "kind": "state",
+                        "scene_id": "scene-b",
+                        "state_path": str(valid_path),
+                    },
+                    "scene-a": {
+                        "kind": "state",
+                        "scene_id": "scene-a",
+                        "state_path": str(Path(spool) / "missing.pkl"),
+                    },
+                },
+            )
+            self.assertEqual(payload["groups"], ["scene-b"])
+            self.assertEqual(summary["groups"], ["scene-b"])
+            self.assertEqual(
+                [item["stage"] for item in errors],
+                ["worker_merge", "write_pair"],
+            )
+            self.assertEqual(len(writes), 1)
+
+    def test_parent_manager_read_failure_is_strictness_controlled(self):
+        class BrokenManager:
+            def keys(self):
+                raise RuntimeError("manager read failed")
+
+        errors = []
+
+        class Accumulator:
+            def __init__(self, **kwargs):
+                pass
+
+            def add_error(self, record):
+                errors.append(validate_error_record(record))
+
+            def to_payload(self):
+                return {"groups": []}
+
+            def to_summary(self):
+                return {"errors": copy.deepcopy(errors)}
+
+        pair_writer = Mock()
+        helpers = self._helpers(
+            build_inference_pair_cache_manifest=Mock(),
+            build_association_runtime_manifest=Mock(),
+            InferencePairCacheAccumulator=Accumulator,
+            atomic_write_pickle_json_pair=pair_writer,
         )
         cfg = self._base_cfg()
         cfg["INFERENCE_PAIR_CACHE"].update(
@@ -1040,19 +1317,43 @@ class MainCacheOutputWiringTest(unittest.TestCase):
         )
         cfg["_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST"] = {}
         payload, summary = helpers["_write_merged_inference_pair_cache"](
-            cfg,
-            {
-                "scene-b": {"scene": "scene-b"},
-                "scene-a": {"bad": True},
-            },
+            cfg, BrokenManager()
         )
-        self.assertEqual(payload["groups"], ["scene-b"])
-        self.assertEqual(summary["groups"], ["scene-b"])
-        self.assertEqual([item["stage"] for item in errors], [
-            "worker_merge",
-            "write_pickle",
-        ])
-        self.assertEqual(writes[-1][0:2], ("json", "summary.json"))
+        self.assertEqual(payload, {"groups": []})
+        self.assertEqual(summary["errors"][0]["stage"], "manager_read")
+        pair_writer.assert_called_once()
+
+        cfg["INFERENCE_PAIR_CACHE"]["STRICT"] = True
+        with self.assertRaisesRegex(RuntimeError, "manager read failed"):
+            helpers["_write_merged_inference_pair_cache"](
+                cfg, BrokenManager()
+            )
+
+    def test_top_level_non_strict_cache_failure_cannot_escape(self):
+        class BrokenAccumulator:
+            def __init__(self, **kwargs):
+                raise RuntimeError("accumulator failed")
+
+        helpers = self._helpers(
+            build_inference_pair_cache_manifest=Mock(),
+            build_association_runtime_manifest=Mock(),
+            InferencePairCacheAccumulator=BrokenAccumulator,
+        )
+        cfg = self._base_cfg()
+        cfg["INFERENCE_PAIR_CACHE"].update(
+            {
+                "ENABLED": True,
+                "OUTPUT_PATH": "pairs.pkl",
+                "SUMMARY_PATH": "summary.json",
+                "STRICT": False,
+            }
+        )
+        self.assertIsNone(
+            helpers["_write_merged_inference_pair_cache"](cfg, {})
+        )
+        cfg["INFERENCE_PAIR_CACHE"]["STRICT"] = True
+        with self.assertRaisesRegex(RuntimeError, "accumulator failed"):
+            helpers["_write_merged_inference_pair_cache"](cfg, {})
 
     def test_real_atomic_outputs_have_consistent_manifest_and_groups(self):
         helpers = self._helpers(
@@ -1074,8 +1375,20 @@ class MainCacheOutputWiringTest(unittest.TestCase):
                 }
             )
             cfg["_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST"] = manifest
+            spool = helpers["_create_inference_pair_cache_spool"](
+                cfg, directory
+            )
+            state_path = Path(spool) / "state.pkl"
+            atomic_write_pickle(state_path, state)
             payload, summary = helpers["_write_merged_inference_pair_cache"](
-                cfg, {"scene-a": state}
+                cfg,
+                {
+                    "scene-a": {
+                        "kind": "state",
+                        "scene_id": "scene-a",
+                        "state_path": str(state_path),
+                    }
+                },
             )
             self.assertEqual(
                 payload["runtime_manifest"], summary["runtime_manifest"]
@@ -1100,8 +1413,13 @@ class MainCacheOutputWiringTest(unittest.TestCase):
             [item.arg for item in run_def.args.args],
         )
         source = MAIN_PATH.read_text(encoding="utf-8")
+        run_source = ast.get_source_segment(source, run_def)
         self.assertIn("scene_pair_cache_states=scene_pair_cache_states", source)
         self.assertIn("_write_merged_inference_pair_cache(", source)
+        self.assertLess(
+            run_source.index("tracking_results[scene_id] = all_trajs"),
+            run_source.index("_spool_scene_inference_pair_cache_state("),
+        )
 
     def test_cli_flags_are_declared_and_overrides_precede_manifest_build(self):
         source = MAIN_PATH.read_text(encoding="utf-8")
@@ -1123,7 +1441,7 @@ class MainCacheOutputWiringTest(unittest.TestCase):
             source,
         )
 
-    def test_strict_json_write_failure_raises_and_non_strict_records_error(self):
+    def test_strict_pair_write_failure_raises_and_non_strict_records_error(self):
         errors = []
 
         class Accumulator:
@@ -1155,22 +1473,21 @@ class MainCacheOutputWiringTest(unittest.TestCase):
             value["_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST"] = {}
             return value
 
-        json_writer = Mock(side_effect=OSError("json write failed"))
+        pair_writer = Mock(side_effect=OSError("pair write failed"))
         helpers = self._helpers(
             build_inference_pair_cache_manifest=Mock(),
             build_association_runtime_manifest=Mock(),
             InferencePairCacheAccumulator=Accumulator,
-            atomic_write_pickle=Mock(),
-            atomic_write_json=json_writer,
+            atomic_write_pickle_json_pair=pair_writer,
         )
-        with self.assertRaisesRegex(OSError, "json write failed"):
+        with self.assertRaisesRegex(OSError, "pair write failed"):
             helpers["_write_merged_inference_pair_cache"](cfg(True), {})
 
         payload, summary = helpers["_write_merged_inference_pair_cache"](
             cfg(False), {}
         )
         self.assertEqual(payload, {"groups": []})
-        self.assertEqual(summary["errors"][-1]["stage"], "write_json")
+        self.assertEqual(summary["errors"][-1]["stage"], "write_pair")
 
 
 if __name__ == "__main__":

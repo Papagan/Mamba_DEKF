@@ -1343,11 +1343,18 @@ class Base3DTracker:
             )
         except Exception as exc:
             if cache_enabled:
-                self._record_inference_pair_payload_error(
-                    frame_info,
-                    "invalid association embeddings: "
-                    f"{type(exc).__name__}: {exc}",
-                )
+                try:
+                    self._record_inference_pair_payload_error(
+                        frame_info,
+                        "invalid association embeddings: "
+                        f"{type(exc).__name__}: {exc}",
+                    )
+                except Exception:
+                    if self.pairwise_association_head is None:
+                        raise
+            if self.pairwise_association_head is not None:
+                raise
+            if cache_enabled:
                 return None, None
             raise
         if (

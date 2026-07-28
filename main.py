@@ -6,13 +6,19 @@ import json, yaml
 import logging
 import copy
 import argparse
+import hashlib
 import os
+import pickle
+import shutil
+import tempfile
 import time
 import multiprocessing
 import math
+import uuid
 from tqdm import tqdm
 from datetime import datetime
 from functools import partial
+from pathlib import Path
 from kalmanfilter.noise_audit import NoiseAuditAccumulator
 from tracker.base_tracker import Base3DTracker
 from tracker.dirty_suppressor_audit import DirtySuppressorAuditAccumulator
@@ -20,9 +26,10 @@ from tracker.association_head_audit import AssociationHeadAuditAccumulator
 from tracker.association_runtime_manifest import build_association_runtime_manifest
 from tracker.inference_pair_cache import (
     InferencePairCacheAccumulator,
-    atomic_write_json,
     atomic_write_pickle,
+    atomic_write_pickle_json_pair,
     build_inference_pair_cache_manifest,
+    paths_refer_to_same_file,
 )
 from dataset.baseversion_dataset import BaseVersionTrackingDataset
 from evaluation.static_evaluation.kitti.evaluation_HOTA.scripts.run_kitti import (
@@ -243,9 +250,7 @@ def _default_inference_pair_cache_summary_path(output_path):
 
 
 def _validate_inference_pair_cache_output_paths(output_path, summary_path):
-    if os.path.abspath(os.path.expanduser(output_path)) == os.path.abspath(
-        os.path.expanduser(summary_path)
-    ):
+    if paths_refer_to_same_file(output_path, summary_path):
         raise ValueError(
             "inference pair cache output and summary paths must differ"
         )
@@ -300,7 +305,13 @@ def _effective_cfg_for_runtime_manifest(cfg):
     """Remove injected runtime identity before hashing effective configuration."""
     effective_cfg = copy.deepcopy(cfg)
     for key in list(effective_cfg):
-        if key.startswith("_") and key.endswith("RUNTIME_MANIFEST"):
+        if (
+            key.startswith("_")
+            and (
+                key.endswith("RUNTIME_MANIFEST")
+                or key.startswith("_INFERENCE_PAIR_CACHE_")
+            )
+        ):
             del effective_cfg[key]
     return effective_cfg
 
@@ -334,7 +345,46 @@ def _build_runtime_manifests(cfg, *, config_path, process_count, git_root):
     cfg["_ASSOCIATION_AUDIT_RUNTIME_MANIFEST"] = association_manifest
 
 
-def _collect_scene_inference_pair_cache_state(
+def _create_inference_pair_cache_spool(cfg, parent_dir):
+    if not _inference_pair_cache_enabled(cfg):
+        return None
+    spool_dir = tempfile.mkdtemp(
+        prefix=".inference_pair_cache_spool.",
+        dir=str(parent_dir),
+    )
+    cfg["_INFERENCE_PAIR_CACHE_SPOOL_DIR"] = spool_dir
+    return spool_dir
+
+
+def _cleanup_inference_pair_cache_spool(cfg):
+    spool_value = cfg.pop("_INFERENCE_PAIR_CACHE_SPOOL_DIR", None)
+    if not spool_value:
+        return
+    spool_path = Path(spool_value).expanduser().resolve(strict=False)
+    if not spool_path.name.startswith(".inference_pair_cache_spool."):
+        raise ValueError(f"refusing to remove unsafe spool path: {spool_path}")
+    shutil.rmtree(spool_path, ignore_errors=False)
+
+
+def _scene_inference_pair_cache_spool_path(scene_id, cfg):
+    spool_value = cfg.get("_INFERENCE_PAIR_CACHE_SPOOL_DIR")
+    if not isinstance(spool_value, str) or not spool_value.strip():
+        raise ValueError("inference pair cache spool directory is unavailable")
+    scene_text = str(scene_id)
+    scene_digest = hashlib.sha256(scene_text.encode("utf-8")).hexdigest()
+    filename = f"{scene_digest}.{uuid.uuid4().hex}.pkl"
+    return Path(spool_value) / filename
+
+
+def _publish_scene_inference_pair_cache_marker(
+    scene_id, scene_pair_cache_states, marker
+):
+    if scene_pair_cache_states is None:
+        raise ValueError("inference pair cache manager state is unavailable")
+    scene_pair_cache_states[scene_id] = marker
+
+
+def _spool_scene_inference_pair_cache_state(
     scene_id, tracker, cfg, scene_pair_cache_states
 ):
     if (
@@ -342,9 +392,80 @@ def _collect_scene_inference_pair_cache_state(
         or scene_pair_cache_states is None
     ):
         return
-    state = tracker.export_inference_pair_cache_state()
-    if state is not None:
-        scene_pair_cache_states[scene_id] = state
+    strict = bool(
+        ((cfg.get("INFERENCE_PAIR_CACHE") or {}).get("STRICT", False))
+    )
+    try:
+        state = tracker.export_inference_pair_cache_state()
+    except Exception as exc:
+        marker = {
+            "kind": "error",
+            "scene_id": str(scene_id),
+            "error": _inference_pair_cache_error_record(
+                scene_id, "worker_export", exc
+            ),
+        }
+        try:
+            _publish_scene_inference_pair_cache_marker(
+                scene_id, scene_pair_cache_states, marker
+            )
+        except Exception as manager_exc:
+            print(
+                "[main] WARNING: failed to publish inference pair cache "
+                f"error marker for scene {scene_id}: {manager_exc}"
+            )
+        if strict:
+            raise
+        print(
+            "[main] WARNING: failed to export inference pair cache "
+            f"for scene {scene_id}: {exc}"
+        )
+        return
+    if state is None:
+        return
+
+    spool_path = None
+    try:
+        spool_path = _scene_inference_pair_cache_spool_path(scene_id, cfg)
+        atomic_write_pickle(spool_path, state)
+        marker = {
+            "kind": "state",
+            "scene_id": str(scene_id),
+            "state_path": str(spool_path),
+        }
+        _publish_scene_inference_pair_cache_marker(
+            scene_id, scene_pair_cache_states, marker
+        )
+    except Exception as exc:
+        if spool_path is not None:
+            try:
+                spool_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+        marker = {
+            "kind": "error",
+            "scene_id": str(scene_id),
+            "error": _inference_pair_cache_error_record(
+                scene_id, "worker_spool", exc
+            ),
+        }
+        try:
+            _publish_scene_inference_pair_cache_marker(
+                scene_id, scene_pair_cache_states, marker
+            )
+        except Exception as manager_exc:
+            print(
+                "[main] WARNING: failed to publish inference pair cache "
+                f"spool error for scene {scene_id}: {manager_exc}"
+            )
+        if strict:
+            raise
+        print(
+            "[main] WARNING: failed to spool inference pair cache "
+            f"for scene {scene_id}: {exc}"
+        )
 
 
 def _inference_pair_cache_error_record(scene_id, stage, error):
@@ -364,40 +485,41 @@ def _inference_pair_cache_error_record(scene_id, stage, error):
     }
 
 
-def _write_merged_inference_pair_cache(cfg, scene_pair_cache_states):
+def _write_merged_inference_pair_cache_impl(cfg, scene_pair_cache_states):
     if not _inference_pair_cache_enabled(cfg):
         return None
 
     cache_cfg = cfg.get("INFERENCE_PAIR_CACHE", {}) or {}
     strict = bool(cache_cfg.get("STRICT", False))
-    output_path = cache_cfg.get("OUTPUT_PATH")
-    if not isinstance(output_path, str) or not output_path.strip():
-        error = ValueError(
-            "INFERENCE_PAIR_CACHE.OUTPUT_PATH must be a nonblank string"
-        )
-        if strict:
-            raise error
-        print(f"[main] WARNING: inference pair cache disabled at write: {error}")
-        return None
-    summary_path = cache_cfg.get("SUMMARY_PATH")
-    if summary_path is None:
-        summary_path = _default_inference_pair_cache_summary_path(output_path)
-    if not isinstance(summary_path, str) or not summary_path.strip():
-        error = ValueError(
-            "INFERENCE_PAIR_CACHE.SUMMARY_PATH must be a nonblank string"
-        )
-        if strict:
-            raise error
-        print(f"[main] WARNING: inference pair cache disabled at write: {error}")
-        return None
     try:
+        output_path = cache_cfg.get("OUTPUT_PATH")
+        if not isinstance(output_path, str) or not output_path.strip():
+            raise ValueError(
+                "INFERENCE_PAIR_CACHE.OUTPUT_PATH must be a nonblank string"
+            )
+        summary_path = cache_cfg.get("SUMMARY_PATH")
+        if summary_path is None:
+            summary_path = _default_inference_pair_cache_summary_path(
+                output_path
+            )
+        if not isinstance(summary_path, str) or not summary_path.strip():
+            raise ValueError(
+                "INFERENCE_PAIR_CACHE.SUMMARY_PATH must be a nonblank string"
+            )
         _validate_inference_pair_cache_output_paths(
             output_path, summary_path
         )
-    except ValueError as error:
+    except Exception as error:
         if strict:
             raise
         print(f"[main] WARNING: inference pair cache disabled at write: {error}")
+        try:
+            _cleanup_inference_pair_cache_spool(cfg)
+        except Exception as cleanup_error:
+            print(
+                "[main] WARNING: failed to clean inference pair cache spool: "
+                f"{cleanup_error}"
+            )
         return None
 
     merged = InferencePairCacheAccumulator(
@@ -409,58 +531,149 @@ def _write_merged_inference_pair_cache(cfg, scene_pair_cache_states):
         ),
         require_audit_gt=bool(cache_cfg.get("REQUIRE_AUDIT_GT", False)),
     )
-    states = scene_pair_cache_states or {}
-    for scene_id in sorted(states.keys()):
+    try:
         try:
-            merged.merge_state(states[scene_id])
+            scene_ids = sorted(
+                list(scene_pair_cache_states.keys())
+                if scene_pair_cache_states is not None
+                else [],
+                key=str,
+            )
         except Exception as exc:
             if strict:
                 raise
             merged.add_error(
                 _inference_pair_cache_error_record(
-                    scene_id, "worker_merge", exc
+                    "parent", "manager_read", exc
                 )
             )
             print(
-                "[main] WARNING: failed to merge inference pair cache "
-                f"for scene {scene_id}: {exc}"
+                "[main] WARNING: failed to enumerate inference pair cache "
+                f"worker markers: {exc}"
             )
+            scene_ids = []
 
-    payload = merged.to_payload()
-    try:
-        atomic_write_pickle(output_path, payload)
-        print(f"[main] Wrote inference pair cache to {output_path}")
-    except Exception as exc:
-        if strict:
-            raise
-        merged.add_error(
-            _inference_pair_cache_error_record(
-                "parent", "write_pickle", exc
-            )
+        spool_root_value = cfg.get("_INFERENCE_PAIR_CACHE_SPOOL_DIR")
+        spool_root = (
+            Path(spool_root_value).expanduser().resolve(strict=False)
+            if isinstance(spool_root_value, str) and spool_root_value
+            else None
         )
-        print(
-            "[main] WARNING: failed to write inference pair cache "
-            f"to {output_path}: {exc}"
-        )
+        for scene_id in scene_ids:
+            spool_path = None
+            try:
+                marker = scene_pair_cache_states[scene_id]
+                if not isinstance(marker, dict):
+                    raise TypeError("worker cache marker must be a mapping")
+                if marker.get("kind") == "error":
+                    merged.add_error(marker["error"])
+                    continue
+                if marker.get("kind") != "state":
+                    raise ValueError("worker cache marker kind is invalid")
+                spool_path = Path(marker["state_path"]).expanduser().resolve(
+                    strict=True
+                )
+                if (
+                    spool_root is None
+                    or spool_path.parent != spool_root
+                ):
+                    raise ValueError(
+                        "worker cache state path escapes the spool directory"
+                    )
+                with spool_path.open("rb") as file_obj:
+                    state = pickle.load(file_obj)
+                merged.merge_state(state)
+                del state
+            except Exception as exc:
+                if strict:
+                    raise
+                merged.add_error(
+                    _inference_pair_cache_error_record(
+                        scene_id, "worker_merge", exc
+                    )
+                )
+                print(
+                    "[main] WARNING: failed to merge inference pair cache "
+                    f"for scene {scene_id}: {exc}"
+                )
+            finally:
+                if spool_path is not None:
+                    try:
+                        spool_path.unlink()
+                    except FileNotFoundError:
+                        pass
+                    except OSError as cleanup_error:
+                        if strict:
+                            raise
+                        print(
+                            "[main] WARNING: failed to remove inference pair "
+                            f"cache spool {spool_path}: {cleanup_error}"
+                        )
 
-    summary = merged.to_summary()
-    try:
-        atomic_write_json(summary_path, summary)
-        print(f"[main] Wrote inference pair cache summary to {summary_path}")
-    except Exception as exc:
-        if strict:
-            raise
-        merged.add_error(
-            _inference_pair_cache_error_record(
-                "parent", "write_json", exc
-            )
-        )
+        payload = merged.to_payload()
         summary = merged.to_summary()
-        print(
-            "[main] WARNING: failed to write inference pair cache summary "
-            f"to {summary_path}: {exc}"
+        try:
+            atomic_write_pickle_json_pair(
+                output_path,
+                payload,
+                summary_path,
+                summary,
+            )
+            print(
+                "[main] Wrote inference pair cache and summary to "
+                f"{output_path} and {summary_path}"
+            )
+        except Exception as exc:
+            if strict:
+                raise
+            merged.add_error(
+                _inference_pair_cache_error_record(
+                    "parent", "write_pair", exc
+                )
+            )
+            summary = merged.to_summary()
+            print(
+                "[main] WARNING: failed to publish inference pair cache pair "
+                f"to {output_path} and {summary_path}: {exc}"
+            )
+        return payload, summary
+    finally:
+        try:
+            _cleanup_inference_pair_cache_spool(cfg)
+        except Exception as cleanup_error:
+            if strict:
+                raise
+            print(
+                "[main] WARNING: failed to clean inference pair cache spool: "
+                f"{cleanup_error}"
+            )
+
+
+def _write_merged_inference_pair_cache(cfg, scene_pair_cache_states):
+    if not _inference_pair_cache_enabled(cfg):
+        return None
+    strict = bool(
+        ((cfg.get("INFERENCE_PAIR_CACHE") or {}).get("STRICT", False))
+    )
+    try:
+        return _write_merged_inference_pair_cache_impl(
+            cfg, scene_pair_cache_states
         )
-    return payload, summary
+    except Exception as exc:
+        try:
+            _cleanup_inference_pair_cache_spool(cfg)
+        except Exception as cleanup_error:
+            print(
+                "[main] WARNING: failed to clean inference pair cache spool: "
+                f"{cleanup_error}"
+            )
+        if strict:
+            raise
+        print(
+            "[main] WARNING: inference pair cache failed without affecting "
+            f"tracking results: {exc}"
+        )
+        return None
 
 
 def run(
@@ -538,23 +751,23 @@ def run(
                 ):
                     del all_trajs[frame_id]["trajs"][track_id]
 
-    _collect_scene_inference_audit_state(scene_id, tracker, cfg, scene_audit_states)
-    _collect_scene_dirty_suppressor_audit_state(scene_id, tracker, cfg, scene_dirty_states)
-    _collect_scene_association_head_audit_state(scene_id, tracker, cfg, scene_assoc_states)
-    _collect_scene_inference_pair_cache_state(
-        scene_id, tracker, cfg, scene_pair_cache_states
-    )
     scene_perf_stats[scene_id] = {
         "frames": len(dataset),
         "tracking_seconds": tracking_seconds,
         "tracking_fps": len(dataset) / tracking_seconds if tracking_seconds > 0 else 0.0,
     }
+    tracking_results[scene_id] = all_trajs
     print(
         f"[PERF] scene={scene_id} frames={len(dataset)} "
         f"tracking_time={tracking_seconds:.3f}s "
         f"tracking_fps={scene_perf_stats[scene_id]['tracking_fps']:.2f}"
     )
-    tracking_results[scene_id] = all_trajs
+    _collect_scene_inference_audit_state(scene_id, tracker, cfg, scene_audit_states)
+    _collect_scene_dirty_suppressor_audit_state(scene_id, tracker, cfg, scene_dirty_states)
+    _collect_scene_association_head_audit_state(scene_id, tracker, cfg, scene_assoc_states)
+    _spool_scene_inference_pair_cache_state(
+        scene_id, tracker, cfg, scene_pair_cache_states
+    )
 
 
 if __name__ == "__main__":
@@ -627,6 +840,7 @@ if __name__ == "__main__":
     )
     os.makedirs(save_path, exist_ok=True)
     cfg["SAVE_PATH"] = save_path
+    _create_inference_pair_cache_spool(cfg, save_path)
 
     start_time = time.time()
 
@@ -657,44 +871,62 @@ if __name__ == "__main__":
         manager.dict() if _inference_pair_cache_enabled(cfg) else None
     )
     scene_perf_stats = manager.dict()
-    if args.process > 1:
-        pool = multiprocessing.Pool(args.process)
-        func = partial(
-            run,
-            scenes_data=data,
-            cfg=cfg,
-            args=args,
-            tracking_results=tracking_results,
-            scene_audit_states=scene_audit_states,
-            scene_dirty_states=scene_dirty_states,
-            scene_assoc_states=scene_assoc_states,
-            scene_pair_cache_states=scene_pair_cache_states,
-            scene_perf_stats=scene_perf_stats,
-        )
-        pool.map(func, scene_lists)
-        pool.close()
-        pool.join()
-    else:
-        for scene_id in tqdm(scene_lists, desc="Running scenes"):
-            run(
-                scene_id,
-                data,
-                cfg,
-                args,
-                tracking_results,
-                scene_audit_states,
-                scene_dirty_states,
-                scene_assoc_states,
-                scene_pair_cache_states,
-                scene_perf_stats,
+    try:
+        if args.process > 1:
+            pool = multiprocessing.Pool(args.process)
+            func = partial(
+                run,
+                scenes_data=data,
+                cfg=cfg,
+                args=args,
+                tracking_results=tracking_results,
+                scene_audit_states=scene_audit_states,
+                scene_dirty_states=scene_dirty_states,
+                scene_assoc_states=scene_assoc_states,
+                scene_pair_cache_states=scene_pair_cache_states,
+                scene_perf_stats=scene_perf_stats,
             )
-    tracking_results = dict(tracking_results)
-    scene_audit_states = dict(scene_audit_states)
-    scene_dirty_states = dict(scene_dirty_states)
-    scene_assoc_states = dict(scene_assoc_states)
-    if scene_pair_cache_states is not None:
-        scene_pair_cache_states = dict(scene_pair_cache_states)
-    scene_perf_stats = dict(scene_perf_stats)
+            pool.map(func, scene_lists)
+            pool.close()
+            pool.join()
+        else:
+            for scene_id in tqdm(scene_lists, desc="Running scenes"):
+                run(
+                    scene_id,
+                    data,
+                    cfg,
+                    args,
+                    tracking_results,
+                    scene_audit_states,
+                    scene_dirty_states,
+                    scene_assoc_states,
+                    scene_pair_cache_states,
+                    scene_perf_stats,
+                )
+    except BaseException:
+        try:
+            _cleanup_inference_pair_cache_spool(cfg)
+        except Exception as cleanup_error:
+            print(
+                "[main] WARNING: failed to clean inference pair cache spool: "
+                f"{cleanup_error}"
+            )
+        raise
+    try:
+        tracking_results = dict(tracking_results)
+        scene_audit_states = dict(scene_audit_states)
+        scene_dirty_states = dict(scene_dirty_states)
+        scene_assoc_states = dict(scene_assoc_states)
+        scene_perf_stats = dict(scene_perf_stats)
+    except BaseException:
+        try:
+            _cleanup_inference_pair_cache_spool(cfg)
+        except Exception as cleanup_error:
+            print(
+                "[main] WARNING: failed to clean inference pair cache spool: "
+                f"{cleanup_error}"
+            )
+        raise
     total_tracking_frames = sum(int(item.get("frames", 0)) for item in scene_perf_stats.values())
     total_tracking_seconds = sum(float(item.get("tracking_seconds", 0.0)) for item in scene_perf_stats.values())
     if total_tracking_seconds > 0:
@@ -703,10 +935,10 @@ if __name__ == "__main__":
             f"total_tracking_time={total_tracking_seconds:.3f}s "
             f"tracking_fps={total_tracking_frames / total_tracking_seconds:.2f}"
         )
+    _write_merged_inference_pair_cache(cfg, scene_pair_cache_states)
     _write_merged_infer_noise_audit(cfg, scene_audit_states)
     _write_merged_dirty_suppressor_audit(cfg, scene_dirty_states)
     _write_merged_association_head_audit(cfg, scene_assoc_states)
-    _write_merged_inference_pair_cache(cfg, scene_pair_cache_states)
 
     if args.dataset == "kitti":
         save_results_kitti(tracking_results, cfg)

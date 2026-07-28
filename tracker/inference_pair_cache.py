@@ -2113,6 +2113,29 @@ class AtomicWriteCleanupError(RuntimeError):
         )
 
 
+class AtomicPairWriteRollbackError(RuntimeError):
+    """Retain pair-publication failure and every failed rollback action."""
+
+    def __init__(self, primary_error, rollback_failures):
+        self.primary_error = primary_error
+        self.rollback_failures = [
+            {
+                "action": action,
+                "path": Path(path),
+                "error": error,
+            }
+            for action, path, error in rollback_failures
+        ]
+        details = "; ".join(
+            f"{item['action']} {item['path']}: {item['error']}"
+            for item in self.rollback_failures
+        )
+        super().__init__(
+            f"atomic pair publication failed: {primary_error}; "
+            f"rollback failed: {details}"
+        )
+
+
 def _atomic_write(path, write_value):
     """Write atomically, restoring the previous path if durability fails."""
     destination = Path(path)
@@ -2238,3 +2261,239 @@ def atomic_write_json(path, payload):
         file_obj.write(serialized.encode("utf-8"))
 
     _atomic_write(path, write_json)
+
+
+def paths_refer_to_same_file(first_path, second_path):
+    """Detect lexical, resolved, hard-link, and symlink destination aliases."""
+    first = Path(first_path).expanduser().resolve(strict=False)
+    second = Path(second_path).expanduser().resolve(strict=False)
+    if first == second:
+        return True
+    if first.exists() and second.exists():
+        try:
+            return os.path.samefile(str(first), str(second))
+        except OSError:
+            return False
+    return False
+
+
+def _stage_atomic_value(destination, write_value):
+    destination = Path(destination)
+    _ensure_durable_directory(destination.parent)
+    try:
+        destination_mode = stat.S_IMODE(destination.stat().st_mode)
+    except FileNotFoundError:
+        destination_mode = None
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=str(destination.parent),
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+    )
+    temporary = Path(temporary_name)
+    file_obj = None
+    try:
+        file_obj = os.fdopen(descriptor, "wb")
+        descriptor = None
+        write_value(file_obj)
+        file_obj.flush()
+        if destination_mode is not None:
+            os.fchmod(file_obj.fileno(), destination_mode)
+        os.fsync(file_obj.fileno())
+        file_obj.close()
+        return temporary
+    except BaseException as primary_error:
+        cleanup_failures = []
+        if file_obj is not None and not file_obj.closed:
+            try:
+                file_obj.close()
+            except BaseException as cleanup_error:
+                cleanup_failures.append(
+                    ("close_temporary_file", temporary, cleanup_error)
+                )
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except BaseException as cleanup_error:
+                cleanup_failures.append(
+                    ("close_temporary_descriptor", temporary, cleanup_error)
+                )
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+        except BaseException as cleanup_error:
+            cleanup_failures.append(
+                ("unlink_temporary", temporary, cleanup_error)
+            )
+        if cleanup_failures:
+            raise AtomicWriteCleanupError(
+                destination, primary_error, cleanup_failures
+            ) from primary_error
+        raise
+
+
+def atomic_write_pickle_json_pair(
+    pickle_path,
+    pickle_payload,
+    json_path,
+    json_payload,
+):
+    """Publish a pickle and JSON summary as one rollback-safe transaction."""
+    pickle_destination = Path(pickle_path).expanduser()
+    json_destination = Path(json_path).expanduser()
+    if paths_refer_to_same_file(pickle_destination, json_destination):
+        raise ValueError("pickle and JSON destinations must refer to different files")
+
+    normalized_json = _json_output_copy(json_payload)
+
+    def write_pickle(file_obj):
+        pickle.dump(
+            pickle_payload, file_obj, protocol=_PICKLE_PROTOCOL
+        )
+
+    def write_json(file_obj):
+        serialized = json.dumps(
+            normalized_json,
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=False,
+            allow_nan=False,
+        ) + "\n"
+        file_obj.write(serialized.encode("utf-8"))
+
+    entries = [
+        {
+            "destination": pickle_destination,
+            "writer": write_pickle,
+            "temporary": None,
+            "backup": None,
+            "existed": False,
+            "replaced": False,
+        },
+        {
+            "destination": json_destination,
+            "writer": write_json,
+            "temporary": None,
+            "backup": None,
+            "existed": False,
+            "replaced": False,
+        },
+    ]
+    try:
+        for entry in entries:
+            entry["temporary"] = _stage_atomic_value(
+                entry["destination"], entry["writer"]
+            )
+        for entry in entries:
+            destination = entry["destination"]
+            entry["existed"] = destination.exists()
+            if entry["existed"]:
+                entry["backup"] = _backup_destination(destination)
+        for entry in entries:
+            os.replace(
+                str(entry["temporary"]), str(entry["destination"])
+            )
+            entry["temporary"] = None
+            entry["replaced"] = True
+            _fsync_directory(entry["destination"].parent)
+    except BaseException as primary_error:
+        rollback_failures = []
+        for entry in reversed(entries):
+            if not entry["replaced"]:
+                continue
+            destination = entry["destination"]
+            try:
+                if entry["existed"]:
+                    os.replace(
+                        str(entry["backup"]), str(destination)
+                    )
+                    entry["backup"] = None
+                else:
+                    destination.unlink()
+            except BaseException as rollback_error:
+                rollback_failures.append(
+                    ("restore_destination", destination, rollback_error)
+                )
+        for parent in sorted(
+            {
+                entry["destination"].parent
+                for entry in entries
+                if entry["replaced"]
+            },
+            key=str,
+        ):
+            try:
+                _fsync_directory(parent)
+            except BaseException as rollback_error:
+                rollback_failures.append(
+                    ("fsync_rollback_directory", parent, rollback_error)
+                )
+
+        cleanup_failures = []
+        failed_rollback_paths = {
+            item[1]
+            for item in rollback_failures
+            if item[0] == "restore_destination"
+        }
+        for entry in entries:
+            temporary = entry["temporary"]
+            if temporary is not None:
+                try:
+                    temporary.unlink()
+                except FileNotFoundError:
+                    pass
+                except BaseException as cleanup_error:
+                    cleanup_failures.append(
+                        ("unlink_temporary", temporary, cleanup_error)
+                    )
+            backup = entry["backup"]
+            if (
+                backup is not None
+                and entry["destination"] not in failed_rollback_paths
+            ):
+                try:
+                    backup.unlink()
+                    entry["backup"] = None
+                except FileNotFoundError:
+                    entry["backup"] = None
+                except BaseException as cleanup_error:
+                    cleanup_failures.append(
+                        ("unlink_backup", backup, cleanup_error)
+                    )
+        if rollback_failures:
+            rollback_failures.extend(cleanup_failures)
+            raise AtomicPairWriteRollbackError(
+                primary_error, rollback_failures
+            ) from primary_error
+        if cleanup_failures:
+            raise AtomicWriteCleanupError(
+                pickle_destination, primary_error, cleanup_failures
+            ) from primary_error
+        raise
+
+    cleanup_failures = []
+    for entry in entries:
+        backup = entry["backup"]
+        if backup is not None:
+            try:
+                backup.unlink()
+            except OSError as cleanup_error:
+                cleanup_failures.append(
+                    ("unlink_backup", backup, cleanup_error)
+                )
+    for parent in sorted(
+        {entry["destination"].parent for entry in entries}, key=str
+    ):
+        try:
+            _fsync_directory(parent)
+        except OSError as cleanup_error:
+            cleanup_failures.append(
+                ("fsync_committed_directory", parent, cleanup_error)
+            )
+    if cleanup_failures:
+        committed_error = RuntimeError(
+            "pickle and JSON were committed but transaction cleanup failed"
+        )
+        raise AtomicWriteCleanupError(
+            pickle_destination, committed_error, cleanup_failures
+        ) from committed_error

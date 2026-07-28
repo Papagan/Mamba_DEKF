@@ -2433,6 +2433,195 @@ class InferencePairCacheTask3Test(unittest.TestCase):
             self.assertEqual(list((root / "nested").glob("*.tmp")), [])
             self.assertEqual(list((root / "nested").glob("*.bak")), [])
 
+    def test_atomic_pickle_json_pair_publishes_both_new_outputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pickle_path = root / "cache" / "pairs.pkl"
+            json_path = root / "summary" / "pairs.json"
+            pickle_path.parent.mkdir()
+            json_path.parent.mkdir()
+            pickle_path.write_bytes(b"old-pickle")
+            json_path.write_bytes(b"old-json")
+
+            inference_pair_cache.atomic_write_pickle_json_pair(
+                pickle_path,
+                {"groups": ["new"]},
+                json_path,
+                {"accepted_groups": 1},
+            )
+
+            with pickle_path.open("rb") as file_obj:
+                self.assertEqual(pickle.load(file_obj), {"groups": ["new"]})
+            self.assertEqual(
+                json.loads(json_path.read_text(encoding="utf-8")),
+                {"accepted_groups": 1},
+            )
+            self.assertEqual(list(root.rglob("*.tmp")), [])
+            self.assertEqual(list(root.rglob("*.bak")), [])
+
+    def test_atomic_pickle_json_pair_rolls_back_both_on_second_replace_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pickle_path = root / "pairs.pkl"
+            json_path = root / "pairs.json"
+            pickle_path.write_bytes(b"old-pickle")
+            json_path.write_bytes(b"old-json")
+            real_replace = os.replace
+            commit_count = 0
+
+            def fail_second_commit(source, destination):
+                nonlocal commit_count
+                if str(source).endswith(".tmp"):
+                    commit_count += 1
+                    if commit_count == 2:
+                        raise OSError("second commit failed")
+                return real_replace(source, destination)
+
+            with patch(
+                "tracker.inference_pair_cache.os.replace",
+                side_effect=fail_second_commit,
+            ):
+                with self.assertRaisesRegex(OSError, "second commit failed"):
+                    inference_pair_cache.atomic_write_pickle_json_pair(
+                        pickle_path,
+                        {"groups": ["new"]},
+                        json_path,
+                        {"accepted_groups": 1},
+                    )
+
+            self.assertEqual(pickle_path.read_bytes(), b"old-pickle")
+            self.assertEqual(json_path.read_bytes(), b"old-json")
+            self.assertEqual(list(root.glob("*.tmp")), [])
+            self.assertEqual(list(root.glob("*.bak")), [])
+
+    def test_atomic_pickle_json_pair_rolls_back_both_on_second_commit_fsync_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_dir = root / "first"
+            second_dir = root / "second"
+            first_dir.mkdir()
+            second_dir.mkdir()
+            pickle_path = first_dir / "pairs.pkl"
+            json_path = second_dir / "pairs.json"
+            pickle_path.write_bytes(b"old-pickle")
+            json_path.write_bytes(b"old-json")
+            real_fsync_directory = inference_pair_cache._fsync_directory
+            commit_fsync_count = 0
+
+            def fail_second_commit_fsync(path):
+                nonlocal commit_fsync_count
+                commit_fsync_count += 1
+                if commit_fsync_count == 2:
+                    raise OSError("second commit fsync failed")
+                return real_fsync_directory(path)
+
+            with patch(
+                "tracker.inference_pair_cache._fsync_directory",
+                side_effect=fail_second_commit_fsync,
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "second commit fsync failed"
+                ):
+                    inference_pair_cache.atomic_write_pickle_json_pair(
+                        pickle_path,
+                        {"groups": ["new"]},
+                        json_path,
+                        {"accepted_groups": 1},
+                    )
+
+            self.assertEqual(pickle_path.read_bytes(), b"old-pickle")
+            self.assertEqual(json_path.read_bytes(), b"old-json")
+
+    def test_atomic_pickle_json_pair_removes_new_first_file_when_second_commit_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pickle_path = root / "pairs.pkl"
+            json_path = root / "pairs.json"
+            real_replace = os.replace
+            commit_count = 0
+
+            def fail_second_commit(source, destination):
+                nonlocal commit_count
+                if str(source).endswith(".tmp"):
+                    commit_count += 1
+                    if commit_count == 2:
+                        raise OSError("second commit failed")
+                return real_replace(source, destination)
+
+            with patch(
+                "tracker.inference_pair_cache.os.replace",
+                side_effect=fail_second_commit,
+            ):
+                with self.assertRaisesRegex(OSError, "second commit failed"):
+                    inference_pair_cache.atomic_write_pickle_json_pair(
+                        pickle_path,
+                        {"groups": ["new"]},
+                        json_path,
+                        {"accepted_groups": 1},
+                    )
+
+            self.assertFalse(pickle_path.exists())
+            self.assertFalse(json_path.exists())
+            self.assertEqual(list(root.glob("*.tmp")), [])
+            self.assertEqual(list(root.glob("*.bak")), [])
+
+    def test_atomic_pickle_json_pair_preserves_backup_when_rollback_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pickle_path = root / "pairs.pkl"
+            json_path = root / "pairs.json"
+            pickle_path.write_bytes(b"old-pickle")
+            json_path.write_bytes(b"old-json")
+            real_replace = os.replace
+            temporary_commit_count = 0
+
+            def fail_commit_and_rollback(source, destination):
+                nonlocal temporary_commit_count
+                if str(source).endswith(".tmp"):
+                    temporary_commit_count += 1
+                    if temporary_commit_count == 2:
+                        raise OSError("second commit failed")
+                if str(source).endswith(".bak"):
+                    raise OSError("rollback failed")
+                return real_replace(source, destination)
+
+            with patch(
+                "tracker.inference_pair_cache.os.replace",
+                side_effect=fail_commit_and_rollback,
+            ):
+                with self.assertRaises(
+                    inference_pair_cache.AtomicPairWriteRollbackError
+                ) as raised:
+                    inference_pair_cache.atomic_write_pickle_json_pair(
+                        pickle_path,
+                        {"groups": ["new"]},
+                        json_path,
+                        {"accepted_groups": 1},
+                    )
+
+            self.assertIn("second commit failed", str(raised.exception))
+            self.assertIn("rollback failed", str(raised.exception))
+            backups = list(root.glob("*.bak"))
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(backups[0].read_bytes(), b"old-pickle")
+            self.assertEqual(json_path.read_bytes(), b"old-json")
+
+    def test_atomic_pickle_json_pair_rejects_symlink_alias(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "pairs.pkl"
+            alias = root / "pairs.json"
+            destination.write_bytes(b"old")
+            alias.symlink_to(destination)
+            with self.assertRaisesRegex(ValueError, "different files"):
+                inference_pair_cache.atomic_write_pickle_json_pair(
+                    destination,
+                    {"groups": []},
+                    alias,
+                    {"accepted_groups": 0},
+                )
+            self.assertEqual(destination.read_bytes(), b"old")
+
     def test_atomic_writer_durably_creates_nested_parent_chain_in_order(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
