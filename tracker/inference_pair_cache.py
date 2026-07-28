@@ -1631,11 +1631,17 @@ class InferencePairCacheAccumulator:
     def _retained_groups(self):
         return [self._groups[key] for key in sorted(self._groups)]
 
-    def to_payload(self):
+    def to_payload(self, copy_groups=True):
+        copy_groups = _strict_bool("copy_groups", copy_groups)
+        retained_groups = self._retained_groups()
         return {
             "schema_version": INFERENCE_PAIR_CACHE_SCHEMA_VERSION,
             "runtime_manifest": copy.deepcopy(self.runtime_manifest),
-            "groups": copy.deepcopy(self._retained_groups()),
+            "groups": (
+                copy.deepcopy(retained_groups)
+                if copy_groups
+                else list(retained_groups)
+            ),
         }
 
     def to_summary(self):

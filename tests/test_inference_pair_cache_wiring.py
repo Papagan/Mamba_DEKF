@@ -1035,6 +1035,39 @@ class MainCacheOutputWiringTest(unittest.TestCase):
         self.assertNotIn("_INFERENCE_PAIR_CACHE_RUNTIME_DISABLED", cfg)
         self.assertIn("_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST", cfg)
 
+    def test_spool_cleanup_failure_keeps_path_for_successful_retry(self):
+        real_rmtree = shutil.rmtree
+        attempts = 0
+
+        def fail_once(path, *, ignore_errors):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("cleanup failed")
+            return real_rmtree(path, ignore_errors=ignore_errors)
+
+        helpers = self._helpers(
+            build_inference_pair_cache_manifest=Mock(),
+            build_association_runtime_manifest=Mock(),
+            shutil=types.SimpleNamespace(rmtree=fail_once),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = self._base_cfg()
+            cfg["INFERENCE_PAIR_CACHE"]["ENABLED"] = True
+            spool = helpers["_create_inference_pair_cache_spool"](
+                cfg, directory
+            )
+            with self.assertRaisesRegex(OSError, "cleanup failed"):
+                helpers["_cleanup_inference_pair_cache_spool"](cfg)
+            self.assertEqual(
+                cfg["_INFERENCE_PAIR_CACHE_SPOOL_DIR"], spool
+            )
+            self.assertTrue(Path(spool).is_dir())
+
+            helpers["_cleanup_inference_pair_cache_spool"](cfg)
+            self.assertNotIn("_INFERENCE_PAIR_CACHE_SPOOL_DIR", cfg)
+            self.assertFalse(Path(spool).exists())
+
     def test_real_manager_round_trip_contains_marker_not_full_state(self):
         helpers = self._helpers(
             build_inference_pair_cache_manifest=Mock(),
@@ -1144,6 +1177,7 @@ class MainCacheOutputWiringTest(unittest.TestCase):
     def test_merge_is_sorted_and_atomic_writer_argument_order_is_path_payload(self):
         merge_order = []
         writes = []
+        serialization_events = []
 
         class Accumulator:
             def __init__(self, **kwargs):
@@ -1155,10 +1189,12 @@ class MainCacheOutputWiringTest(unittest.TestCase):
             def add_error(self, record):
                 raise AssertionError(record)
 
-            def to_payload(self):
+            def to_payload(self, copy_groups=True):
+                serialization_events.append(("payload", copy_groups))
                 return {"groups": [{"scene_id": item} for item in merge_order]}
 
             def to_summary(self):
+                serialization_events.append(("summary", None))
                 return {"retained": len(merge_order)}
 
         helpers = self._helpers(
@@ -1196,6 +1232,10 @@ class MainCacheOutputWiringTest(unittest.TestCase):
             self.assertEqual(
                 writes[0],
                 ("pairs.pkl", result[0], "summary.json", result[1]),
+            )
+            self.assertEqual(
+                serialization_events,
+                [("summary", None), ("payload", False)],
             )
             self.assertFalse(Path(spool).exists())
 
@@ -1260,7 +1300,7 @@ class MainCacheOutputWiringTest(unittest.TestCase):
             def merge_state(self, state):
                 pass
 
-            def to_payload(self):
+            def to_payload(self, copy_groups=True):
                 return {"groups": []}
 
             def to_summary(self):
@@ -1293,7 +1333,7 @@ class MainCacheOutputWiringTest(unittest.TestCase):
             def add_error(self, record):
                 errors.append(validate_error_record(record))
 
-            def to_payload(self):
+            def to_payload(self, copy_groups=True):
                 return {"groups": list(self.valid)}
 
             def to_summary(self):
@@ -1362,7 +1402,7 @@ class MainCacheOutputWiringTest(unittest.TestCase):
             def add_error(self, record):
                 errors.append(validate_error_record(record))
 
-            def to_payload(self):
+            def to_payload(self, copy_groups=True):
                 return {"groups": []}
 
             def to_summary(self):
@@ -1523,7 +1563,7 @@ class MainCacheOutputWiringTest(unittest.TestCase):
             def add_error(self, record):
                 errors.append(validate_error_record(record))
 
-            def to_payload(self):
+            def to_payload(self, copy_groups=True):
                 return {"groups": []}
 
             def to_summary(self):

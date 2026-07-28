@@ -383,13 +383,15 @@ def _initialize_inference_pair_cache_spool(cfg, parent_dir):
 
 
 def _cleanup_inference_pair_cache_spool(cfg):
-    spool_value = cfg.pop("_INFERENCE_PAIR_CACHE_SPOOL_DIR", None)
+    spool_value = cfg.get("_INFERENCE_PAIR_CACHE_SPOOL_DIR")
     if not spool_value:
         return
     spool_path = Path(spool_value).expanduser().resolve(strict=False)
     if not spool_path.name.startswith(".inference_pair_cache_spool."):
         raise ValueError(f"refusing to remove unsafe spool path: {spool_path}")
     shutil.rmtree(spool_path, ignore_errors=False)
+    if cfg.get("_INFERENCE_PAIR_CACHE_SPOOL_DIR") == spool_value:
+        cfg.pop("_INFERENCE_PAIR_CACHE_SPOOL_DIR", None)
 
 
 def _scene_inference_pair_cache_spool_path(scene_id, cfg):
@@ -636,8 +638,8 @@ def _write_merged_inference_pair_cache_impl(cfg, scene_pair_cache_states):
                             f"cache spool {spool_path}: {cleanup_error}"
                         )
 
-        payload = merged.to_payload()
         summary = merged.to_summary()
+        payload = merged.to_payload(copy_groups=False)
         try:
             atomic_write_pickle_json_pair(
                 output_path,

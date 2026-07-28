@@ -1625,6 +1625,31 @@ class InferencePairCacheTask3Test(unittest.TestCase):
             accumulator.to_payload()["groups"][0]["scene_id"], "scene-1"
         )
 
+    def test_payload_copy_mode_preserves_default_isolation_and_safe_serialization(self):
+        accumulator = inference_pair_cache.InferencePairCacheAccumulator(
+            runtime_manifest={"run": "test"}
+        )
+        accumulator.add_group(self._group())
+        retained_group = accumulator._retained_groups()[0]
+
+        default_payload = accumulator.to_payload()
+        serialization_payload = accumulator.to_payload(copy_groups=False)
+
+        self.assertIsNot(default_payload["groups"][0], retained_group)
+        self.assertIs(serialization_payload["groups"][0], retained_group)
+        self.assertIsNot(
+            serialization_payload["groups"], accumulator._retained_groups()
+        )
+        self.assertIsNot(
+            serialization_payload["runtime_manifest"],
+            accumulator.runtime_manifest,
+        )
+        self.assertEqual(default_payload, serialization_payload)
+        self.assertEqual(
+            pickle.loads(pickle.dumps(serialization_payload)),
+            default_payload,
+        )
+
     def test_manifest_group_contract_rejects_dimensions_exports_and_class(self):
         manifest = {
             "embedding_dim": 2,
