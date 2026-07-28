@@ -454,6 +454,49 @@ class InferencePairCacheMatchingTest(unittest.TestCase):
         self.assertEqual(len(observed), 2)
         self.assertTrue(all(group["candidates"] == [] for group in observed))
 
+    def test_nonempty_hungarian_export_preserves_assignment_in_both_shadow_modes(self):
+        def fake_hungarian(cost_matrix, thresholds):
+            cls_cost = cost_matrix[0]
+            diagonal = cls_cost[0, 0] + cls_cost[1, 1]
+            off_diagonal = cls_cost[0, 1] + cls_cost[1, 0]
+            track_indices = [0, 1] if diagonal <= off_diagonal else [1, 0]
+            return (
+                [0, 1],
+                track_indices,
+                np.empty((0,), dtype=int),
+                np.empty((0,), dtype=int),
+                np.asarray(
+                    [
+                        cls_cost[0, track_indices[0]],
+                        cls_cost[1, track_indices[1]],
+                    ]
+                ),
+            )
+
+        for shadow in (False, True):
+            cfg = _cfg(shadow=shadow)
+            cfg["MATCHING"]["BEV"]["MATCHING_MODE"] = "Hungarian"
+            observed = []
+            with self.subTest(shadow=shadow), self._cost_patch(), patch.object(
+                matching, "Hungarian", side_effect=fake_hungarian
+            ):
+                disabled = matching.match_trajs_and_dets(
+                    self.trajs, self.dets, cfg
+                )
+                enabled = matching.match_trajs_and_dets(
+                    self.trajs,
+                    self.dets,
+                    cfg,
+                    inference_pair_cache_payload=_payload(),
+                    inference_pair_cache_callback=observed.extend,
+                    inference_pair_cache_gt_provider=lambda: _gt(),
+                )
+
+            np.testing.assert_array_equal(enabled[0], disabled[0])
+            np.testing.assert_array_equal(enabled[1], disabled[1])
+            np.testing.assert_array_equal(enabled[0], np.asarray([[0, 0], [1, 1]]))
+            self.assertEqual(len(observed), 2)
+
     def test_non_shadow_exports_actual_assignment_with_untouched_base_costs(self):
         observed = []
         payload = _payload()
@@ -537,6 +580,145 @@ class InferencePairCacheMatchingTest(unittest.TestCase):
                 costs, np.asarray([0.10, 0.20], dtype=np.float32)
             )
             self.assertEqual(len(observed), 2)
+
+    def test_full_uncertainty_exports_pure_geometry_not_composite_costs(self):
+        cfg = _cfg(cost_mode="full")
+        cfg["THRESHOLD"]["BEV"]["COST_THRE"] = [0.30, 0.70]
+        composite = np.asarray([[0.10, 0.90], [0.90, 0.10]], dtype=np.float32)
+        geometric = np.asarray([[0.80, 0.20], [0.20, 0.80]], dtype=np.float32)
+        observed = []
+        modes = []
+
+        def calculate(*args, **kwargs):
+            call_cfg = args[2]
+            mode = call_cfg["THRESHOLD"]["BEV"]["COST_MODE"]
+            modes.append(mode)
+            matrix = composite if mode == "full" else geometric
+            return matrix, self.categories, self.categories
+
+        with patch.object(
+            matching,
+            "cost_calculate_uncertainty_aware",
+            side_effect=calculate,
+        ):
+            disabled = matching.match_trajs_and_dets_uncertainty_aware(
+                self.trajs,
+                self.dets,
+                cfg,
+                trk_embeddings=np.eye(2, dtype=np.float32),
+                det_embeddings=np.eye(2, dtype=np.float32),
+            )
+            self.assertEqual(modes, ["full"])
+            modes.clear()
+            matches, costs = matching.match_trajs_and_dets_uncertainty_aware(
+                self.trajs,
+                self.dets,
+                cfg,
+                trk_embeddings=np.eye(2, dtype=np.float32),
+                det_embeddings=np.eye(2, dtype=np.float32),
+                inference_pair_cache_payload=_payload(),
+                inference_pair_cache_callback=observed.extend,
+                inference_pair_cache_gt_provider=lambda: _gt(),
+            )
+
+        np.testing.assert_array_equal(matches, disabled[0])
+        np.testing.assert_array_equal(costs, disabled[1])
+        np.testing.assert_array_equal(matches, np.asarray([[0, 0], [1, 1]]))
+        np.testing.assert_array_equal(costs, np.asarray([0.10, 0.10], dtype=np.float32))
+        self.assertEqual(modes, ["full", "geometric"])
+        self.assertEqual(cfg["THRESHOLD"]["BEV"]["COST_MODE"], "full")
+        self.assertEqual(cfg["THRESHOLD"]["BEV"]["COST_THRE"], [0.30, 0.70])
+        first = observed[0]
+        self.assertEqual(first["production_det_index"], 0)
+        self.assertAlmostEqual(first["production_match_cost"], 0.10)
+        self.assertEqual(
+            [candidate["candidate_rank"] for candidate in first["candidates"]],
+            [2, 1],
+        )
+        self.assertEqual(
+            [candidate["inside_geometric_gate"] for candidate in first["candidates"]],
+            [False, True],
+        )
+        self.assertEqual(
+            [candidate["geometric_threshold"] for candidate in first["candidates"]],
+            [0.30, 0.30],
+        )
+        self.assertEqual(
+            [candidate["geometric_cost"] for candidate in first["candidates"]],
+            [float(geometric[0, 0]), float(geometric[0, 1])],
+        )
+
+    def test_full_uncertainty_safety_fallback_exports_general_geometry_once(self):
+        cfg = _cfg(cost_mode="full")
+        cfg["THRESHOLD"]["BEV"]["COST_THRE"] = [0.30, 0.70]
+        composite = np.full((2, 2), 10.0, dtype=np.float32)
+        observed = []
+        modes = []
+        provider_calls = []
+
+        def calculate(*args, **kwargs):
+            modes.append(args[2]["THRESHOLD"]["BEV"]["COST_MODE"])
+            return composite, self.categories, self.categories
+
+        def provider():
+            provider_calls.append(True)
+            return _gt()
+
+        with patch.object(
+            matching,
+            "cost_calculate_uncertainty_aware",
+            side_effect=calculate,
+        ), self._cost_patch():
+            matches, costs = matching.match_trajs_and_dets_uncertainty_aware(
+                self.trajs,
+                self.dets,
+                cfg,
+                trk_embeddings=np.eye(2, dtype=np.float32),
+                det_embeddings=np.eye(2, dtype=np.float32),
+                inference_pair_cache_payload=_payload(),
+                inference_pair_cache_callback=observed.extend,
+                inference_pair_cache_gt_provider=provider,
+            )
+
+        np.testing.assert_array_equal(matches, np.asarray([[0, 0], [1, 1]]))
+        np.testing.assert_array_equal(costs, np.asarray([0.10, 0.20], dtype=np.float32))
+        self.assertEqual(modes, ["full"])
+        self.assertEqual(len(provider_calls), 1)
+        self.assertEqual(len(observed), 2)
+        self.assertAlmostEqual(observed[0]["candidates"][0]["geometric_cost"], 0.10)
+
+    def test_export_uses_shallow_payload_overlay_for_large_arrays(self):
+        from tracker import inference_pair_cache
+
+        payload = _payload()
+        large_pair_vectors = np.empty((4, 250_000), dtype=np.float32)
+        payload["pair_vectors"] = large_pair_vectors
+        gt_payload = _gt()
+        observed = []
+
+        with self._cost_patch(), patch.object(
+            inference_pair_cache,
+            "build_candidate_groups",
+            return_value=[],
+        ) as build:
+            matching.match_trajs_and_dets(
+                self.trajs,
+                self.dets,
+                _cfg(),
+                inference_pair_cache_payload=payload,
+                inference_pair_cache_callback=observed.extend,
+                inference_pair_cache_gt_provider=lambda: gt_payload,
+            )
+
+        export_payload = build.call_args.kwargs["payload"]
+        self.assertIs(export_payload["pair_vectors"], large_pair_vectors)
+        self.assertIs(export_payload["track_embeddings"], payload["track_embeddings"])
+        self.assertIs(export_payload["det_embeddings"], payload["det_embeddings"])
+        self.assertIsNot(
+            export_payload["track_gt_tokens"], gt_payload["track_gt_tokens"]
+        )
+        self.assertIsNot(export_payload["det_gt_tokens"], gt_payload["det_gt_tokens"])
+        self.assertEqual(observed, [])
 
     def test_provider_and_payload_arrays_are_not_mutated(self):
         payload = _payload()

@@ -508,6 +508,49 @@ def _inference_pair_cache_error_record(exc, *, stage, payload):
         )
 
 
+def _class_threshold_mapping(thresholds):
+    if isinstance(thresholds, Mapping):
+        return dict(thresholds)
+    try:
+        return {
+            class_id: threshold
+            for class_id, threshold in enumerate(thresholds)
+        }
+    except TypeError as exc:
+        raise TypeError(
+            "class matching thresholds must be a mapping or sequence"
+        ) from exc
+
+
+def _uncertainty_geometric_audit_cost_matrix(
+    trajs,
+    dets,
+    cfg,
+    trk_embeddings,
+    det_embeddings,
+    trk_pos_P,
+    trk_ori_P,
+    cal_flag,
+):
+    geometric_cfg = dict(cfg)
+    threshold_cfg = dict(cfg.get("THRESHOLD", {}) or {})
+    bev_cfg = dict(threshold_cfg.get("BEV", {}) or {})
+    bev_cfg["COST_MODE"] = "geometric"
+    threshold_cfg["BEV"] = bev_cfg
+    geometric_cfg["THRESHOLD"] = threshold_cfg
+    geometric_cost_matrix, _, _ = cost_calculate_uncertainty_aware(
+        trajs,
+        dets,
+        geometric_cfg,
+        trk_embeddings,
+        det_embeddings,
+        trk_pos_P,
+        trk_ori_P,
+        cal_flag=cal_flag,
+    )
+    return geometric_cost_matrix
+
+
 def _export_inference_pair_cache_groups(
     *,
     payload,
@@ -531,7 +574,12 @@ def _export_inference_pair_cache_groups(
 
     stage = "payload"
     try:
-        export_payload = copy.deepcopy(payload)
+        if not isinstance(payload, Mapping):
+            raise TypeError("inference pair cache payload must be a mapping")
+        export_payload = dict(payload)
+        for name in ("track_gt_tokens", "det_gt_tokens"):
+            if name in export_payload:
+                export_payload[name] = copy.deepcopy(export_payload[name])
         if gt_provider is not None:
             stage = "gt_provider"
             gt_payload = gt_provider()
@@ -548,15 +596,24 @@ def _export_inference_pair_cache_groups(
         from tracker.inference_pair_cache import build_candidate_groups
 
         cache_cfg = cfg.get("INFERENCE_PAIR_CACHE", {}) or {}
+        stage = "base_cost_matrix"
+        export_base_cost_matrix = (
+            base_cost_matrix()
+            if callable(base_cost_matrix)
+            else base_cost_matrix
+        )
+        stage = "thresholds"
+        export_thresholds = _class_threshold_mapping(thresholds)
         export_matches = np.array(production_matches, copy=True)
         if export_matches.size == 0:
             export_matches = np.empty((0, 2), dtype=int)
+        stage = "candidate_groups"
         groups = build_candidate_groups(
             payload=export_payload,
-            base_cost_matrix=np.array(base_cost_matrix, copy=True),
+            base_cost_matrix=np.array(export_base_cost_matrix, copy=True),
             production_matches=export_matches,
             production_costs=np.array(production_costs, copy=True),
-            thresholds=copy.deepcopy(thresholds),
+            thresholds=export_thresholds,
             include_embeddings=cache_cfg.get("INCLUDE_EMBEDDINGS", True),
             include_pair_vectors=cache_cfg.get("INCLUDE_PAIR_VECTORS", True),
         )
@@ -1032,6 +1089,26 @@ def match_trajs_and_dets_uncertainty_aware(
         (cfg.get("ASSOCIATION_HEAD_AUDIT", {}) or {}).get("SHADOW_MODE", False)
     )
     base_cost_matrix = np.array(cost_matrix, copy=True)
+    export_enabled = (
+        inference_pair_cache_payload is not None
+        and inference_pair_cache_callback is not None
+    )
+    geometric_audit_cost_matrix = None
+    if export_enabled:
+        def build_geometric_audit_cost_matrix():
+            return _uncertainty_geometric_audit_cost_matrix(
+                trajs,
+                dets,
+                cfg,
+                trk_embeddings,
+                det_embeddings,
+                trk_pos_P,
+                trk_ori_P,
+                cal_flag,
+            )
+
+        geometric_audit_cost_matrix = build_geometric_audit_cost_matrix
+
     if not shadow_mode:
         cost_matrix = apply_pairwise_association_head_to_cost_matrix(
             cost_matrix,
@@ -1168,10 +1245,10 @@ def match_trajs_and_dets_uncertainty_aware(
             error_callback=inference_pair_cache_error_callback,
             gt_provider=inference_pair_cache_gt_provider,
             strict=inference_pair_cache_strict,
-            base_cost_matrix=base_cost_matrix,
+            base_cost_matrix=geometric_audit_cost_matrix,
             production_matches=matched_indices,
             production_costs=costs,
-            thresholds=dict(enumerate(adaptive_thresholds)),
+            thresholds=base_thresholds,
             cfg=cfg,
         )
 
