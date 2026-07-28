@@ -352,12 +352,147 @@ class RuntimeContractChecksTest(unittest.TestCase):
         self.assertIn("scene_perf_stats=scene_perf_stats", source)
 
     def test_mctrack_compat_path_threads_mamba_association_embeddings(self):
-        source = (REPO_ROOT / "tracker" / "base_tracker.py").read_text(encoding="utf-8")
+        module_path = REPO_ROOT / "tracker" / "base_tracker.py"
+        source = module_path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(module_path))
+        tracker_class = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "Base3DTracker"
+        )
+        methods = {
+            node.name: node
+            for node in tracker_class.body
+            if isinstance(node, ast.FunctionDef)
+        }
+        track_frame = methods["track_single_frame"]
+        compat = methods["_track_single_stage_mctrack_compat"]
 
-        self.assertIn("MAMBA_ASSOCIATION_PRIOR", source)
-        self.assertIn("trk_embeddings=trk_embeddings", source)
-        self.assertIn("det_embeddings=det_embeddings_all", source)
-        self.assertIn("mamba_multihead_closure", source)
+        production_flag_assignments = [
+            node
+            for node in ast.walk(track_frame)
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name)
+                and target.id == "production_uses_det_embeddings"
+                for target in node.targets
+            )
+        ]
+        self.assertEqual(len(production_flag_assignments), 1)
+        production_flag_names = {
+            node.id
+            for node in ast.walk(production_flag_assignments[0].value)
+            if isinstance(node, ast.Name)
+        }
+        self.assertNotIn(
+            "use_inference_pair_cache", production_flag_names
+        )
+        self.assertIn("use_mamba_assoc_prior", production_flag_names)
+        self.assertIn("use_pairwise_assoc_head", production_flag_names)
+
+        isolated_assignments = [
+            node
+            for node in ast.walk(track_frame)
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name)
+                and target.id == "det_embeddings_for_matching"
+                for target in node.targets
+            )
+        ]
+        self.assertEqual(len(isolated_assignments), 1)
+        isolated_value = isolated_assignments[0].value
+        self.assertIsInstance(isolated_value, ast.IfExp)
+        self.assertIsInstance(isolated_value.test, ast.Name)
+        self.assertEqual(
+            isolated_value.test.id, "production_uses_det_embeddings"
+        )
+        self.assertIsInstance(isolated_value.body, ast.Name)
+        self.assertEqual(isolated_value.body.id, "det_embeddings_all")
+        self.assertFalse(
+            any(
+                isinstance(node, ast.Name)
+                and node.id == "det_embeddings_all"
+                for node in ast.walk(isolated_value.orelse)
+            )
+        )
+
+        cache_payload_call = next(
+            node
+            for node in ast.walk(track_frame)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_compute_pairwise_association_payload"
+        )
+        self.assertIsInstance(cache_payload_call.args[3], ast.Name)
+        self.assertEqual(cache_payload_call.args[3].id, "det_embeddings_all")
+
+        default_provider = next(
+            node
+            for node in ast.walk(track_frame)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "matcher_kwargs_provider"
+        )
+        default_return = next(
+            node
+            for node in ast.walk(default_provider)
+            if isinstance(node, ast.Return)
+        )
+        self.assertIsInstance(default_return.value, ast.Dict)
+        default_kwargs = {
+            key.value: value
+            for key, value in zip(
+                default_return.value.keys, default_return.value.values
+            )
+            if isinstance(key, ast.Constant) and isinstance(key.value, str)
+        }
+        self.assertIsInstance(default_kwargs["det_embeddings"], ast.Name)
+        self.assertEqual(
+            default_kwargs["det_embeddings"].id,
+            "det_embeddings_for_matching",
+        )
+
+        compat_call = next(
+            node
+            for node in ast.walk(track_frame)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_track_single_stage_mctrack_compat"
+        )
+        compat_call_kwargs = {
+            keyword.arg: keyword.value for keyword in compat_call.keywords
+        }
+        self.assertIsInstance(
+            compat_call_kwargs["det_embeddings_all"], ast.Name
+        )
+        self.assertEqual(
+            compat_call_kwargs["det_embeddings_all"].id,
+            "det_embeddings_for_matching",
+        )
+
+        compat_provider = next(
+            node
+            for node in ast.walk(compat)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "matcher_kwargs_provider"
+        )
+        compat_return = next(
+            node
+            for node in ast.walk(compat_provider)
+            if isinstance(node, ast.Return)
+        )
+        self.assertIsInstance(compat_return.value, ast.Dict)
+        compat_kwargs = {
+            key.value: value
+            for key, value in zip(
+                compat_return.value.keys, compat_return.value.values
+            )
+            if isinstance(key, ast.Constant) and isinstance(key.value, str)
+        }
+        self.assertIsInstance(compat_kwargs["det_embeddings"], ast.Name)
+        self.assertEqual(
+            compat_kwargs["det_embeddings"].id, "det_embeddings_all"
+        )
 
     def test_training_wires_optional_association_supervision(self):
         source = (REPO_ROOT / "training" / "train.py").read_text(encoding="utf-8")

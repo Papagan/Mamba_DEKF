@@ -261,6 +261,19 @@ audit-GT dataset. Before running, inspect several frames and confirm that
 `audit_gt_tokens` exists, is aligned one-to-one with detections after filtering
 and NMS, and contains nuScenes instance tokens or `null`.
 
+Create that local-only configuration explicitly:
+
+```bash
+cp config/nuscenes_single_stage_mctrack_motion_residual_combo.yaml \
+  config/nuscenes_single_stage_mctrack_motion_residual_combo_audit_gt.yaml
+```
+
+In the copied file, change only the detection data root/input so it resolves to
+the separately generated audit-GT detections. Do not alter tracking, matching,
+noise, Mamba, or checkpoint settings. Do not commit this audit-only copy, do not
+overwrite the frozen source configuration, and verify with `git diff` that the
+frozen file remains unchanged.
+
 With that prerequisite satisfied, use the fail-closed variant:
 
 ```bash
@@ -357,6 +370,7 @@ The Task 7 local verification on 2026-07-28 produced:
   the real `multiprocessing.Manager` round trip because the restricted local
   sandbox denied IPC startup.
 - Frozen association regression suite: 41 tests passed, 0 skipped.
+- Runtime contract checks: 13 tests passed, 0 skipped.
 - `py_compile` passed for `main.py`, the cache/matching/tracker modules, and the
   two Task 7 test modules.
 - `git diff --check` reported no whitespace errors.
