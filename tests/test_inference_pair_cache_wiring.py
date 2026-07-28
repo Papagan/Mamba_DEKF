@@ -9,6 +9,7 @@ import numpy as np
 import torch
 
 from training.association_features import compose_pair_vectors
+from tracker.inference_pair_cache import validate_error_record
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -239,6 +240,91 @@ class ExactPayloadTest(unittest.TestCase):
         self.assertIn("track_embeddings", payload)
         self.assertIn("det_embeddings", payload)
 
+    def test_empty_detections_produce_complete_zero_candidate_payload(self):
+        tracker = self._tracker(head=None, cache=True)
+        scores, payload = tracker._compute_pairwise_association_payload(
+            [_traj(17, "trailer", (1.0, 2.0, 0.0), unmatch_length=1)],
+            [],
+            np.asarray([[1.0, 2.0]], dtype=np.float32),
+            np.empty((0, 2), dtype=np.float32),
+            ["unmatched"],
+            types.SimpleNamespace(
+                scene_id="scene", cur_sample_token="sample", frame_id=5
+            ),
+        )
+        self.assertIsNone(scores)
+        self.assertEqual(payload["det_embeddings"].shape, (0, 2))
+        self.assertEqual(payload["det_embeddings"].dtype, np.float32)
+        self.assertEqual(payload["pair_indices"].shape, (0, 2))
+        self.assertEqual(payload["pair_vectors"].shape, (0, 15))
+        self.assertEqual(payload["pair_vectors"].dtype, np.float32)
+        np.testing.assert_array_equal(payload["track_embeddings"], [[1.0, 2.0]])
+        self.assertEqual(payload["track_ids"], [17])
+
+    def test_shape_errors_record_without_gt_and_strict_controls_raise(self):
+        methods = _load_methods(
+            "_record_inference_pair_payload_error",
+            "_inference_pair_cache_options",
+        )
+        frame = types.SimpleNamespace(
+            scene_id="scene", cur_sample_token="sample", frame_id=6
+        )
+        trajs = [_traj(1, "bicycle", (0.0, 0.0, 0.0))]
+        for strict in (False, True):
+            tracker = self._tracker(head=None, cache=True)
+            tracker.inference_pair_cache_cfg = {"STRICT": strict}
+            errors = []
+            gt_calls = []
+            tracker._record_inference_pair_cache_error = errors.append
+            tracker._record_inference_pair_payload_error = types.MethodType(
+                methods["_record_inference_pair_payload_error"], tracker
+            )
+            tracker._association_det_gt_tokens = lambda *_: gt_calls.append(1)
+            tracker._record_inference_pair_groups = lambda groups: None
+            tracker._inference_pair_cache_options = types.MethodType(
+                methods["_inference_pair_cache_options"], tracker
+            )
+
+            call = lambda: tracker._compute_pairwise_association_payload(
+                trajs,
+                [],
+                np.asarray([[1.0, 2.0]], dtype=np.float32),
+                np.empty((0, 3), dtype=np.float32),
+                ["matched"],
+                frame,
+            )
+            if strict:
+                with self.assertRaisesRegex(ValueError, "shape mismatch"):
+                    call()
+            else:
+                self.assertEqual(call(), (None, None))
+            self.assertEqual(len(errors), 1)
+            self.assertEqual(validate_error_record(errors[0]), errors[0])
+            self.assertEqual(errors[0]["stage"], "payload")
+            self.assertEqual(errors[0]["error_type"], "ValueError")
+            self.assertEqual(
+                tracker._inference_pair_cache_options(
+                    frame, trajs, [], None
+                ),
+                {},
+            )
+            self.assertEqual(gt_calls, [])
+
+    def test_head_only_shape_error_preserves_legacy_silent_none(self):
+        tracker = self._tracker(head=_Head(), cache=False)
+        scores, payload = tracker._compute_pairwise_association_payload(
+            [_traj(1, "bicycle", (0.0, 0.0, 0.0))],
+            [],
+            np.asarray([[1.0, 2.0]], dtype=np.float32),
+            np.empty((0, 3), dtype=np.float32),
+            ["matched"],
+            types.SimpleNamespace(
+                scene_id="scene", cur_sample_token="sample", frame_id=6
+            ),
+        )
+        self.assertIsNone(scores)
+        self.assertIsNone(payload)
+
     def test_head_and_cache_disabled_keep_fast_return(self):
         tracker = self._tracker(head=None, cache=False)
         scores, payload = tracker._compute_pairwise_association_payload(
@@ -396,6 +482,16 @@ class MainPathWiringTest(unittest.TestCase):
         ]
         self.assertGreaterEqual(len(calls), 1)
 
+    def test_cache_only_does_not_embed_detections_without_tracks(self):
+        method = _load_methods("_should_compute_detection_embeddings")[
+            "_should_compute_detection_embeddings"
+        ]
+        should_compute = method.__func__ if isinstance(method, staticmethod) else method
+        self.assertFalse(should_compute(0, 3, False, True))
+        self.assertTrue(should_compute(0, 3, True, True))
+        self.assertTrue(should_compute(1, 3, False, True))
+        self.assertFalse(should_compute(1, 0, False, True))
+
     def test_cache_only_embeddings_are_not_fed_back_into_production_matching(self):
         method = next(
             node
@@ -413,21 +509,27 @@ class MainPathWiringTest(unittest.TestCase):
         self.assertIsInstance(payload_calls[0].args[3], ast.Name)
         self.assertEqual(payload_calls[0].args[3].id, "det_embeddings_all")
 
-        production_calls = [
+        production_kwargs = [
             node
             for node in ast.walk(method)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "match_trajs_and_dets_uncertainty_aware"
+            if isinstance(node, ast.Dict)
+            and any(
+                isinstance(key, ast.Constant)
+                and key.value == "det_embeddings"
+                for key in node.keys
+            )
         ]
-        self.assertEqual(len(production_calls), 1)
-        det_keyword = next(
-            keyword
-            for keyword in production_calls[0].keywords
-            if keyword.arg == "det_embeddings"
+        self.assertEqual(len(production_kwargs), 1)
+        det_value = next(
+            value
+            for key, value in zip(
+                production_kwargs[0].keys, production_kwargs[0].values
+            )
+            if isinstance(key, ast.Constant)
+            and key.value == "det_embeddings"
         )
-        self.assertIsInstance(det_keyword.value, ast.Name)
-        self.assertEqual(det_keyword.value.id, "det_embeddings_for_matching")
+        self.assertIsInstance(det_value, ast.Name)
+        self.assertEqual(det_value.id, "det_embeddings_for_matching")
 
     def test_default_and_compat_main_match_calls_receive_cache_options(self):
         tracker_class = _tracker_tree()
@@ -436,38 +538,107 @@ class MainPathWiringTest(unittest.TestCase):
             for node in tracker_class.body
             if isinstance(node, ast.FunctionDef)
         }
-        checks = (
-            ("_track_single_stage_mctrack_compat", "match_trajs_and_dets"),
-            ("track_single_frame", "match_trajs_and_dets_uncertainty_aware"),
-        )
-        for method_name, called_name in checks:
+        checks = {
+            "_track_single_stage_mctrack_compat": "match_trajs_and_dets",
+            "track_single_frame": "match_trajs_and_dets_uncertainty_aware",
+        }
+        for method_name, matcher_name in checks.items():
             calls = [
                 node
                 for node in ast.walk(methods[method_name])
                 if isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == called_name
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "_run_primary_match"
             ]
-            wired_calls = [
-                call
-                for call in calls
-                if any(
-                    keyword.arg is None
-                    and isinstance(keyword.value, ast.Name)
-                    and keyword.value.id == "cache_options"
-                    for keyword in call.keywords
-                )
-            ]
-            self.assertEqual(len(wired_calls), 1)
-            self.assertTrue(
-                any(
-                    keyword.arg is None
-                    and isinstance(keyword.value, ast.Name)
-                    and keyword.value.id == "cache_options"
-                    for keyword in wired_calls[0].keywords
-                ),
-                method_name,
+            self.assertEqual(len(calls), 1)
+            self.assertIsInstance(calls[0].args[0], ast.Name)
+            self.assertEqual(calls[0].args[0].id, matcher_name)
+            self.assertIsInstance(calls[0].args[4], ast.Name)
+            self.assertEqual(calls[0].args[4].id, "cache_options")
+
+    def test_empty_detection_dynamic_export_for_compat_and_default_matchers(self):
+        from tests import test_inference_pair_cache_matching as fixture
+
+        methods = _load_methods(
+            "_should_run_primary_match",
+            "_run_primary_match",
+        )
+        tracker = types.SimpleNamespace(cfg=fixture._cfg())
+        for name, method in methods.items():
+            if isinstance(method, staticmethod):
+                setattr(tracker, name, method.__func__)
+            else:
+                setattr(tracker, name, types.MethodType(method, tracker))
+
+        payload = fixture._payload(
+            track_count=1, det_count=0, pair_indices=[]
+        )
+        observed = []
+        gt_calls = []
+        options = {
+            "inference_pair_cache_payload": payload,
+            "inference_pair_cache_callback": observed.extend,
+            "inference_pair_cache_error_callback": lambda record: self.fail(
+                f"unexpected export error: {record}"
+            ),
+            "inference_pair_cache_gt_provider": lambda: (
+                gt_calls.append(1)
+                or {"track_gt_tokens": ["gt-0"], "det_gt_tokens": []}
+            ),
+            "inference_pair_cache_strict": True,
+        }
+        trajs = [fixture._Traj("trailer", 10, unmatch_length=1)]
+        for matcher in (
+            fixture.matching.match_trajs_and_dets,
+            fixture.matching.match_trajs_and_dets_uncertainty_aware,
+        ):
+            observed.clear()
+            before_gt = len(gt_calls)
+            matches, costs = tracker._run_primary_match(
+                matcher,
+                trajs,
+                [],
+                lambda: {},
+                options,
             )
+            self.assertEqual(matches.shape, (0, 2))
+            self.assertEqual(costs.shape, (0,))
+            self.assertEqual(len(gt_calls), before_gt + 1)
+            self.assertEqual(len(observed), 1)
+            self.assertEqual(observed[0]["candidates"], [])
+            self.assertEqual(observed[0]["gt_target_status"], "no_match")
+
+    def test_empty_detection_cache_disabled_does_not_call_matcher_or_kwargs(self):
+        methods = _load_methods(
+            "_should_run_primary_match",
+            "_run_primary_match",
+        )
+        tracker = types.SimpleNamespace(cfg={})
+        for name, method in methods.items():
+            if isinstance(method, staticmethod):
+                setattr(tracker, name, method.__func__)
+            else:
+                setattr(tracker, name, types.MethodType(method, tracker))
+        calls = []
+
+        def fail_matcher(*args, **kwargs):
+            calls.append("matcher")
+            raise AssertionError("matcher must not run")
+
+        def fail_kwargs():
+            calls.append("kwargs")
+            raise AssertionError("kwargs provider must not run")
+
+        matches, costs = tracker._run_primary_match(
+            fail_matcher,
+            [object()],
+            [],
+            fail_kwargs,
+            {},
+        )
+        self.assertEqual(matches.shape, (0, 2))
+        self.assertEqual(costs.shape, (0,))
+        self.assertEqual(calls, [])
 
     def test_cache_options_are_only_built_for_the_primary_bev_match(self):
         source = BASE_TRACKER_PATH.read_text(encoding="utf-8")

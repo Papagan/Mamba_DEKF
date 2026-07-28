@@ -780,6 +780,41 @@ class Base3DTracker:
             return
         self.inference_pair_cache.add_error(record)
 
+    def _record_inference_pair_payload_error(
+        self, frame_info, message: str
+    ) -> None:
+        if not self._inference_pair_cache_enabled():
+            return
+        scene_id = getattr(frame_info, "scene_id", None)
+        if not isinstance(scene_id, str) or not scene_id.strip():
+            scene_id = "unknown"
+        else:
+            scene_id = scene_id.strip()
+        sample_token = getattr(frame_info, "cur_sample_token", None)
+        if not isinstance(sample_token, str) or not sample_token.strip():
+            sample_token = "unknown"
+        else:
+            sample_token = sample_token.strip()
+        frame_id = getattr(frame_info, "frame_id", 0)
+        try:
+            frame_id = int(frame_id)
+        except (TypeError, ValueError, OverflowError):
+            frame_id = 0
+        if frame_id < 0:
+            frame_id = 0
+        self._record_inference_pair_cache_error(
+            {
+                "scene_id": scene_id,
+                "sample_token": sample_token,
+                "frame_id": frame_id,
+                "stage": "payload",
+                "error_type": "ValueError",
+                "message": str(message),
+            }
+        )
+        if bool(self.inference_pair_cache_cfg.get("STRICT", False)):
+            raise ValueError(message)
+
     def export_inference_pair_cache_state(self) -> Optional[Dict]:
         if self.inference_pair_cache is None:
             return None
@@ -894,6 +929,53 @@ class Base3DTracker:
                 self.inference_pair_cache_cfg.get("STRICT", False)
             ),
         }
+
+    @staticmethod
+    def _should_compute_detection_embeddings(
+        trajs_count: int,
+        dets_count: int,
+        production_uses_det_embeddings: bool,
+        cache_enabled: bool,
+    ) -> bool:
+        return bool(
+            dets_count > 0
+            and (
+                production_uses_det_embeddings
+                or (cache_enabled and trajs_count > 0)
+            )
+        )
+
+    @staticmethod
+    def _should_run_primary_match(
+        trajs_count: int, dets_count: int, cache_options: Dict
+    ) -> bool:
+        return bool(
+            trajs_count > 0 and (dets_count > 0 or bool(cache_options))
+        )
+
+    def _run_primary_match(
+        self,
+        matcher,
+        trajs,
+        dets,
+        matcher_kwargs_provider,
+        cache_options: Dict,
+    ):
+        if not self._should_run_primary_match(
+            len(trajs), len(dets), cache_options
+        ):
+            return (
+                np.empty((0, 2), dtype=int),
+                np.empty((0,), dtype=float),
+            )
+        matcher_kwargs = matcher_kwargs_provider()
+        return matcher(
+            trajs,
+            dets,
+            self.cfg,
+            **matcher_kwargs,
+            **cache_options,
+        )
 
     def _association_shadow_options(self, frame_info, trajs, dets) -> Dict:
         if (
@@ -1235,21 +1317,39 @@ class Base3DTracker:
         state_buckets: List[str],
         frame_info,
     ) -> Tuple[Optional[np.ndarray], Optional[Dict]]:
+        cache_enabled = self._inference_pair_cache_enabled()
         if (
-            (
-                self.pairwise_association_head is None
-                and not self._inference_pair_cache_enabled()
-            )
-            or trk_embeddings is None
-            or det_embeddings is None
+            self.pairwise_association_head is None
+            and not cache_enabled
         ):
             return None, None
-        trk_embeddings = np.array(
-            trk_embeddings, dtype=np.float32, copy=True
-        )
-        det_embeddings = np.array(
-            det_embeddings, dtype=np.float32, copy=True
-        )
+        if len(trajs) == 0:
+            return None, None
+        if trk_embeddings is None or det_embeddings is None:
+            if cache_enabled:
+                self._record_inference_pair_payload_error(
+                    frame_info,
+                    "association embeddings are missing: "
+                    f"track_embeddings={trk_embeddings is not None}, "
+                    f"det_embeddings={det_embeddings is not None}",
+                )
+            return None, None
+        try:
+            trk_embeddings = np.array(
+                trk_embeddings, dtype=np.float32, copy=True
+            )
+            det_embeddings = np.array(
+                det_embeddings, dtype=np.float32, copy=True
+            )
+        except Exception as exc:
+            if cache_enabled:
+                self._record_inference_pair_payload_error(
+                    frame_info,
+                    "invalid association embeddings: "
+                    f"{type(exc).__name__}: {exc}",
+                )
+                return None, None
+            raise
         if (
             trk_embeddings.ndim != 2
             or det_embeddings.ndim != 2
@@ -1257,6 +1357,15 @@ class Base3DTracker:
             or det_embeddings.shape[0] != len(dets)
             or trk_embeddings.shape[1] != det_embeddings.shape[1]
         ):
+            if cache_enabled:
+                self._record_inference_pair_payload_error(
+                    frame_info,
+                    "association embedding shape mismatch: "
+                    f"track_embeddings={trk_embeddings.shape}, "
+                    f"expected_track_rows={len(trajs)}, "
+                    f"det_embeddings={det_embeddings.shape}, "
+                    f"expected_det_rows={len(dets)}",
+                )
             return None, None
 
         category_map = self.cfg.get("CATEGORY_MAP_TO_NUMBER", {}) or {}
@@ -1350,7 +1459,7 @@ class Base3DTracker:
             for (t, d), score in zip(pair_indices, probs):
                 score_matrix[t, d] = float(score)
 
-        if not self._inference_pair_cache_enabled():
+        if not cache_enabled:
             return score_matrix, None
 
         payload = {
@@ -2346,24 +2455,27 @@ class Base3DTracker:
         matched_track_ids: List[int] = []
         matched_bboxes: List[BBox] = []
 
-        if trajs_cnt > 0 and dets_cnt > 0:
+        def matcher_kwargs_provider():
             shadow_options = self._association_shadow_options(
                 frame_info, trajs, frame_info.bboxes
             )
-            match_res, costs = match_trajs_and_dets(
-                trajs,
-                frame_info.bboxes,
-                self.cfg,
-                trk_embeddings=trk_embeddings,
-                det_embeddings=det_embeddings_all,
-                association_scores=association_scores,
-                association_audit_callback=self._record_association_head_audit,
+            return {
+                "trk_embeddings": trk_embeddings,
+                "det_embeddings": det_embeddings_all,
+                "association_scores": association_scores,
+                "association_audit_callback": (
+                    self._record_association_head_audit
+                ),
                 **shadow_options,
-                **cache_options,
-            )
-        else:
-            match_res = np.empty((0, 2), dtype=int)
-            costs = np.empty((0,), dtype=float)
+            }
+
+        match_res, costs = self._run_primary_match(
+            match_trajs_and_dets,
+            trajs,
+            frame_info.bboxes,
+            matcher_kwargs_provider,
+            cache_options,
+        )
 
         matched_det_indices = set(int(i) for i in match_res[:, 1]) if len(match_res) > 0 else set()
         unmatched_det_indices = np.array(
@@ -2631,9 +2743,11 @@ class Base3DTracker:
                 in ["mamba", "fusion", "mamba_multihead_closure"]
             )
         )
-        if (
-            dets_cnt > 0
-            and (production_uses_det_embeddings or use_inference_pair_cache)
+        if self._should_compute_detection_embeddings(
+            trajs_cnt,
+            dets_cnt,
+            production_uses_det_embeddings,
+            use_inference_pair_cache,
         ):
             det_history = torch.zeros(dets_cnt, self.history_len, 12, device=self.device)
             cat_map = self.cfg["CATEGORY_MAP_TO_NUMBER"]
@@ -2664,7 +2778,15 @@ class Base3DTracker:
                 )
             det_embeddings_all = det_mamba_out["embedding"].cpu().numpy()
         else:
-            det_embeddings_all = np.zeros((dets_cnt, self.embed_dim), dtype=np.float32) if dets_cnt > 0 else None
+            det_embeddings_all = (
+                np.zeros((dets_cnt, self.embed_dim), dtype=np.float32)
+                if dets_cnt > 0
+                else (
+                    np.empty((0, self.embed_dim), dtype=np.float32)
+                    if use_inference_pair_cache and trajs_cnt > 0
+                    else None
+                )
+            )
         det_embeddings_for_matching = (
             det_embeddings_all
             if production_uses_det_embeddings
@@ -2737,25 +2859,30 @@ class Base3DTracker:
             matched_traj_indices: set = set()
             matched_det_indices: set = set()
 
-            if trajs_cnt > 0 and dets_cnt > 0:
+            def matcher_kwargs_provider():
                 shadow_options = self._association_shadow_options(
                     frame_info, trajs, frame_info.bboxes
                 )
-                match_res, costs = match_trajs_and_dets_uncertainty_aware(
-                    trajs, frame_info.bboxes, self.cfg,
-                    trk_embeddings=trk_embeddings,
-                    det_embeddings=det_embeddings_for_matching,
-                    trk_pos_P=trk_pos_P,
-                    trk_ori_P=trk_ori_P,
-                    cal_flag=cal_flags,
-                    association_scores=association_scores,
-                    association_audit_callback=self._record_association_head_audit,
+                return {
+                    "trk_embeddings": trk_embeddings,
+                    "det_embeddings": det_embeddings_for_matching,
+                    "trk_pos_P": trk_pos_P,
+                    "trk_ori_P": trk_ori_P,
+                    "cal_flag": cal_flags,
+                    "association_scores": association_scores,
+                    "association_audit_callback": (
+                        self._record_association_head_audit
+                    ),
                     **shadow_options,
-                    **cache_options,
-                )
-            else:
-                match_res = np.empty((0, 2), dtype=int)
-                costs = np.empty((0,), dtype=float)
+                }
+
+            match_res, costs = self._run_primary_match(
+                match_trajs_and_dets_uncertainty_aware,
+                trajs,
+                frame_info.bboxes,
+                matcher_kwargs_provider,
+                cache_options,
+            )
 
             for match_idx, row in enumerate(match_res if len(match_res) > 0 else []):
                 traj_idx = int(row[0])
