@@ -2253,6 +2253,40 @@ class InferencePairCacheTask3Test(unittest.TestCase):
             self.assertEqual(list(root.glob(f".{destination.name}.*.tmp")), [])
             self.assertEqual(list(root.glob(f".{destination.name}.*.bak")), [])
 
+    def test_post_commit_backup_unlink_failure_keeps_committed_destination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "payload.pkl"
+            destination.write_bytes(b"original-bytes")
+            real_unlink = Path.unlink
+            backup_unlink_count = 0
+
+            def fail_committed_backup_unlink(path, *args, **kwargs):
+                nonlocal backup_unlink_count
+                if path.suffix == ".bak":
+                    backup_unlink_count += 1
+                    if backup_unlink_count == 2:
+                        raise OSError("backup cleanup failed")
+                return real_unlink(path, *args, **kwargs)
+
+            with patch.object(
+                Path,
+                "unlink",
+                autospec=True,
+                side_effect=fail_committed_backup_unlink,
+            ):
+                inference_pair_cache.atomic_write_pickle(
+                    destination, {"value": 2}
+                )
+
+            with destination.open("rb") as file_obj:
+                self.assertEqual(pickle.load(file_obj), {"value": 2})
+            self.assertEqual(list(root.glob(f".{destination.name}.*.tmp")), [])
+            # A failed best-effort cleanup may leave the rollback backup behind.
+            backups = list(root.glob(f".{destination.name}.*.bak"))
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(backups[0].read_bytes(), b"original-bytes")
+
     def test_parent_fsync_failure_rolls_back_existing_destination(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

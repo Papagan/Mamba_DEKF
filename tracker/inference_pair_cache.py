@@ -1901,8 +1901,12 @@ def _atomic_write(path, write_value):
                 pass
             raise
         if backup is not None:
-            backup.unlink()
+            committed_backup = backup
             backup = None
+            try:
+                committed_backup.unlink()
+            except OSError:
+                pass
     except BaseException:
         if descriptor is not None:
             try:
