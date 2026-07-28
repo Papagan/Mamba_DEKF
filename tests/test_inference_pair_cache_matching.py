@@ -263,16 +263,20 @@ class InferencePairCacheMatchingTest(unittest.TestCase):
         self.assertEqual(errors, [])
 
     def test_malformed_context_emits_task3_valid_safe_error(self):
-        from tracker.inference_pair_cache import validate_error_record
+        from tracker import inference_pair_cache
 
         payload = _payload()
         payload["scene_id"] = " invalid "
         payload["sample_token"] = object()
         payload["frame_id"] = -7
-        payload.pop("pair_vectors")
         errors = []
+        long_message = "x" * 2048
 
-        with self._cost_patch():
+        with self._cost_patch(), patch.object(
+            inference_pair_cache,
+            "build_candidate_groups",
+            side_effect=RuntimeError(long_message),
+        ):
             matches, costs = matching.match_trajs_and_dets(
                 self.trajs,
                 self.dets,
@@ -286,10 +290,39 @@ class InferencePairCacheMatchingTest(unittest.TestCase):
         np.testing.assert_array_equal(matches, np.asarray([[0, 0], [1, 1]]))
         np.testing.assert_array_equal(costs, np.asarray([0.10, 0.20], dtype=np.float32))
         self.assertEqual(len(errors), 1)
-        self.assertEqual(validate_error_record(errors[0]), errors[0])
+        self.assertEqual(
+            inference_pair_cache.validate_error_record(errors[0]), errors[0]
+        )
         self.assertEqual(errors[0]["scene_id"], "unknown")
         self.assertEqual(errors[0]["sample_token"], "unknown")
         self.assertEqual(errors[0]["frame_id"], 0)
+        self.assertEqual(errors[0]["message"], "x" * 1024)
+        self.assertEqual(len(errors[0]["message"]), 1024)
+
+    def test_error_record_validation_failure_is_nonfatal_non_strict(self):
+        from tracker import inference_pair_cache
+
+        errors = []
+        with self._cost_patch(), patch.object(
+            inference_pair_cache,
+            "validate_error_record",
+            side_effect=RuntimeError("normalization failed"),
+        ):
+            matches, costs = matching.match_trajs_and_dets(
+                self.trajs,
+                self.dets,
+                _cfg(),
+                inference_pair_cache_payload=_payload(),
+                inference_pair_cache_callback=lambda groups: (_ for _ in ()).throw(
+                    ValueError("callback failed")
+                ),
+                inference_pair_cache_error_callback=errors.append,
+                inference_pair_cache_gt_provider=lambda: _gt(),
+            )
+
+        np.testing.assert_array_equal(matches, np.asarray([[0, 0], [1, 1]]))
+        np.testing.assert_array_equal(costs, np.asarray([0.10, 0.20], dtype=np.float32))
+        self.assertEqual(errors, [])
 
     def test_strict_reraises_original_failure_after_solver_completed(self):
         solver_completed = {"value": False}

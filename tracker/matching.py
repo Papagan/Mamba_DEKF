@@ -5,7 +5,6 @@
 import copy
 import os
 from collections.abc import Mapping
-from numbers import Integral
 
 import lap
 import numpy as np
@@ -461,34 +460,52 @@ def _association_shadow_error_record(exc, *, stage, metadata):
 
 
 def _inference_pair_cache_error_record(exc, *, stage, payload):
-    payload = payload if isinstance(payload, Mapping) else {}
+    from tracker.inference_pair_cache import validate_error_record
 
-    def safe_string(name):
-        value = payload.get(name)
-        if isinstance(value, np.generic):
-            value = value.item()
+    def native(value):
+        return value.item() if isinstance(value, np.generic) else value
+
+    def canonical_string(value, fallback):
+        try:
+            value = native(value)
+        except Exception:
+            return fallback
         if type(value) is str and value and value.strip() == value:
             return value
-        return "unknown"
+        return fallback
 
-    frame_id = payload.get("frame_id")
-    if isinstance(frame_id, np.generic):
-        frame_id = frame_id.item()
-    if (
-        isinstance(frame_id, (bool, np.bool_))
-        or not isinstance(frame_id, Integral)
-        or int(frame_id) < 0
-    ):
-        frame_id = 0
+    error_type = canonical_string(type(exc).__name__, "Exception")
+    try:
+        message = str(exc).strip()
+    except Exception:
+        message = error_type
+    if not message:
+        message = error_type
+    stage = canonical_string(stage, "export")
 
-    return {
-        "scene_id": safe_string("scene_id"),
-        "sample_token": safe_string("sample_token"),
-        "frame_id": int(frame_id),
-        "stage": stage,
-        "error_type": type(exc).__name__,
-        "message": str(exc).strip() or type(exc).__name__,
-    }
+    try:
+        if not isinstance(payload, Mapping):
+            raise TypeError("payload context must be a mapping")
+        record = {
+            "scene_id": native(payload.get("scene_id")),
+            "sample_token": native(payload.get("sample_token")),
+            "frame_id": native(payload.get("frame_id")),
+            "stage": stage,
+            "error_type": error_type,
+            "message": message,
+        }
+        return validate_error_record(record)
+    except Exception:
+        return validate_error_record(
+            {
+                "scene_id": "unknown",
+                "sample_token": "unknown",
+                "frame_id": 0,
+                "stage": stage,
+                "error_type": error_type,
+                "message": message,
+            }
+        )
 
 
 def _export_inference_pair_cache_groups(
