@@ -238,7 +238,10 @@ def _write_merged_association_head_audit(cfg, scene_assoc_states):
 
 def _inference_pair_cache_enabled(cfg):
     cache_cfg = ((cfg or {}).get("INFERENCE_PAIR_CACHE") or {})
-    return bool(cache_cfg.get("ENABLED", False))
+    runtime_disabled = bool(
+        (cfg or {}).get("_INFERENCE_PAIR_CACHE_RUNTIME_DISABLED", False)
+    )
+    return bool(cache_cfg.get("ENABLED", False)) and not runtime_disabled
 
 
 def _default_inference_pair_cache_summary_path(output_path):
@@ -353,6 +356,29 @@ def _create_inference_pair_cache_spool(cfg, parent_dir):
         dir=str(parent_dir),
     )
     cfg["_INFERENCE_PAIR_CACHE_SPOOL_DIR"] = spool_dir
+    return spool_dir
+
+
+def _initialize_inference_pair_cache_spool(cfg, parent_dir):
+    if not _inference_pair_cache_enabled(cfg):
+        return None
+    strict = bool(
+        ((cfg.get("INFERENCE_PAIR_CACHE") or {}).get("STRICT", False))
+    )
+    try:
+        spool_dir = _create_inference_pair_cache_spool(cfg, parent_dir)
+    except Exception as exc:
+        if strict:
+            raise
+        cfg["_INFERENCE_PAIR_CACHE_RUNTIME_DISABLED"] = True
+        cfg.pop("_INFERENCE_PAIR_CACHE_SPOOL_DIR", None)
+        cfg.pop("_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST", None)
+        print(
+            "[main] WARNING: failed to initialize inference pair cache "
+            f"spool; cache disabled for this run: {exc}"
+        )
+        return None
+    cfg.pop("_INFERENCE_PAIR_CACHE_RUNTIME_DISABLED", None)
     return spool_dir
 
 
@@ -840,7 +866,7 @@ if __name__ == "__main__":
     )
     os.makedirs(save_path, exist_ok=True)
     cfg["SAVE_PATH"] = save_path
-    _create_inference_pair_cache_spool(cfg, save_path)
+    _initialize_inference_pair_cache_spool(cfg, save_path)
 
     start_time = time.time()
 

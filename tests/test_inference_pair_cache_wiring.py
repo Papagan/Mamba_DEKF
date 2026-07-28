@@ -477,6 +477,22 @@ class CacheConfigurationTest(unittest.TestCase):
         self.assertEqual(calls[-1]["max_groups_per_class_state"], 9)
         self.assertTrue(calls[-1]["require_audit_gt"])
 
+        before_disabled = len(calls)
+        tracker = types.SimpleNamespace(
+            cfg={
+                "INFERENCE_PAIR_CACHE": {"ENABLED": True},
+                "_INFERENCE_PAIR_CACHE_RUNTIME_DISABLED": True,
+                "_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST": {"unused": True},
+            }
+        )
+        tracker._inference_pair_cache_cfg = types.MethodType(
+            methods["_inference_pair_cache_cfg"], tracker
+        )
+        methods["_initialize_inference_pair_cache"](tracker)
+        self.assertIsNone(tracker.inference_pair_cache)
+        self.assertFalse(tracker.inference_pair_cache_cfg["ENABLED"])
+        self.assertEqual(len(calls), before_disabled)
+
     def test_record_and_export_helpers_are_noops_when_disabled(self):
         methods = _load_methods(
             "_record_inference_pair_groups",
@@ -739,6 +755,7 @@ class MainCacheOutputWiringTest(unittest.TestCase):
         "_effective_cfg_for_runtime_manifest",
         "_build_runtime_manifests",
         "_create_inference_pair_cache_spool",
+        "_initialize_inference_pair_cache_spool",
         "_cleanup_inference_pair_cache_spool",
         "_scene_inference_pair_cache_spool_path",
         "_publish_scene_inference_pair_cache_marker",
@@ -965,6 +982,58 @@ class MainCacheOutputWiringTest(unittest.TestCase):
             self.assertNotIn("scene-a", Path(marker["state_path"]).name)
             with Path(marker["state_path"]).open("rb") as file_obj:
                 self.assertEqual(pickle.load(file_obj), {"groups": []})
+
+    def test_spool_initialization_failure_runtime_disables_non_strict_cache(self):
+        warnings = []
+        helpers = self._helpers(
+            build_inference_pair_cache_manifest=Mock(),
+            build_association_runtime_manifest=Mock(),
+            print=lambda *items, **kwargs: warnings.append(
+                " ".join(str(item) for item in items)
+            ),
+            tempfile=types.SimpleNamespace(
+                mkdtemp=Mock(side_effect=OSError("spool unavailable"))
+            ),
+        )
+        cfg = self._base_cfg()
+        cfg["INFERENCE_PAIR_CACHE"].update(
+            {"ENABLED": True, "STRICT": False}
+        )
+        cfg["_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST"] = {"manifest": True}
+
+        self.assertIsNone(
+            helpers["_initialize_inference_pair_cache_spool"](cfg, "/tmp")
+        )
+
+        self.assertTrue(cfg["_INFERENCE_PAIR_CACHE_RUNTIME_DISABLED"])
+        self.assertNotIn("_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST", cfg)
+        self.assertNotIn("_INFERENCE_PAIR_CACHE_SPOOL_DIR", cfg)
+        self.assertFalse(helpers["_inference_pair_cache_enabled"](cfg))
+        self.assertTrue(
+            any(
+                "WARNING" in message and "spool unavailable" in message
+                for message in warnings
+            )
+        )
+
+    def test_spool_initialization_failure_is_fatal_in_strict_mode(self):
+        helpers = self._helpers(
+            build_inference_pair_cache_manifest=Mock(),
+            build_association_runtime_manifest=Mock(),
+            tempfile=types.SimpleNamespace(
+                mkdtemp=Mock(side_effect=OSError("spool unavailable"))
+            ),
+        )
+        cfg = self._base_cfg()
+        cfg["INFERENCE_PAIR_CACHE"].update(
+            {"ENABLED": True, "STRICT": True}
+        )
+        cfg["_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST"] = {"manifest": True}
+
+        with self.assertRaisesRegex(OSError, "spool unavailable"):
+            helpers["_initialize_inference_pair_cache_spool"](cfg, "/tmp")
+        self.assertNotIn("_INFERENCE_PAIR_CACHE_RUNTIME_DISABLED", cfg)
+        self.assertIn("_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST", cfg)
 
     def test_real_manager_round_trip_contains_marker_not_full_state(self):
         helpers = self._helpers(

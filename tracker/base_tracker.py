@@ -747,7 +747,12 @@ class Base3DTracker:
             "STRICT": False,
         }
         configured = self.cfg.get("INFERENCE_PAIR_CACHE", {}) or {}
-        return {**defaults, **configured}
+        effective = {**defaults, **configured}
+        if bool(
+            self.cfg.get("_INFERENCE_PAIR_CACHE_RUNTIME_DISABLED", False)
+        ):
+            effective["ENABLED"] = False
+        return effective
 
     def _initialize_inference_pair_cache(self) -> None:
         self.inference_pair_cache_cfg = self._inference_pair_cache_cfg()
