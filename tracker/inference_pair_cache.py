@@ -1863,6 +1863,30 @@ def _backup_destination(destination):
         raise
 
 
+class AtomicWriteRollbackError(RuntimeError):
+    """Report a failed durability rollback without discarding recovery data."""
+
+    def __init__(
+        self, destination, backup, parent_fsync_error, rollback_error
+    ):
+        self.destination = Path(destination)
+        self.backup = Path(backup) if backup is not None else None
+        self.parent_fsync_error = parent_fsync_error
+        self.rollback_error = rollback_error
+        message = (
+            f"atomic write parent-directory fsync failed for "
+            f"{self.destination}: {parent_fsync_error}; rollback failed: "
+            f"{rollback_error}"
+        )
+        if self.backup is not None:
+            message += f"; recover previous bytes from backup {self.backup}"
+        else:
+            message += (
+                f"; could not remove replacement destination {self.destination}"
+            )
+        super().__init__(message)
+
+
 def _atomic_write(path, write_value):
     """Write atomically, restoring the previous path if durability fails."""
     destination = Path(path)
@@ -1886,15 +1910,22 @@ def _atomic_write(path, write_value):
         os.replace(str(temporary), str(destination))
         try:
             _fsync_directory(destination.parent)
-        except BaseException:
+        except BaseException as parent_fsync_error:
+            recovery_backup = backup
             try:
                 if backup is not None:
                     os.replace(str(backup), str(destination))
                     backup = None
                 else:
                     destination.unlink()
-            except OSError:
-                pass
+            except BaseException as rollback_error:
+                backup = None
+                raise AtomicWriteRollbackError(
+                    destination,
+                    recovery_backup,
+                    parent_fsync_error,
+                    rollback_error,
+                ) from rollback_error
             try:
                 _fsync_directory(destination.parent)
             except OSError:

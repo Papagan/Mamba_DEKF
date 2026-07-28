@@ -2292,17 +2292,19 @@ class InferencePairCacheTask3Test(unittest.TestCase):
             root = Path(directory)
             destination = root / "payload.pkl"
             destination.write_bytes(b"original-bytes")
+            parent_fsync_error = OSError("parent fsync failed")
             with patch(
                 "tracker.inference_pair_cache.os.fsync",
-                side_effect=[None, OSError("parent fsync failed"), None],
+                side_effect=[None, parent_fsync_error, None],
             ), patch(
                 "tracker.inference_pair_cache.os.close", wraps=os.close
             ) as close_mock:
-                with self.assertRaisesRegex(OSError, "parent fsync failed"):
+                with self.assertRaises(OSError) as raised:
                     inference_pair_cache.atomic_write_pickle(
                         destination, {"value": 2}
                     )
 
+            self.assertIs(raised.exception, parent_fsync_error)
             self.assertEqual(destination.read_bytes(), b"original-bytes")
             self.assertTrue(close_mock.called)
             self.assertEqual(list(root.glob(f".{destination.name}.*.tmp")), [])
@@ -2312,18 +2314,102 @@ class InferencePairCacheTask3Test(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             destination = root / "payload.pkl"
+            parent_fsync_error = OSError("parent fsync failed")
             with patch(
                 "tracker.inference_pair_cache.os.fsync",
-                side_effect=[None, OSError("parent fsync failed"), None],
+                side_effect=[None, parent_fsync_error, None],
             ):
-                with self.assertRaisesRegex(OSError, "parent fsync failed"):
+                with self.assertRaises(OSError) as raised:
                     inference_pair_cache.atomic_write_pickle(
                         destination, {"value": 2}
                     )
 
+            self.assertIs(raised.exception, parent_fsync_error)
             self.assertFalse(destination.exists())
             self.assertEqual(list(root.glob(f".{destination.name}.*.tmp")), [])
             self.assertEqual(list(root.glob(f".{destination.name}.*.bak")), [])
+
+    def test_parent_fsync_restore_failure_preserves_recovery_backup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "payload.pkl"
+            destination.write_bytes(b"original-bytes")
+            parent_fsync_error = OSError("parent fsync failed")
+            rollback_error = OSError("restore failed")
+            real_replace = os.replace
+            replace_count = 0
+
+            def fail_restore(source, target):
+                nonlocal replace_count
+                replace_count += 1
+                if replace_count == 2:
+                    raise rollback_error
+                return real_replace(source, target)
+
+            with patch(
+                "tracker.inference_pair_cache.os.fsync",
+                side_effect=[None, parent_fsync_error],
+            ), patch(
+                "tracker.inference_pair_cache.os.replace",
+                side_effect=fail_restore,
+            ):
+                with self.assertRaises(
+                    inference_pair_cache.AtomicWriteRollbackError
+                ) as raised:
+                    inference_pair_cache.atomic_write_pickle(
+                        destination, {"value": 2}
+                    )
+
+            error = raised.exception
+            self.assertEqual(error.destination, destination)
+            self.assertIs(error.parent_fsync_error, parent_fsync_error)
+            self.assertIs(error.rollback_error, rollback_error)
+            self.assertIs(error.__cause__, rollback_error)
+            self.assertIn(str(destination), str(error))
+            self.assertIn(str(error.backup), str(error))
+            self.assertEqual(error.backup.read_bytes(), b"original-bytes")
+            with destination.open("rb") as file_obj:
+                self.assertEqual(pickle.load(file_obj), {"value": 2})
+            self.assertEqual(list(root.glob(f".{destination.name}.*.tmp")), [])
+
+    def test_parent_fsync_unlink_failure_reports_destination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "payload.pkl"
+            parent_fsync_error = OSError("parent fsync failed")
+            rollback_error = OSError("unlink failed")
+            real_unlink = Path.unlink
+
+            def fail_destination_unlink(path, *args, **kwargs):
+                if path == destination:
+                    raise rollback_error
+                return real_unlink(path, *args, **kwargs)
+
+            with patch(
+                "tracker.inference_pair_cache.os.fsync",
+                side_effect=[None, parent_fsync_error],
+            ), patch.object(
+                Path,
+                "unlink",
+                autospec=True,
+                side_effect=fail_destination_unlink,
+            ):
+                with self.assertRaises(
+                    inference_pair_cache.AtomicWriteRollbackError
+                ) as raised:
+                    inference_pair_cache.atomic_write_pickle(
+                        destination, {"value": 2}
+                    )
+
+            error = raised.exception
+            self.assertEqual(error.destination, destination)
+            self.assertIsNone(error.backup)
+            self.assertIs(error.parent_fsync_error, parent_fsync_error)
+            self.assertIs(error.rollback_error, rollback_error)
+            self.assertIs(error.__cause__, rollback_error)
+            self.assertIn(str(destination), str(error))
+            self.assertTrue(destination.exists())
+            self.assertEqual(list(root.glob(f".{destination.name}.*.tmp")), [])
 
 
 if __name__ == "__main__":
