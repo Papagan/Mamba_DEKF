@@ -18,6 +18,12 @@ from tracker.base_tracker import Base3DTracker
 from tracker.dirty_suppressor_audit import DirtySuppressorAuditAccumulator
 from tracker.association_head_audit import AssociationHeadAuditAccumulator
 from tracker.association_runtime_manifest import build_association_runtime_manifest
+from tracker.inference_pair_cache import (
+    InferencePairCacheAccumulator,
+    atomic_write_json,
+    atomic_write_pickle,
+    build_inference_pair_cache_manifest,
+)
 from dataset.baseversion_dataset import BaseVersionTrackingDataset
 from evaluation.static_evaluation.kitti.evaluation_HOTA.scripts.run_kitti import (
     eval_kitti,
@@ -223,6 +229,240 @@ def _write_merged_association_head_audit(cfg, scene_assoc_states):
         )
 
 
+def _inference_pair_cache_enabled(cfg):
+    cache_cfg = ((cfg or {}).get("INFERENCE_PAIR_CACHE") or {})
+    return bool(cache_cfg.get("ENABLED", False))
+
+
+def _default_inference_pair_cache_summary_path(output_path):
+    root, extension = os.path.splitext(output_path)
+    summary_path = f"{root}.json" if extension else f"{output_path}.json"
+    if os.path.abspath(summary_path) == os.path.abspath(output_path):
+        summary_path = f"{root}.summary.json"
+    return summary_path
+
+
+def _validate_inference_pair_cache_output_paths(output_path, summary_path):
+    if os.path.abspath(os.path.expanduser(output_path)) == os.path.abspath(
+        os.path.expanduser(summary_path)
+    ):
+        raise ValueError(
+            "inference pair cache output and summary paths must differ"
+        )
+
+
+def _apply_inference_pair_cache_cli_overrides(
+    cfg,
+    *,
+    output_path=None,
+    summary_path=None,
+    strict=False,
+    require_gt=False,
+    omit_embeddings=False,
+    omit_pair_vectors=False,
+):
+    """Apply explicit cache CLI options without changing YAML-only runs."""
+    if output_path is None or output_path == "":
+        return cfg
+    if not isinstance(output_path, str) or not output_path.strip():
+        raise ValueError("inference pair cache output path must be nonblank")
+    if summary_path is not None and (
+        not isinstance(summary_path, str) or not summary_path.strip()
+    ):
+        raise ValueError("inference pair cache summary path must be nonblank")
+    resolved_summary_path = (
+        summary_path
+        if summary_path is not None
+        else _default_inference_pair_cache_summary_path(output_path)
+    )
+    _validate_inference_pair_cache_output_paths(
+        output_path, resolved_summary_path
+    )
+
+    cache_cfg = cfg.setdefault("INFERENCE_PAIR_CACHE", {})
+    if not isinstance(cache_cfg, dict):
+        raise TypeError("INFERENCE_PAIR_CACHE must be a mapping")
+    cache_cfg.update(
+        {
+            "ENABLED": True,
+            "OUTPUT_PATH": output_path,
+            "SUMMARY_PATH": resolved_summary_path,
+            "STRICT": bool(strict),
+            "REQUIRE_AUDIT_GT": bool(require_gt),
+            "INCLUDE_EMBEDDINGS": not bool(omit_embeddings),
+            "INCLUDE_PAIR_VECTORS": not bool(omit_pair_vectors),
+        }
+    )
+    return cfg
+
+
+def _effective_cfg_for_runtime_manifest(cfg):
+    """Remove injected runtime identity before hashing effective configuration."""
+    effective_cfg = copy.deepcopy(cfg)
+    for key in list(effective_cfg):
+        if key.startswith("_") and key.endswith("RUNTIME_MANIFEST"):
+            del effective_cfg[key]
+    return effective_cfg
+
+
+def _build_runtime_manifests(cfg, *, config_path, process_count, git_root):
+    """Build each parent-owned manifest once from the same effective config."""
+    effective_cfg = _effective_cfg_for_runtime_manifest(cfg)
+    pair_manifest = None
+    if _inference_pair_cache_enabled(effective_cfg):
+        mamba_cfg = effective_cfg.get("MAMBA", {}) or {}
+        embedding_dim = int(mamba_cfg["EMBED_DIM"])
+        pair_manifest = build_inference_pair_cache_manifest(
+            cfg=effective_cfg,
+            config_path=config_path,
+            process_count=process_count,
+            git_root=git_root,
+            pair_vector_dim=4 * embedding_dim + 7,
+            embedding_dim=embedding_dim,
+        )
+    association_manifest = build_association_runtime_manifest(
+        cfg=effective_cfg,
+        config_path=config_path,
+        process_count=process_count,
+        git_root=git_root,
+    )
+
+    if pair_manifest is None:
+        cfg.pop("_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST", None)
+    else:
+        cfg["_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST"] = pair_manifest
+    cfg["_ASSOCIATION_AUDIT_RUNTIME_MANIFEST"] = association_manifest
+
+
+def _collect_scene_inference_pair_cache_state(
+    scene_id, tracker, cfg, scene_pair_cache_states
+):
+    if (
+        not _inference_pair_cache_enabled(cfg)
+        or scene_pair_cache_states is None
+    ):
+        return
+    state = tracker.export_inference_pair_cache_state()
+    if state is not None:
+        scene_pair_cache_states[scene_id] = state
+
+
+def _inference_pair_cache_error_record(scene_id, stage, error):
+    normalized_scene_id = (
+        scene_id.strip()
+        if isinstance(scene_id, str) and scene_id.strip()
+        else "unknown"
+    )
+    message = str(error).strip() or type(error).__name__
+    return {
+        "scene_id": normalized_scene_id,
+        "sample_token": "unknown",
+        "frame_id": 0,
+        "stage": stage,
+        "error_type": type(error).__name__,
+        "message": message,
+    }
+
+
+def _write_merged_inference_pair_cache(cfg, scene_pair_cache_states):
+    if not _inference_pair_cache_enabled(cfg):
+        return None
+
+    cache_cfg = cfg.get("INFERENCE_PAIR_CACHE", {}) or {}
+    strict = bool(cache_cfg.get("STRICT", False))
+    output_path = cache_cfg.get("OUTPUT_PATH")
+    if not isinstance(output_path, str) or not output_path.strip():
+        error = ValueError(
+            "INFERENCE_PAIR_CACHE.OUTPUT_PATH must be a nonblank string"
+        )
+        if strict:
+            raise error
+        print(f"[main] WARNING: inference pair cache disabled at write: {error}")
+        return None
+    summary_path = cache_cfg.get("SUMMARY_PATH")
+    if summary_path is None:
+        summary_path = _default_inference_pair_cache_summary_path(output_path)
+    if not isinstance(summary_path, str) or not summary_path.strip():
+        error = ValueError(
+            "INFERENCE_PAIR_CACHE.SUMMARY_PATH must be a nonblank string"
+        )
+        if strict:
+            raise error
+        print(f"[main] WARNING: inference pair cache disabled at write: {error}")
+        return None
+    try:
+        _validate_inference_pair_cache_output_paths(
+            output_path, summary_path
+        )
+    except ValueError as error:
+        if strict:
+            raise
+        print(f"[main] WARNING: inference pair cache disabled at write: {error}")
+        return None
+
+    merged = InferencePairCacheAccumulator(
+        runtime_manifest=cfg.get(
+            "_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST", {}
+        ),
+        max_groups_per_class_state=int(
+            cache_cfg.get("MAX_GROUPS_PER_CLASS_STATE", 0)
+        ),
+        require_audit_gt=bool(cache_cfg.get("REQUIRE_AUDIT_GT", False)),
+    )
+    states = scene_pair_cache_states or {}
+    for scene_id in sorted(states.keys()):
+        try:
+            merged.merge_state(states[scene_id])
+        except Exception as exc:
+            if strict:
+                raise
+            merged.add_error(
+                _inference_pair_cache_error_record(
+                    scene_id, "worker_merge", exc
+                )
+            )
+            print(
+                "[main] WARNING: failed to merge inference pair cache "
+                f"for scene {scene_id}: {exc}"
+            )
+
+    payload = merged.to_payload()
+    try:
+        atomic_write_pickle(output_path, payload)
+        print(f"[main] Wrote inference pair cache to {output_path}")
+    except Exception as exc:
+        if strict:
+            raise
+        merged.add_error(
+            _inference_pair_cache_error_record(
+                "parent", "write_pickle", exc
+            )
+        )
+        print(
+            "[main] WARNING: failed to write inference pair cache "
+            f"to {output_path}: {exc}"
+        )
+
+    summary = merged.to_summary()
+    try:
+        atomic_write_json(summary_path, summary)
+        print(f"[main] Wrote inference pair cache summary to {summary_path}")
+    except Exception as exc:
+        if strict:
+            raise
+        merged.add_error(
+            _inference_pair_cache_error_record(
+                "parent", "write_json", exc
+            )
+        )
+        summary = merged.to_summary()
+        print(
+            "[main] WARNING: failed to write inference pair cache summary "
+            f"to {summary_path}: {exc}"
+        )
+    return payload, summary
+
+
 def run(
     scene_id,
     scenes_data,
@@ -232,6 +472,7 @@ def run(
     scene_audit_states,
     scene_dirty_states,
     scene_assoc_states,
+    scene_pair_cache_states,
     scene_perf_stats,
 ):
     """
@@ -300,6 +541,9 @@ def run(
     _collect_scene_inference_audit_state(scene_id, tracker, cfg, scene_audit_states)
     _collect_scene_dirty_suppressor_audit_state(scene_id, tracker, cfg, scene_dirty_states)
     _collect_scene_association_head_audit_state(scene_id, tracker, cfg, scene_assoc_states)
+    _collect_scene_inference_pair_cache_state(
+        scene_id, tracker, cfg, scene_pair_cache_states
+    )
     scene_perf_stats[scene_id] = {
         "frames": len(dataset),
         "tracking_seconds": tracking_seconds,
@@ -333,6 +577,16 @@ if __name__ == "__main__":
     parser.add_argument("--debug", action="store_true", help="debug")
     parser.add_argument("--mode", "-m", action="store_true", help="online or offline")
     parser.add_argument("--process", "-p", type=int, default=1, help="multi-process!")
+    parser.add_argument("--inference-pair-cache-output", default=None)
+    parser.add_argument("--inference-pair-cache-summary", default=None)
+    parser.add_argument("--inference-pair-cache-strict", action="store_true")
+    parser.add_argument("--inference-pair-cache-require-gt", action="store_true")
+    parser.add_argument(
+        "--inference-pair-cache-omit-embeddings", action="store_true"
+    )
+    parser.add_argument(
+        "--inference-pair-cache-omit-pair-vectors", action="store_true"
+    )
     args = parser.parse_args()
 
     if args.config:
@@ -350,9 +604,17 @@ if __name__ == "__main__":
             cfg_path = cfg_path.replace(".yaml", "_offline.yaml")
 
     cfg = yaml.load(open(cfg_path, "r"), Loader=yaml.Loader)
-
-    cfg["_ASSOCIATION_AUDIT_RUNTIME_MANIFEST"] = build_association_runtime_manifest(
-        cfg=cfg,
+    _apply_inference_pair_cache_cli_overrides(
+        cfg,
+        output_path=args.inference_pair_cache_output,
+        summary_path=args.inference_pair_cache_summary,
+        strict=args.inference_pair_cache_strict,
+        require_gt=args.inference_pair_cache_require_gt,
+        omit_embeddings=args.inference_pair_cache_omit_embeddings,
+        omit_pair_vectors=args.inference_pair_cache_omit_pair_vectors,
+    )
+    _build_runtime_manifests(
+        cfg,
         config_path=cfg_path,
         process_count=args.process,
         git_root=os.path.dirname(os.path.abspath(__file__)),
@@ -391,6 +653,9 @@ if __name__ == "__main__":
     scene_audit_states = manager.dict()
     scene_dirty_states = manager.dict()
     scene_assoc_states = manager.dict()
+    scene_pair_cache_states = (
+        manager.dict() if _inference_pair_cache_enabled(cfg) else None
+    )
     scene_perf_stats = manager.dict()
     if args.process > 1:
         pool = multiprocessing.Pool(args.process)
@@ -403,6 +668,7 @@ if __name__ == "__main__":
             scene_audit_states=scene_audit_states,
             scene_dirty_states=scene_dirty_states,
             scene_assoc_states=scene_assoc_states,
+            scene_pair_cache_states=scene_pair_cache_states,
             scene_perf_stats=scene_perf_stats,
         )
         pool.map(func, scene_lists)
@@ -419,12 +685,15 @@ if __name__ == "__main__":
                 scene_audit_states,
                 scene_dirty_states,
                 scene_assoc_states,
+                scene_pair_cache_states,
                 scene_perf_stats,
             )
     tracking_results = dict(tracking_results)
     scene_audit_states = dict(scene_audit_states)
     scene_dirty_states = dict(scene_dirty_states)
     scene_assoc_states = dict(scene_assoc_states)
+    if scene_pair_cache_states is not None:
+        scene_pair_cache_states = dict(scene_pair_cache_states)
     scene_perf_stats = dict(scene_perf_stats)
     total_tracking_frames = sum(int(item.get("frames", 0)) for item in scene_perf_stats.values())
     total_tracking_seconds = sum(float(item.get("tracking_seconds", 0.0)) for item in scene_perf_stats.values())
@@ -437,6 +706,7 @@ if __name__ == "__main__":
     _write_merged_infer_noise_audit(cfg, scene_audit_states)
     _write_merged_dirty_suppressor_audit(cfg, scene_dirty_states)
     _write_merged_association_head_audit(cfg, scene_assoc_states)
+    _write_merged_inference_pair_cache(cfg, scene_pair_cache_states)
 
     if args.dataset == "kitti":
         save_results_kitti(tracking_results, cfg)

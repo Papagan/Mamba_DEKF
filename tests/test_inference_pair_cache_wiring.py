@@ -1,19 +1,31 @@
 import ast
+import copy
+import json
+import os
+import pickle
+import tempfile
 import types
 import typing
 import unittest
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from unittest.mock import Mock
 
 import numpy as np
 import torch
 
 from training.association_features import compose_pair_vectors
-from tracker.inference_pair_cache import validate_error_record
+from tracker.inference_pair_cache import (
+    InferencePairCacheAccumulator,
+    atomic_write_json,
+    atomic_write_pickle,
+    validate_error_record,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE_TRACKER_PATH = ROOT / "tracker/base_tracker.py"
+MAIN_PATH = ROOT / "main.py"
 
 
 def _tracker_tree():
@@ -23,6 +35,37 @@ def _tracker_tree():
         for node in tree.body
         if isinstance(node, ast.ClassDef) and node.name == "Base3DTracker"
     )
+
+
+def _load_main_functions(*names, extra_globals=None):
+    tree = ast.parse(MAIN_PATH.read_text(encoding="utf-8"))
+    selected = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in names
+    ]
+    missing = set(names) - {node.name for node in selected}
+    if missing:
+        raise AssertionError(f"Missing main functions: {sorted(missing)}")
+    namespace = {
+        "copy": copy,
+        "os": os,
+        "Path": Path,
+        "InferencePairCacheAccumulator": InferencePairCacheAccumulator,
+        "atomic_write_pickle": atomic_write_pickle,
+        "atomic_write_json": atomic_write_json,
+    }
+    namespace.update(extra_globals or {})
+    exec(
+        compile(
+            ast.Module(body=selected, type_ignores=[]),
+            str(MAIN_PATH),
+            "exec",
+        ),
+        namespace,
+    )
+    return {name: namespace[name] for name in names}
 
 
 def _load_methods(*names, extra_globals=None):
@@ -643,6 +686,491 @@ class MainPathWiringTest(unittest.TestCase):
     def test_cache_options_are_only_built_for_the_primary_bev_match(self):
         source = BASE_TRACKER_PATH.read_text(encoding="utf-8")
         self.assertEqual(source.count("_inference_pair_cache_options("), 2)
+
+
+class MainCacheOutputWiringTest(unittest.TestCase):
+    helper_names = (
+        "_inference_pair_cache_enabled",
+        "_default_inference_pair_cache_summary_path",
+        "_validate_inference_pair_cache_output_paths",
+        "_apply_inference_pair_cache_cli_overrides",
+        "_effective_cfg_for_runtime_manifest",
+        "_build_runtime_manifests",
+        "_collect_scene_inference_pair_cache_state",
+        "_inference_pair_cache_error_record",
+        "_write_merged_inference_pair_cache",
+    )
+
+    def _helpers(self, **extra_globals):
+        return _load_main_functions(
+            *self.helper_names,
+            extra_globals=extra_globals,
+        )
+
+    @staticmethod
+    def _base_cfg():
+        return {
+            "FILTER_MODE": "pure_dekf",
+            "TRACKER_COMPAT_MODE": "default",
+            "CATEGORY_MAP_TO_NUMBER": {"car": 0},
+            "MAMBA": {"EMBED_DIM": 8},
+            "INFERENCE_PAIR_CACHE": {
+                "ENABLED": False,
+                "INCLUDE_EMBEDDINGS": True,
+                "INCLUDE_PAIR_VECTORS": True,
+            },
+        }
+
+    def test_cli_without_output_does_not_change_loaded_configuration(self):
+        helpers = self._helpers(
+            build_inference_pair_cache_manifest=Mock(),
+            build_association_runtime_manifest=Mock(),
+        )
+        cfg = self._base_cfg()
+        before = copy.deepcopy(cfg)
+        helpers["_apply_inference_pair_cache_cli_overrides"](
+            cfg,
+            output_path=None,
+            summary_path="ignored.json",
+            strict=True,
+            require_gt=True,
+            omit_embeddings=True,
+            omit_pair_vectors=True,
+        )
+        self.assertEqual(cfg, before)
+
+    def test_cli_output_enables_cache_and_maps_all_serialization_flags(self):
+        helpers = self._helpers(
+            build_inference_pair_cache_manifest=Mock(),
+            build_association_runtime_manifest=Mock(),
+        )
+        cfg = self._base_cfg()
+        helpers["_apply_inference_pair_cache_cli_overrides"](
+            cfg,
+            output_path="debug/runtime_pairs.pkl",
+            summary_path=None,
+            strict=True,
+            require_gt=True,
+            omit_embeddings=True,
+            omit_pair_vectors=True,
+        )
+        cache_cfg = cfg["INFERENCE_PAIR_CACHE"]
+        self.assertTrue(cache_cfg["ENABLED"])
+        self.assertEqual(cache_cfg["OUTPUT_PATH"], "debug/runtime_pairs.pkl")
+        self.assertEqual(cache_cfg["SUMMARY_PATH"], "debug/runtime_pairs.json")
+        self.assertTrue(cache_cfg["STRICT"])
+        self.assertTrue(cache_cfg["REQUIRE_AUDIT_GT"])
+        self.assertFalse(cache_cfg["INCLUDE_EMBEDDINGS"])
+        self.assertFalse(cache_cfg["INCLUDE_PAIR_VECTORS"])
+
+    def test_default_summary_and_explicit_summary_cannot_overwrite_pickle(self):
+        helpers = self._helpers(
+            build_inference_pair_cache_manifest=Mock(),
+            build_association_runtime_manifest=Mock(),
+        )
+        self.assertEqual(
+            helpers["_default_inference_pair_cache_summary_path"](
+                "debug/runtime_pairs.json"
+            ),
+            "debug/runtime_pairs.summary.json",
+        )
+        with self.assertRaisesRegex(ValueError, "paths must differ"):
+            helpers["_apply_inference_pair_cache_cli_overrides"](
+                self._base_cfg(),
+                output_path="debug/runtime_pairs.pkl",
+                summary_path="debug/runtime_pairs.pkl",
+            )
+
+    def test_runtime_manifest_uses_overridden_cfg_once_without_hidden_self_reference(self):
+        pair_calls = []
+        association_calls = []
+
+        def pair_builder(**kwargs):
+            pair_calls.append(copy.deepcopy(kwargs))
+            return {"kind": "pair"}
+
+        def association_builder(**kwargs):
+            association_calls.append(copy.deepcopy(kwargs))
+            return {"kind": "association"}
+
+        helpers = self._helpers(
+            build_inference_pair_cache_manifest=pair_builder,
+            build_association_runtime_manifest=association_builder,
+        )
+        cfg = self._base_cfg()
+        helpers["_apply_inference_pair_cache_cli_overrides"](
+            cfg,
+            output_path="pairs.pkl",
+            summary_path=None,
+            strict=False,
+            require_gt=False,
+            omit_embeddings=False,
+            omit_pair_vectors=False,
+        )
+        cfg["_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST"] = {"stale": True}
+        cfg["_ASSOCIATION_AUDIT_RUNTIME_MANIFEST"] = {"stale": True}
+        helpers["_build_runtime_manifests"](
+            cfg,
+            config_path="actual.yaml",
+            process_count=3,
+            git_root="/repo",
+        )
+
+        self.assertEqual(len(pair_calls), 1)
+        self.assertEqual(len(association_calls), 1)
+        pair_kwargs = pair_calls[0]
+        self.assertEqual(pair_kwargs["pair_vector_dim"], 39)
+        self.assertEqual(pair_kwargs["embedding_dim"], 8)
+        self.assertEqual(pair_kwargs["config_path"], "actual.yaml")
+        self.assertEqual(pair_kwargs["process_count"], 3)
+        self.assertNotIn(
+            "_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST", pair_kwargs["cfg"]
+        )
+        self.assertNotIn(
+            "_ASSOCIATION_AUDIT_RUNTIME_MANIFEST", pair_kwargs["cfg"]
+        )
+        self.assertEqual(
+            cfg["_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST"], {"kind": "pair"}
+        )
+        self.assertEqual(
+            cfg["_ASSOCIATION_AUDIT_RUNTIME_MANIFEST"],
+            {"kind": "association"},
+        )
+
+    def test_disabled_runtime_manifest_skips_pair_builder_and_hashing(self):
+        pair_builder = Mock(side_effect=AssertionError("must stay disabled"))
+        association_builder = Mock(return_value={"kind": "association"})
+        helpers = self._helpers(
+            build_inference_pair_cache_manifest=pair_builder,
+            build_association_runtime_manifest=association_builder,
+        )
+        cfg = self._base_cfg()
+        helpers["_build_runtime_manifests"](
+            cfg,
+            config_path="actual.yaml",
+            process_count=1,
+            git_root="/repo",
+        )
+        pair_builder.assert_not_called()
+        self.assertNotIn("_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST", cfg)
+        association_builder.assert_called_once()
+
+    def test_collect_scene_state_is_disabled_noop_and_enabled_export(self):
+        helpers = self._helpers(
+            build_inference_pair_cache_manifest=Mock(),
+            build_association_runtime_manifest=Mock(),
+        )
+        tracker = types.SimpleNamespace(
+            export_inference_pair_cache_state=Mock(return_value={"groups": []})
+        )
+        states = {}
+        helpers["_collect_scene_inference_pair_cache_state"](
+            "scene-a", tracker, self._base_cfg(), states
+        )
+        self.assertEqual(states, {})
+        tracker.export_inference_pair_cache_state.assert_not_called()
+
+        cfg = self._base_cfg()
+        cfg["INFERENCE_PAIR_CACHE"]["ENABLED"] = True
+        helpers["_collect_scene_inference_pair_cache_state"](
+            "scene-a", tracker, cfg, states
+        )
+        self.assertEqual(states, {"scene-a": {"groups": []}})
+
+    def test_merge_is_sorted_and_atomic_writer_argument_order_is_path_payload(self):
+        merge_order = []
+        writes = []
+
+        class Accumulator:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+            def merge_state(self, state):
+                merge_order.append(state["scene"])
+
+            def add_error(self, record):
+                raise AssertionError(record)
+
+            def to_payload(self):
+                return {"groups": [{"scene_id": item} for item in merge_order]}
+
+            def to_summary(self):
+                return {"retained": len(merge_order)}
+
+        helpers = self._helpers(
+            build_inference_pair_cache_manifest=Mock(),
+            build_association_runtime_manifest=Mock(),
+            InferencePairCacheAccumulator=Accumulator,
+            atomic_write_pickle=lambda path, payload: writes.append(
+                ("pickle", path, payload)
+            ),
+            atomic_write_json=lambda path, payload: writes.append(
+                ("json", path, payload)
+            ),
+        )
+        cfg = self._base_cfg()
+        cfg["INFERENCE_PAIR_CACHE"].update(
+            {
+                "ENABLED": True,
+                "OUTPUT_PATH": "pairs.pkl",
+                "SUMMARY_PATH": "summary.json",
+            }
+        )
+        cfg["_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST"] = {"manifest": 1}
+        result = helpers["_write_merged_inference_pair_cache"](
+            cfg,
+            {
+                "scene-b": {"scene": "scene-b"},
+                "scene-a": {"scene": "scene-a"},
+            },
+        )
+        self.assertEqual(merge_order, ["scene-a", "scene-b"])
+        self.assertEqual(writes[0], ("pickle", "pairs.pkl", result[0]))
+        self.assertEqual(writes[1], ("json", "summary.json", result[1]))
+
+    def test_disabled_write_is_noop(self):
+        writer = Mock(side_effect=AssertionError("must not write"))
+        helpers = self._helpers(
+            build_inference_pair_cache_manifest=Mock(),
+            build_association_runtime_manifest=Mock(),
+            atomic_write_pickle=writer,
+            atomic_write_json=writer,
+        )
+        self.assertIsNone(
+            helpers["_write_merged_inference_pair_cache"](
+                self._base_cfg(), {"scene": object()}
+            )
+        )
+        writer.assert_not_called()
+
+    def test_strict_merge_and_write_failures_raise(self):
+        class MergeFailureAccumulator:
+            def __init__(self, **kwargs):
+                pass
+
+            def merge_state(self, state):
+                raise RuntimeError("merge failed")
+
+        cfg = self._base_cfg()
+        cfg["INFERENCE_PAIR_CACHE"].update(
+            {
+                "ENABLED": True,
+                "OUTPUT_PATH": "pairs.pkl",
+                "SUMMARY_PATH": "summary.json",
+                "STRICT": True,
+            }
+        )
+        cfg["_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST"] = {}
+        helpers = self._helpers(
+            build_inference_pair_cache_manifest=Mock(),
+            build_association_runtime_manifest=Mock(),
+            InferencePairCacheAccumulator=MergeFailureAccumulator,
+        )
+        with self.assertRaisesRegex(RuntimeError, "merge failed"):
+            helpers["_write_merged_inference_pair_cache"](
+                cfg, {"scene-a": {"bad": True}}
+            )
+
+        class WriteAccumulator:
+            def __init__(self, **kwargs):
+                pass
+
+            def merge_state(self, state):
+                pass
+
+            def to_payload(self):
+                return {"groups": []}
+
+            def to_summary(self):
+                return {"overall": {}}
+
+        helpers = self._helpers(
+            build_inference_pair_cache_manifest=Mock(),
+            build_association_runtime_manifest=Mock(),
+            InferencePairCacheAccumulator=WriteAccumulator,
+            atomic_write_pickle=Mock(side_effect=OSError("write failed")),
+            atomic_write_json=Mock(),
+        )
+        with self.assertRaisesRegex(OSError, "write failed"):
+            helpers["_write_merged_inference_pair_cache"](cfg, {})
+
+    def test_non_strict_failures_are_canonical_and_valid_states_still_write(self):
+        errors = []
+        writes = []
+
+        class Accumulator:
+            def __init__(self, **kwargs):
+                self.valid = []
+
+            def merge_state(self, state):
+                if state.get("bad"):
+                    raise ValueError("bad state")
+                self.valid.append(state["scene"])
+
+            def add_error(self, record):
+                errors.append(validate_error_record(record))
+
+            def to_payload(self):
+                return {"groups": list(self.valid)}
+
+            def to_summary(self):
+                return {"groups": list(self.valid), "errors": copy.deepcopy(errors)}
+
+        def fail_pickle(path, payload):
+            writes.append(("pickle", path, payload))
+            raise OSError("disk full")
+
+        helpers = self._helpers(
+            build_inference_pair_cache_manifest=Mock(),
+            build_association_runtime_manifest=Mock(),
+            InferencePairCacheAccumulator=Accumulator,
+            atomic_write_pickle=fail_pickle,
+            atomic_write_json=lambda path, payload: writes.append(
+                ("json", path, payload)
+            ),
+        )
+        cfg = self._base_cfg()
+        cfg["INFERENCE_PAIR_CACHE"].update(
+            {
+                "ENABLED": True,
+                "OUTPUT_PATH": "pairs.pkl",
+                "SUMMARY_PATH": "summary.json",
+                "STRICT": False,
+            }
+        )
+        cfg["_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST"] = {}
+        payload, summary = helpers["_write_merged_inference_pair_cache"](
+            cfg,
+            {
+                "scene-b": {"scene": "scene-b"},
+                "scene-a": {"bad": True},
+            },
+        )
+        self.assertEqual(payload["groups"], ["scene-b"])
+        self.assertEqual(summary["groups"], ["scene-b"])
+        self.assertEqual([item["stage"] for item in errors], [
+            "worker_merge",
+            "write_pickle",
+        ])
+        self.assertEqual(writes[-1][0:2], ("json", "summary.json"))
+
+    def test_real_atomic_outputs_have_consistent_manifest_and_groups(self):
+        helpers = self._helpers(
+            build_inference_pair_cache_manifest=Mock(),
+            build_association_runtime_manifest=Mock(),
+        )
+        manifest = {}
+        source = InferencePairCacheAccumulator(runtime_manifest=manifest)
+        state = source.export_state()
+        with tempfile.TemporaryDirectory() as directory:
+            output = str(Path(directory) / "pairs.pkl")
+            summary_path = str(Path(directory) / "pairs.json")
+            cfg = self._base_cfg()
+            cfg["INFERENCE_PAIR_CACHE"].update(
+                {
+                    "ENABLED": True,
+                    "OUTPUT_PATH": output,
+                    "SUMMARY_PATH": summary_path,
+                }
+            )
+            cfg["_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST"] = manifest
+            payload, summary = helpers["_write_merged_inference_pair_cache"](
+                cfg, {"scene-a": state}
+            )
+            self.assertEqual(
+                payload["runtime_manifest"], summary["runtime_manifest"]
+            )
+            self.assertEqual(
+                len(payload["groups"]), summary["overall"]["accepted_groups"]
+            )
+            with Path(output).open("rb") as file_obj:
+                self.assertEqual(pickle.load(file_obj), payload)
+            with Path(summary_path).open("r", encoding="utf-8") as file_obj:
+                self.assertEqual(json.load(file_obj), summary)
+
+    def test_main_run_signature_and_single_multi_process_calls_include_pair_states(self):
+        tree = ast.parse(MAIN_PATH.read_text(encoding="utf-8"))
+        run_def = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "run"
+        )
+        self.assertIn(
+            "scene_pair_cache_states",
+            [item.arg for item in run_def.args.args],
+        )
+        source = MAIN_PATH.read_text(encoding="utf-8")
+        self.assertIn("scene_pair_cache_states=scene_pair_cache_states", source)
+        self.assertIn("_write_merged_inference_pair_cache(", source)
+
+    def test_cli_flags_are_declared_and_overrides_precede_manifest_build(self):
+        source = MAIN_PATH.read_text(encoding="utf-8")
+        for flag in (
+            "--inference-pair-cache-output",
+            "--inference-pair-cache-summary",
+            "--inference-pair-cache-strict",
+            "--inference-pair-cache-require-gt",
+            "--inference-pair-cache-omit-embeddings",
+            "--inference-pair-cache-omit-pair-vectors",
+        ):
+            self.assertEqual(source.count(f'"{flag}"'), 1)
+        self.assertLess(
+            source.index("_apply_inference_pair_cache_cli_overrides(\n        cfg,"),
+            source.index("_build_runtime_manifests(\n        cfg,"),
+        )
+        self.assertIn(
+            "manager.dict() if _inference_pair_cache_enabled(cfg) else None",
+            source,
+        )
+
+    def test_strict_json_write_failure_raises_and_non_strict_records_error(self):
+        errors = []
+
+        class Accumulator:
+            def __init__(self, **kwargs):
+                pass
+
+            def merge_state(self, state):
+                pass
+
+            def add_error(self, record):
+                errors.append(validate_error_record(record))
+
+            def to_payload(self):
+                return {"groups": []}
+
+            def to_summary(self):
+                return {"errors": copy.deepcopy(errors)}
+
+        def cfg(strict):
+            value = self._base_cfg()
+            value["INFERENCE_PAIR_CACHE"].update(
+                {
+                    "ENABLED": True,
+                    "OUTPUT_PATH": "pairs.pkl",
+                    "SUMMARY_PATH": "summary.json",
+                    "STRICT": strict,
+                }
+            )
+            value["_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST"] = {}
+            return value
+
+        json_writer = Mock(side_effect=OSError("json write failed"))
+        helpers = self._helpers(
+            build_inference_pair_cache_manifest=Mock(),
+            build_association_runtime_manifest=Mock(),
+            InferencePairCacheAccumulator=Accumulator,
+            atomic_write_pickle=Mock(),
+            atomic_write_json=json_writer,
+        )
+        with self.assertRaisesRegex(OSError, "json write failed"):
+            helpers["_write_merged_inference_pair_cache"](cfg(True), {})
+
+        payload, summary = helpers["_write_merged_inference_pair_cache"](
+            cfg(False), {}
+        )
+        self.assertEqual(payload, {"groups": []})
+        self.assertEqual(summary["errors"][-1]["stage"], "write_json")
 
 
 if __name__ == "__main__":
