@@ -2,9 +2,13 @@
 # Copyright (c) 2024 megvii-research. All Rights Reserved.
 # ------------------------------------------------------------------------
 
-import numpy as np
-import lap
+import copy
 import os
+from collections.abc import Mapping
+from numbers import Integral
+
+import lap
+import numpy as np
 
 from tracker.cost_function import *
 from utils.utils import mask_tras_dets
@@ -456,6 +460,105 @@ def _association_shadow_error_record(exc, *, stage, metadata):
     }
 
 
+def _inference_pair_cache_error_record(exc, *, stage, payload):
+    payload = payload if isinstance(payload, Mapping) else {}
+
+    def safe_string(name):
+        value = payload.get(name)
+        if isinstance(value, np.generic):
+            value = value.item()
+        if type(value) is str and value and value.strip() == value:
+            return value
+        return "unknown"
+
+    frame_id = payload.get("frame_id")
+    if isinstance(frame_id, np.generic):
+        frame_id = frame_id.item()
+    if (
+        isinstance(frame_id, (bool, np.bool_))
+        or not isinstance(frame_id, Integral)
+        or int(frame_id) < 0
+    ):
+        frame_id = 0
+
+    return {
+        "scene_id": safe_string("scene_id"),
+        "sample_token": safe_string("sample_token"),
+        "frame_id": int(frame_id),
+        "stage": stage,
+        "error_type": type(exc).__name__,
+        "message": str(exc).strip() or type(exc).__name__,
+    }
+
+
+def _export_inference_pair_cache_groups(
+    *,
+    payload,
+    callback,
+    error_callback,
+    gt_provider,
+    strict,
+    base_cost_matrix,
+    production_matches,
+    production_costs,
+    thresholds,
+    cfg,
+):
+    """Run the post-assignment cache exporter against isolated copies.
+
+    ``gt_provider`` is a zero-argument callable returning a mapping containing
+    aligned ``track_gt_tokens`` and ``det_gt_tokens`` sequences.
+    """
+    if payload is None or callback is None:
+        return
+
+    stage = "payload"
+    try:
+        export_payload = copy.deepcopy(payload)
+        if gt_provider is not None:
+            stage = "gt_provider"
+            gt_payload = gt_provider()
+            if not isinstance(gt_payload, Mapping):
+                raise TypeError("inference pair cache GT provider must return a mapping")
+            for name in ("track_gt_tokens", "det_gt_tokens"):
+                if name not in gt_payload:
+                    raise ValueError(
+                        f"inference pair cache GT provider is missing {name}"
+                    )
+                export_payload[name] = copy.deepcopy(gt_payload[name])
+
+        stage = "candidate_groups"
+        from tracker.inference_pair_cache import build_candidate_groups
+
+        cache_cfg = cfg.get("INFERENCE_PAIR_CACHE", {}) or {}
+        export_matches = np.array(production_matches, copy=True)
+        if export_matches.size == 0:
+            export_matches = np.empty((0, 2), dtype=int)
+        groups = build_candidate_groups(
+            payload=export_payload,
+            base_cost_matrix=np.array(base_cost_matrix, copy=True),
+            production_matches=export_matches,
+            production_costs=np.array(production_costs, copy=True),
+            thresholds=copy.deepcopy(thresholds),
+            include_embeddings=cache_cfg.get("INCLUDE_EMBEDDINGS", True),
+            include_pair_vectors=cache_cfg.get("INCLUDE_PAIR_VECTORS", True),
+        )
+        stage = "callback"
+        callback(groups)
+    except Exception as exc:
+        if error_callback is not None:
+            try:
+                error_callback(
+                    _inference_pair_cache_error_record(
+                        exc, stage=stage, payload=payload
+                    )
+                )
+            except Exception:
+                pass
+        if strict:
+            raise
+
+
 def match_trajs_and_dets(
     trajs,
     dets,
@@ -471,6 +574,11 @@ def match_trajs_and_dets(
     association_shadow_metadata=None,
     association_shadow_error_callback=None,
     association_shadow_strict=False,
+    inference_pair_cache_payload=None,
+    inference_pair_cache_callback=None,
+    inference_pair_cache_error_callback=None,
+    inference_pair_cache_gt_provider=None,
+    inference_pair_cache_strict=False,
 ):
     """
     Info: This function matches trajectories with detections using a cost matrix and a specified matching algorithm (Hungarian or Greedy).
@@ -485,11 +593,41 @@ def match_trajs_and_dets(
             matched_indices: np.array, array of matched trajectory and detection indices (shape [n, 2]).
             costs: np.array, corresponding costs for each match.
     """
-    if len(trajs) == 0 or len(dets) == 0:
+    if len(trajs) == 0:
         return np.empty((0, 2), dtype=int), np.empty((0,), dtype=float)
 
+    if len(dets) == 0:
+        production_matches = np.empty((0, 2), dtype=int)
+        production_costs = np.empty((0,), dtype=float)
+        if (
+            inference_pair_cache_payload is not None
+            and inference_pair_cache_callback is not None
+        ):
+            match_type = "RV" if is_rv else "BEV"
+            _export_inference_pair_cache_groups(
+                payload=inference_pair_cache_payload,
+                callback=inference_pair_cache_callback,
+                error_callback=inference_pair_cache_error_callback,
+                gt_provider=inference_pair_cache_gt_provider,
+                strict=inference_pair_cache_strict,
+                base_cost_matrix=np.empty((len(trajs), 0), dtype=float),
+                production_matches=production_matches,
+                production_costs=production_costs,
+                thresholds=cfg["THRESHOLD"][match_type]["COST_THRE"],
+                cfg=cfg,
+            )
+        return production_matches, production_costs
+
+    match_type = "RV" if is_rv else "BEV"
     cost_matrix, trajs_category, dets_category = cost_calculate_general(
         trajs, dets, cfg, transform_matrix, is_rv
+    )
+    export_enabled = (
+        inference_pair_cache_payload is not None
+        and inference_pair_cache_callback is not None
+    )
+    geometric_cost_matrix = (
+        np.array(cost_matrix, copy=True) if export_enabled else None
     )
     if not is_rv:
         base_cost_matrix = apply_mamba_association_prior_to_cost_matrix(
@@ -505,7 +643,6 @@ def match_trajs_and_dets(
     else:
         base_cost_matrix = np.array(cost_matrix, copy=True)
 
-    match_type = "RV" if is_rv else "BEV"
     audit_cfg = cfg.get("ASSOCIATION_HEAD_AUDIT", {}) or {}
     shadow_mode = bool(
         not is_rv
@@ -515,6 +652,18 @@ def match_trajs_and_dets(
     if shadow_mode:
         production_matches, production_costs = solve_matching_cost_matrix(
             base_cost_matrix, trajs_category, dets_category, cfg, match_type
+        )
+        _export_inference_pair_cache_groups(
+            payload=inference_pair_cache_payload,
+            callback=inference_pair_cache_callback,
+            error_callback=inference_pair_cache_error_callback,
+            gt_provider=inference_pair_cache_gt_provider,
+            strict=inference_pair_cache_strict,
+            base_cost_matrix=geometric_cost_matrix,
+            production_matches=production_matches,
+            production_costs=production_costs,
+            thresholds=cfg["THRESHOLD"][match_type]["COST_THRE"],
+            cfg=cfg,
         )
         shadow_stage = "shadow_correction"
         try:
@@ -579,9 +728,22 @@ def match_trajs_and_dets(
             state_buckets=state_buckets,
             audit_callback=association_audit_callback,
         )
-    return solve_matching_cost_matrix(
+    production_matches, production_costs = solve_matching_cost_matrix(
         production_cost_matrix, trajs_category, dets_category, cfg, match_type
     )
+    _export_inference_pair_cache_groups(
+        payload=inference_pair_cache_payload,
+        callback=inference_pair_cache_callback,
+        error_callback=inference_pair_cache_error_callback,
+        gt_provider=inference_pair_cache_gt_provider,
+        strict=inference_pair_cache_strict,
+        base_cost_matrix=geometric_cost_matrix,
+        production_matches=production_matches,
+        production_costs=production_costs,
+        thresholds=cfg["THRESHOLD"][match_type]["COST_THRE"],
+        cfg=cfg,
+    )
+    return production_matches, production_costs
 
 
 def cost_calculate_general(trajs, dets, cfg, transform_matrix, is_rv=False):
@@ -748,6 +910,11 @@ def match_trajs_and_dets_uncertainty_aware(
     association_shadow_metadata=None,
     association_shadow_error_callback=None,
     association_shadow_strict=False,
+    inference_pair_cache_payload=None,
+    inference_pair_cache_callback=None,
+    inference_pair_cache_error_callback=None,
+    inference_pair_cache_gt_provider=None,
+    inference_pair_cache_strict=False,
 ) -> tuple:
     """
     Uncertainty-aware matching pipeline (Module C entry point).
@@ -770,8 +937,29 @@ def match_trajs_and_dets_uncertainty_aware(
         matched_indices : [M, 2] — (trajectory_idx, detection_idx) pairs
         costs           : [M]   — matching costs for each pair
     """
-    if len(trajs) == 0 or len(dets) == 0:
+    if len(trajs) == 0:
         return np.empty((0, 2), dtype=int), np.empty((0,), dtype=float)
+
+    if len(dets) == 0:
+        production_matches = np.empty((0, 2), dtype=int)
+        production_costs = np.empty((0,), dtype=float)
+        if (
+            inference_pair_cache_payload is not None
+            and inference_pair_cache_callback is not None
+        ):
+            _export_inference_pair_cache_groups(
+                payload=inference_pair_cache_payload,
+                callback=inference_pair_cache_callback,
+                error_callback=inference_pair_cache_error_callback,
+                gt_provider=inference_pair_cache_gt_provider,
+                strict=inference_pair_cache_strict,
+                base_cost_matrix=np.empty((len(trajs), 0), dtype=float),
+                production_matches=production_matches,
+                production_costs=production_costs,
+                thresholds=cfg["THRESHOLD"]["BEV"]["COST_THRE"],
+                cfg=cfg,
+            )
+        return production_matches, production_costs
 
     # Geometric mode is intended as a stable fallback during early training
     # or debugging. Route directly to the original geometric matcher so
@@ -789,6 +977,11 @@ def match_trajs_and_dets_uncertainty_aware(
             association_shadow_metadata=association_shadow_metadata,
             association_shadow_error_callback=association_shadow_error_callback,
             association_shadow_strict=association_shadow_strict,
+            inference_pair_cache_payload=inference_pair_cache_payload,
+            inference_pair_cache_callback=inference_pair_cache_callback,
+            inference_pair_cache_error_callback=inference_pair_cache_error_callback,
+            inference_pair_cache_gt_provider=inference_pair_cache_gt_provider,
+            inference_pair_cache_strict=inference_pair_cache_strict,
         )
 
     # fallback to original if no Mamba outputs available
@@ -805,6 +998,11 @@ def match_trajs_and_dets_uncertainty_aware(
             association_shadow_metadata=association_shadow_metadata,
             association_shadow_error_callback=association_shadow_error_callback,
             association_shadow_strict=association_shadow_strict,
+            inference_pair_cache_payload=inference_pair_cache_payload,
+            inference_pair_cache_callback=inference_pair_cache_callback,
+            inference_pair_cache_error_callback=inference_pair_cache_error_callback,
+            inference_pair_cache_gt_provider=inference_pair_cache_gt_provider,
+            inference_pair_cache_strict=inference_pair_cache_strict,
         )
 
     cost_matrix, trajs_category, dets_category = cost_calculate_uncertainty_aware(
@@ -930,6 +1128,11 @@ def match_trajs_and_dets_uncertainty_aware(
                 association_shadow_metadata=association_shadow_metadata,
                 association_shadow_error_callback=association_shadow_error_callback,
                 association_shadow_strict=association_shadow_strict,
+                inference_pair_cache_payload=inference_pair_cache_payload,
+                inference_pair_cache_callback=inference_pair_cache_callback,
+                inference_pair_cache_error_callback=inference_pair_cache_error_callback,
+                inference_pair_cache_gt_provider=inference_pair_cache_gt_provider,
+                inference_pair_cache_strict=inference_pair_cache_strict,
             )
 
         def solve_adaptive(matrix):
@@ -942,6 +1145,18 @@ def match_trajs_and_dets_uncertainty_aware(
         m_det, m_tra, _, _, costs = solve_adaptive(trans_cost_matrix)
         assert len(m_det) == len(m_tra)
         matched_indices = np.column_stack((m_tra, m_det))
+        _export_inference_pair_cache_groups(
+            payload=inference_pair_cache_payload,
+            callback=inference_pair_cache_callback,
+            error_callback=inference_pair_cache_error_callback,
+            gt_provider=inference_pair_cache_gt_provider,
+            strict=inference_pair_cache_strict,
+            base_cost_matrix=base_cost_matrix,
+            production_matches=matched_indices,
+            production_costs=costs,
+            thresholds=dict(enumerate(adaptive_thresholds)),
+            cfg=cfg,
+        )
 
         if shadow_mode:
             shadow_stage = "shadow_correction"
