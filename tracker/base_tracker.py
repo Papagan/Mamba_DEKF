@@ -37,6 +37,7 @@ from tracker.compat_utils import (
 )
 from tracker.dirty_suppressor_audit import DirtySuppressorAuditAccumulator
 from tracker.association_head_audit import AssociationHeadAuditAccumulator
+from tracker.inference_pair_cache import InferencePairCacheAccumulator
 from tracker.association_runtime_manifest import (
     preflight_association_checkpoint,
     resolve_association_head_parameters,
@@ -52,6 +53,7 @@ from kalmanfilter.bounded_residual import infer_state_bucket
 from kalmanfilter.state_residual import apply_bounded_state_residuals
 from kalmanfilter.noise_audit import NoiseAuditAccumulator
 from training.association_model import ClassConditionedAssociationHeadBank
+from training.association_features import compose_pair_vectors
 from utils.debug_log import emit_debug_line
 from utils.utils import norm_realative_radian
 
@@ -522,6 +524,7 @@ class Base3DTracker:
             if bool(self.association_head_audit_cfg.get("ENABLED", False))
             else None
         )
+        self._initialize_inference_pair_cache()
         self._association_track_gt_tokens: Dict[int, object] = {}
         self.pairwise_association_head = self._load_pairwise_association_head()
 
@@ -734,6 +737,54 @@ class Base3DTracker:
             return None
         return self.dirty_suppressor_audit.export_state()
 
+    def _inference_pair_cache_cfg(self) -> Dict:
+        defaults = {
+            "ENABLED": False,
+            "MAX_GROUPS_PER_CLASS_STATE": 0,
+            "INCLUDE_EMBEDDINGS": True,
+            "INCLUDE_PAIR_VECTORS": True,
+            "REQUIRE_AUDIT_GT": False,
+            "STRICT": False,
+        }
+        configured = self.cfg.get("INFERENCE_PAIR_CACHE", {}) or {}
+        return {**defaults, **configured}
+
+    def _initialize_inference_pair_cache(self) -> None:
+        self.inference_pair_cache_cfg = self._inference_pair_cache_cfg()
+        self.inference_pair_cache = None
+        if not bool(self.inference_pair_cache_cfg["ENABLED"]):
+            return
+        self.inference_pair_cache = InferencePairCacheAccumulator(
+            runtime_manifest=self.cfg.get(
+                "_INFERENCE_PAIR_CACHE_RUNTIME_MANIFEST", {}
+            ),
+            max_groups_per_class_state=int(
+                self.inference_pair_cache_cfg["MAX_GROUPS_PER_CLASS_STATE"]
+            ),
+            require_audit_gt=bool(
+                self.inference_pair_cache_cfg["REQUIRE_AUDIT_GT"]
+            ),
+        )
+
+    def _inference_pair_cache_enabled(self) -> bool:
+        return self.inference_pair_cache is not None
+
+    def _record_inference_pair_groups(self, groups) -> None:
+        if self.inference_pair_cache is None:
+            return
+        for group in groups:
+            self.inference_pair_cache.add_group(group)
+
+    def _record_inference_pair_cache_error(self, record: Dict) -> None:
+        if self.inference_pair_cache is None:
+            return
+        self.inference_pair_cache.add_error(record)
+
+    def export_inference_pair_cache_state(self) -> Optional[Dict]:
+        if self.inference_pair_cache is None:
+            return None
+        return self.inference_pair_cache.export_state()
+
     def _record_association_head_audit(self, record: Dict) -> None:
         if self.association_head_audit is None:
             return
@@ -792,9 +843,20 @@ class Base3DTracker:
     def _update_association_gt_sidecar(
         self, track_id: int, frame_info, det_index: int
     ) -> None:
-        if self.association_head_audit is None:
+        if (
+            self.association_head_audit is None
+            and not self._inference_pair_cache_enabled()
+        ):
             return
-        frame_tokens = self._association_frame_gt_tokens(frame_info)
+        try:
+            frame_tokens = self._association_frame_gt_tokens(frame_info)
+        except Exception:
+            if (
+                self.association_head_audit is not None
+                or bool(self.inference_pair_cache_cfg.get("STRICT", False))
+            ):
+                raise
+            return
         if frame_tokens is None:
             return
         token = frame_tokens[int(det_index)]
@@ -803,6 +865,35 @@ class Base3DTracker:
             and self._association_track_gt_tokens.get(int(track_id)) is None
         ):
             self._association_track_gt_tokens[int(track_id)] = token
+
+    def _inference_pair_cache_options(
+        self, frame_info, trajs, dets, payload
+    ) -> Dict:
+        if not self._inference_pair_cache_enabled() or payload is None:
+            return {}
+
+        def gt_provider():
+            return {
+                "track_gt_tokens": [
+                    self._association_track_gt_tokens.get(int(traj.track_id))
+                    for traj in trajs
+                ],
+                "det_gt_tokens": list(
+                    self._association_det_gt_tokens(frame_info, dets)
+                ),
+            }
+
+        return {
+            "inference_pair_cache_payload": payload,
+            "inference_pair_cache_callback": self._record_inference_pair_groups,
+            "inference_pair_cache_error_callback": (
+                self._record_inference_pair_cache_error
+            ),
+            "inference_pair_cache_gt_provider": gt_provider,
+            "inference_pair_cache_strict": bool(
+                self.inference_pair_cache_cfg.get("STRICT", False)
+            ),
+        }
 
     def _association_shadow_options(self, frame_info, trajs, dets) -> Dict:
         if (
@@ -1135,42 +1226,67 @@ class Base3DTracker:
     def _bbox_size_l1(a, b) -> float:
         return float(np.sum(np.abs(np.asarray(a.lwh) - np.asarray(b.lwh))))
 
-    def _compute_pairwise_association_scores(
+    def _compute_pairwise_association_payload(
         self,
         trajs: List[Trajectory],
         dets: List[BBox],
         trk_embeddings: Optional[np.ndarray],
         det_embeddings: Optional[np.ndarray],
         state_buckets: List[str],
-    ) -> Optional[np.ndarray]:
+        frame_info,
+    ) -> Tuple[Optional[np.ndarray], Optional[Dict]]:
         if (
-            self.pairwise_association_head is None
+            (
+                self.pairwise_association_head is None
+                and not self._inference_pair_cache_enabled()
+            )
             or trk_embeddings is None
             or det_embeddings is None
-            or len(trajs) == 0
-            or len(dets) == 0
         ):
-            return None
-        trk_embeddings = np.asarray(trk_embeddings, dtype=np.float32)
-        det_embeddings = np.asarray(det_embeddings, dtype=np.float32)
-        if trk_embeddings.shape[0] != len(trajs) or det_embeddings.shape[0] != len(dets):
-            return None
+            return None, None
+        trk_embeddings = np.array(
+            trk_embeddings, dtype=np.float32, copy=True
+        )
+        det_embeddings = np.array(
+            det_embeddings, dtype=np.float32, copy=True
+        )
+        if (
+            trk_embeddings.ndim != 2
+            or det_embeddings.ndim != 2
+            or trk_embeddings.shape[0] != len(trajs)
+            or det_embeddings.shape[0] != len(dets)
+            or trk_embeddings.shape[1] != det_embeddings.shape[1]
+        ):
+            return None, None
 
         category_map = self.cfg.get("CATEGORY_MAP_TO_NUMBER", {}) or {}
-        pair_rows = []
-        class_ids = []
+        class_names = [str(traj.bboxes[-1].category) for traj in trajs]
+        track_class_ids = [
+            int(category_map.get(class_name, -1))
+            for class_name in class_names
+        ]
+        normalized_states = [
+            (
+                str(state_buckets[index]).strip().lower()
+                if index < len(state_buckets)
+                else infer_state_bucket(getattr(traj, "unmatch_length", 0))
+            )
+            for index, traj in enumerate(trajs)
+        ]
+        pair_geometry = []
+        pair_class_ids = []
         pair_indices = []
         for t, traj in enumerate(trajs):
             trk_bbox = traj.bboxes[-1]
-            class_id = category_map.get(trk_bbox.category, None)
-            if class_id is None:
+            class_id = track_class_ids[t]
+            if class_id < 0:
                 continue
-            state_bucket = state_buckets[t] if t < len(state_buckets) else infer_state_bucket(getattr(traj, "unmatch_length", 0))
+            state_bucket = normalized_states[t]
             state_id = 1.0 if str(state_bucket).strip().lower() == "unmatched" else 0.0
             for d, det in enumerate(dets):
                 if det.category != trk_bbox.category:
                     continue
-                pair_features = np.asarray([
+                pair_geometry.append([
                     self._bbox_center_distance_xy(trk_bbox, det),
                     abs(norm_realative_radian(trk_bbox.global_yaw - det.global_yaw)),
                     self._bbox_size_l1(trk_bbox, det),
@@ -1178,29 +1294,92 @@ class Base3DTracker:
                     float(getattr(det, "det_score", 0.0)),
                     state_id,
                     float(class_id),
-                ], dtype=np.float32)
-                pair_rows.append(np.concatenate([
-                    trk_embeddings[t],
-                    det_embeddings[d],
-                    np.abs(trk_embeddings[t] - det_embeddings[d]),
-                    trk_embeddings[t] * det_embeddings[d],
-                    pair_features,
-                ]))
-                class_ids.append(int(class_id))
+                ])
+                pair_class_ids.append(int(class_id))
                 pair_indices.append((t, d))
-        if not pair_rows:
-            return None
 
-        with torch.no_grad():
-            pair_tensor = torch.tensor(np.asarray(pair_rows, dtype=np.float32), device=self.device)
-            class_tensor = torch.tensor(class_ids, dtype=torch.long, device=self.device)
-            logits = self.pairwise_association_head(pair_tensor, class_tensor)
-            probs = torch.sigmoid(logits).detach().cpu().numpy()
+        pair_indices_array = np.asarray(pair_indices, dtype=np.int64)
+        if pair_indices_array.size == 0:
+            pair_indices_array = np.empty((0, 2), dtype=np.int64)
+            pair_tensor = torch.empty(
+                (0, 4 * trk_embeddings.shape[1] + 7),
+                dtype=torch.float32,
+                device=self.device,
+            )
+        else:
+            pair_indices_array = pair_indices_array.reshape(-1, 2)
+            pair_track_indices = torch.tensor(
+                pair_indices_array[:, 0], dtype=torch.long, device=self.device
+            )
+            pair_det_indices = torch.tensor(
+                pair_indices_array[:, 1], dtype=torch.long, device=self.device
+            )
+            track_tensor = torch.as_tensor(
+                trk_embeddings, dtype=torch.float32, device=self.device
+            ).index_select(0, pair_track_indices)
+            det_tensor = torch.as_tensor(
+                det_embeddings, dtype=torch.float32, device=self.device
+            ).index_select(0, pair_det_indices)
+            geometry_tensor = torch.tensor(
+                pair_geometry, dtype=torch.float32, device=self.device
+            )
+            pair_tensor = compose_pair_vectors(
+                track_tensor, det_tensor, geometry_tensor
+            )
 
-        score_matrix = np.full((len(trajs), len(dets)), np.nan, dtype=np.float32)
-        for (t, d), score in zip(pair_indices, probs):
-            score_matrix[t, d] = float(score)
-        return score_matrix
+        score_matrix = None
+        if self.pairwise_association_head is not None and pair_tensor.shape[0] > 0:
+            with torch.no_grad():
+                class_tensor = torch.tensor(
+                    pair_class_ids, dtype=torch.long, device=self.device
+                )
+                logits = self.pairwise_association_head(
+                    pair_tensor, class_tensor
+                )
+                probs = (
+                    torch.sigmoid(logits)
+                    .detach()
+                    .to(device="cpu", dtype=torch.float32)
+                    .reshape(-1)
+                    .numpy()
+                )
+
+            score_matrix = np.full(
+                (len(trajs), len(dets)), np.nan, dtype=np.float32
+            )
+            for (t, d), score in zip(pair_indices, probs):
+                score_matrix[t, d] = float(score)
+
+        if not self._inference_pair_cache_enabled():
+            return score_matrix, None
+
+        payload = {
+            "scene_id": getattr(frame_info, "scene_id", None),
+            "sample_token": getattr(frame_info, "cur_sample_token", None),
+            "frame_id": getattr(frame_info, "frame_id", None),
+            "track_ids": [int(traj.track_id) for traj in trajs],
+            "class_ids": list(track_class_ids),
+            "class_names": list(class_names),
+            "state_buckets": list(normalized_states),
+            "pair_indices": np.array(pair_indices_array, copy=True),
+            "pair_vectors": np.array(
+                pair_tensor.detach().to(device="cpu", dtype=torch.float32).numpy(),
+                dtype=np.float32,
+                copy=True,
+            ),
+            "track_embeddings": np.array(
+                trk_embeddings, dtype=np.float32, copy=True
+            ),
+            "det_embeddings": np.array(
+                det_embeddings, dtype=np.float32, copy=True
+            ),
+            "association_scores": (
+                None
+                if score_matrix is None
+                else np.array(score_matrix, dtype=np.float32, copy=True)
+            ),
+        }
+        return score_matrix, payload
 
     # ==================================================================
     # History extraction: Trajectory bboxes → [B, T, 12] tensor
@@ -2154,6 +2333,7 @@ class Base3DTracker:
         trk_embeddings: Optional[np.ndarray],
         det_embeddings_all: Optional[np.ndarray],
         association_scores: Optional[np.ndarray],
+        cache_options: Dict,
         det_counts: Dict[str, int],
         matched_counts: Dict[str, int],
         birth_counts: Dict[str, int],
@@ -2179,6 +2359,7 @@ class Base3DTracker:
                 association_scores=association_scores,
                 association_audit_callback=self._record_association_head_audit,
                 **shadow_options,
+                **cache_options,
             )
         else:
             match_res = np.empty((0, 2), dtype=int)
@@ -2436,13 +2617,23 @@ class Base3DTracker:
         cost_mode = self.cfg.get("THRESHOLD", {}).get("BEV", {}).get("COST_MODE", "geometric")
         use_mamba_assoc_prior = self._mamba_association_prior_enabled()
         use_pairwise_assoc_head = self._pairwise_association_head_enabled()
+        use_inference_pair_cache = self._inference_pair_cache_enabled()
+        production_uses_det_embeddings = (
+            (cost_mode == "full" and self.filter_mode in ["mamba", "fusion"])
+            or (
+                use_mamba_assoc_prior
+                and self.filter_mode
+                in ["mamba", "fusion", "mamba_multihead_closure"]
+            )
+            or (
+                use_pairwise_assoc_head
+                and self.filter_mode
+                in ["mamba", "fusion", "mamba_multihead_closure"]
+            )
+        )
         if (
             dets_cnt > 0
-            and (
-                (cost_mode == "full" and self.filter_mode in ["mamba", "fusion"])
-                or (use_mamba_assoc_prior and self.filter_mode in ["mamba", "fusion", "mamba_multihead_closure"])
-                or (use_pairwise_assoc_head and self.filter_mode in ["mamba", "fusion", "mamba_multihead_closure"])
-            )
+            and (production_uses_det_embeddings or use_inference_pair_cache)
         ):
             det_history = torch.zeros(dets_cnt, self.history_len, 12, device=self.device)
             cat_map = self.cfg["CATEGORY_MAP_TO_NUMBER"]
@@ -2474,17 +2665,39 @@ class Base3DTracker:
             det_embeddings_all = det_mamba_out["embedding"].cpu().numpy()
         else:
             det_embeddings_all = np.zeros((dets_cnt, self.embed_dim), dtype=np.float32) if dets_cnt > 0 else None
+        det_embeddings_for_matching = (
+            det_embeddings_all
+            if production_uses_det_embeddings
+            else (
+                np.zeros((dets_cnt, self.embed_dim), dtype=np.float32)
+                if dets_cnt > 0
+                else None
+            )
+        )
 
         state_buckets = [
             infer_state_bucket(getattr(traj, "unmatch_length", 0))
             for traj in trajs
         ]
-        association_scores = self._compute_pairwise_association_scores(
-            trajs,
-            frame_info.bboxes,
-            trk_embeddings,
-            det_embeddings_all,
-            state_buckets,
+        association_scores, inference_pair_cache_payload = (
+            self._compute_pairwise_association_payload(
+                trajs,
+                frame_info.bboxes,
+                trk_embeddings,
+                det_embeddings_all,
+                state_buckets,
+                frame_info,
+            )
+        )
+        cache_options = (
+            self._inference_pair_cache_options(
+                frame_info,
+                trajs,
+                frame_info.bboxes,
+                inference_pair_cache_payload,
+            )
+            if use_inference_pair_cache
+            else {}
         )
 
         # ---- per-trajectory cal_flag from COST_STATE config (shared) ----
@@ -2503,8 +2716,9 @@ class Base3DTracker:
                 mamba_out=mamba_out,
                 traj_index_map=traj_index_map,
                 trk_embeddings=trk_embeddings,
-                det_embeddings_all=det_embeddings_all,
+                det_embeddings_all=det_embeddings_for_matching,
                 association_scores=association_scores,
+                cache_options=cache_options,
                 det_counts=det_counts,
                 matched_counts=matched_counts,
                 birth_counts=birth_counts,
@@ -2530,13 +2744,14 @@ class Base3DTracker:
                 match_res, costs = match_trajs_and_dets_uncertainty_aware(
                     trajs, frame_info.bboxes, self.cfg,
                     trk_embeddings=trk_embeddings,
-                    det_embeddings=det_embeddings_all,
+                    det_embeddings=det_embeddings_for_matching,
                     trk_pos_P=trk_pos_P,
                     trk_ori_P=trk_ori_P,
                     cal_flag=cal_flags,
                     association_scores=association_scores,
                     association_audit_callback=self._record_association_head_audit,
                     **shadow_options,
+                    **cache_options,
                 )
             else:
                 match_res = np.empty((0, 2), dtype=int)
