@@ -58,6 +58,8 @@ def _load_main_functions(*names, extra_globals=None):
     namespace = {
         "copy": copy,
         "hashlib": hashlib,
+        "json": json,
+        "multiprocessing": multiprocessing,
         "os": os,
         "Path": Path,
         "pickle": pickle,
@@ -757,6 +759,8 @@ class MainCacheOutputWiringTest(unittest.TestCase):
         "_create_inference_pair_cache_spool",
         "_initialize_inference_pair_cache_spool",
         "_cleanup_inference_pair_cache_spool",
+        "_run_inference_pair_cache_setup_step",
+        "_load_tracking_detections",
         "_scene_inference_pair_cache_spool_path",
         "_publish_scene_inference_pair_cache_marker",
         "_spool_scene_inference_pair_cache_state",
@@ -1067,6 +1071,41 @@ class MainCacheOutputWiringTest(unittest.TestCase):
             helpers["_cleanup_inference_pair_cache_spool"](cfg)
             self.assertNotIn("_INFERENCE_PAIR_CACHE_SPOOL_DIR", cfg)
             self.assertFalse(Path(spool).exists())
+
+    def test_post_spool_json_and_manager_setup_failures_cleanup(self):
+        helpers = self._helpers(
+            build_inference_pair_cache_manifest=Mock(),
+            build_association_runtime_manifest=Mock(),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            invalid_json = Path(directory) / "invalid.json"
+            invalid_json.write_text("{", encoding="utf-8")
+
+            cfg = self._base_cfg()
+            cfg["INFERENCE_PAIR_CACHE"]["ENABLED"] = True
+            json_spool = helpers["_create_inference_pair_cache_spool"](
+                cfg, directory
+            )
+            with self.assertRaises(json.JSONDecodeError):
+                helpers["_run_inference_pair_cache_setup_step"](
+                    cfg,
+                    lambda: helpers["_load_tracking_detections"](
+                        str(invalid_json)
+                    ),
+                )
+            self.assertFalse(Path(json_spool).exists())
+            self.assertNotIn("_INFERENCE_PAIR_CACHE_SPOOL_DIR", cfg)
+
+            manager_spool = helpers["_create_inference_pair_cache_spool"](
+                cfg, directory
+            )
+            with self.assertRaisesRegex(RuntimeError, "manager init failed"):
+                helpers["_run_inference_pair_cache_setup_step"](
+                    cfg,
+                    Mock(side_effect=RuntimeError("manager init failed")),
+                )
+            self.assertFalse(Path(manager_spool).exists())
+            self.assertNotIn("_INFERENCE_PAIR_CACHE_SPOOL_DIR", cfg)
 
     def test_real_manager_round_trip_contains_marker_not_full_state(self):
         helpers = self._helpers(

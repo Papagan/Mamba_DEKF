@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+import torch
 
 
 if "cv2" not in sys.modules:
@@ -31,6 +32,7 @@ if "pyquaternion" not in sys.modules:
     sys.modules["pyquaternion"] = pyquaternion_stub
 
 from tracker import matching
+from training.association_model import ClassConditionedAssociationHeadBank
 
 
 class _Box:
@@ -73,7 +75,7 @@ def _cfg(*, shadow=False, head=False, cost_mode="geometric"):
     }
 
 
-def _payload(track_count=2, det_count=2, pair_indices=None):
+def _payload(track_count=2, det_count=2, pair_indices=None, pair_dim=15):
     if pair_indices is None:
         pair_indices = [
             (track_index, det_index)
@@ -90,8 +92,8 @@ def _payload(track_count=2, det_count=2, pair_indices=None):
         "state_buckets": ["unmatched"] * track_count,
         "pair_indices": np.asarray(pair_indices, dtype=np.int64).reshape(-1, 2),
         "pair_vectors": np.arange(
-            max(1, len(pair_indices) * 2), dtype=np.float32
-        )[: len(pair_indices) * 2].reshape(len(pair_indices), 2),
+            len(pair_indices) * pair_dim, dtype=np.float32
+        ).reshape(len(pair_indices), pair_dim),
         "track_embeddings": np.arange(
             max(1, track_count * 2), dtype=np.float32
         )[: track_count * 2].reshape(track_count, 2),
@@ -129,6 +131,25 @@ class InferencePairCacheMatchingTest(unittest.TestCase):
                 self.base if base is None else base,
                 self.categories if traj_categories is None else traj_categories,
                 self.categories if det_categories is None else det_categories,
+            ),
+        )
+
+    @staticmethod
+    def _hungarian(cost_matrix, thresholds):
+        cls_cost = cost_matrix[0]
+        diagonal = cls_cost[0, 0] + cls_cost[1, 1]
+        off_diagonal = cls_cost[0, 1] + cls_cost[1, 0]
+        track_indices = [0, 1] if diagonal <= off_diagonal else [1, 0]
+        return (
+            [0, 1],
+            track_indices,
+            np.empty((0,), dtype=int),
+            np.empty((0,), dtype=int),
+            np.asarray(
+                [
+                    cls_cost[0, track_indices[0]],
+                    cls_cost[1, track_indices[1]],
+                ]
             ),
         )
 
@@ -455,30 +476,12 @@ class InferencePairCacheMatchingTest(unittest.TestCase):
         self.assertTrue(all(group["candidates"] == [] for group in observed))
 
     def test_nonempty_hungarian_export_preserves_assignment_in_both_shadow_modes(self):
-        def fake_hungarian(cost_matrix, thresholds):
-            cls_cost = cost_matrix[0]
-            diagonal = cls_cost[0, 0] + cls_cost[1, 1]
-            off_diagonal = cls_cost[0, 1] + cls_cost[1, 0]
-            track_indices = [0, 1] if diagonal <= off_diagonal else [1, 0]
-            return (
-                [0, 1],
-                track_indices,
-                np.empty((0,), dtype=int),
-                np.empty((0,), dtype=int),
-                np.asarray(
-                    [
-                        cls_cost[0, track_indices[0]],
-                        cls_cost[1, track_indices[1]],
-                    ]
-                ),
-            )
-
         for shadow in (False, True):
             cfg = _cfg(shadow=shadow)
             cfg["MATCHING"]["BEV"]["MATCHING_MODE"] = "Hungarian"
             observed = []
             with self.subTest(shadow=shadow), self._cost_patch(), patch.object(
-                matching, "Hungarian", side_effect=fake_hungarian
+                matching, "Hungarian", side_effect=self._hungarian
             ):
                 disabled = matching.match_trajs_and_dets(
                     self.trajs, self.dets, cfg
@@ -496,6 +499,320 @@ class InferencePairCacheMatchingTest(unittest.TestCase):
             np.testing.assert_array_equal(enabled[1], disabled[1])
             np.testing.assert_array_equal(enabled[0], np.asarray([[0, 0], [1, 1]]))
             self.assertEqual(len(observed), 2)
+
+    def test_full_normal_hungarian_invariance_matrix(self):
+        scores = np.asarray([[0.1, 0.9], [0.9, 0.1]], dtype=np.float32)
+        for shadow in (False, True):
+            for callback_enabled in (False, True):
+                cfg = _cfg(shadow=shadow, head=True)
+                cfg["MATCHING"]["BEV"]["MATCHING_MODE"] = "Hungarian"
+                observed = []
+                cache_kwargs = {}
+                if callback_enabled:
+                    cache_kwargs = {
+                        "inference_pair_cache_payload": _payload(),
+                        "inference_pair_cache_callback": observed.extend,
+                        "inference_pair_cache_gt_provider": lambda: _gt(),
+                    }
+                with self.subTest(
+                    shadow=shadow, callback_enabled=callback_enabled
+                ), self._cost_patch(), patch.object(
+                    matching, "Hungarian", side_effect=self._hungarian
+                ):
+                    reference = matching.match_trajs_and_dets(
+                        self.trajs,
+                        self.dets,
+                        cfg,
+                        association_scores=scores,
+                    )
+                    actual = matching.match_trajs_and_dets(
+                        self.trajs,
+                        self.dets,
+                        cfg,
+                        association_scores=scores,
+                        **cache_kwargs,
+                    )
+
+                np.testing.assert_array_equal(actual[0], reference[0])
+                np.testing.assert_array_equal(actual[1], reference[1])
+                self.assertEqual(len(observed), 2 if callback_enabled else 0)
+
+    def test_full_uncertainty_hungarian_invariance_matrix(self):
+        composite = np.asarray([[0.10, 0.31], [0.39, 0.20]], dtype=np.float32)
+        geometric = np.asarray([[0.12, 0.29], [0.37, 0.22]], dtype=np.float32)
+        scores = np.asarray([[0.8, 0.6], [0.6, 0.8]], dtype=np.float32)
+
+        def calculate(*args, **kwargs):
+            mode = args[2]["THRESHOLD"]["BEV"]["COST_MODE"]
+            matrix = geometric if mode == "geometric" else composite
+            return matrix, self.categories, self.categories
+
+        for shadow in (False, True):
+            for callback_enabled in (False, True):
+                cfg = _cfg(shadow=shadow, head=True, cost_mode="full")
+                cfg["MATCHING"]["BEV"]["MATCHING_MODE"] = "Hungarian"
+                observed = []
+                cache_kwargs = {}
+                if callback_enabled:
+                    cache_kwargs = {
+                        "inference_pair_cache_payload": _payload(),
+                        "inference_pair_cache_callback": observed.extend,
+                        "inference_pair_cache_gt_provider": lambda: _gt(),
+                    }
+                common = {
+                    "trk_embeddings": np.eye(2, dtype=np.float32),
+                    "det_embeddings": np.eye(2, dtype=np.float32),
+                    "association_scores": scores,
+                }
+                with self.subTest(
+                    shadow=shadow, callback_enabled=callback_enabled
+                ), patch.object(
+                    matching,
+                    "cost_calculate_uncertainty_aware",
+                    side_effect=calculate,
+                ), patch.object(
+                    matching, "Hungarian", side_effect=self._hungarian
+                ):
+                    reference = matching.match_trajs_and_dets_uncertainty_aware(
+                        self.trajs, self.dets, cfg, **common
+                    )
+                    actual = matching.match_trajs_and_dets_uncertainty_aware(
+                        self.trajs,
+                        self.dets,
+                        cfg,
+                        **common,
+                        **cache_kwargs,
+                    )
+
+                np.testing.assert_array_equal(actual[0], reference[0])
+                np.testing.assert_array_equal(actual[1], reference[1])
+                self.assertEqual(len(observed), 2 if callback_enabled else 0)
+
+    def test_uncertainty_fallback_hungarian_invariance_matrix(self):
+        scores = np.asarray([[0.8, 0.6], [0.6, 0.8]], dtype=np.float32)
+        for fallback in ("missing_embeddings", "exploded_cost"):
+            for shadow in (False, True):
+                for callback_enabled in (False, True):
+                    cfg = _cfg(shadow=shadow, head=True, cost_mode="full")
+                    cfg["MATCHING"]["BEV"]["MATCHING_MODE"] = "Hungarian"
+                    observed = []
+                    cache_kwargs = {}
+                    if callback_enabled:
+                        cache_kwargs = {
+                            "inference_pair_cache_payload": _payload(),
+                            "inference_pair_cache_callback": observed.extend,
+                            "inference_pair_cache_gt_provider": lambda: _gt(),
+                        }
+                    common = {"association_scores": scores}
+                    if fallback == "exploded_cost":
+                        common.update(
+                            trk_embeddings=np.eye(2, dtype=np.float32),
+                            det_embeddings=np.eye(2, dtype=np.float32),
+                        )
+                    uncertainty_patch = patch.object(
+                        matching,
+                        "cost_calculate_uncertainty_aware",
+                        return_value=(
+                            np.full((2, 2), 100.0, dtype=np.float32),
+                            self.categories,
+                            self.categories,
+                        ),
+                    )
+                    with self.subTest(
+                        fallback=fallback,
+                        shadow=shadow,
+                        callback_enabled=callback_enabled,
+                    ), self._cost_patch(), uncertainty_patch, patch.object(
+                        matching, "Hungarian", side_effect=self._hungarian
+                    ):
+                        reference = (
+                            matching.match_trajs_and_dets_uncertainty_aware(
+                                self.trajs, self.dets, cfg, **common
+                            )
+                        )
+                        actual = (
+                            matching.match_trajs_and_dets_uncertainty_aware(
+                                self.trajs,
+                                self.dets,
+                                cfg,
+                                **common,
+                                **cache_kwargs,
+                            )
+                        )
+
+                    np.testing.assert_array_equal(actual[0], reference[0])
+                    np.testing.assert_array_equal(actual[1], reference[1])
+                    self.assertEqual(len(observed), 2 if callback_enabled else 0)
+
+    def test_empty_input_and_missing_gt_invariance_matrix(self):
+        for shadow in (False, True):
+            for callback_enabled in (False, True):
+                cfg = _cfg(shadow=shadow)
+                cfg["MATCHING"]["BEV"]["MATCHING_MODE"] = "Hungarian"
+                callback = [] if callback_enabled else None
+                callback_fn = callback.extend if callback_enabled else None
+                empty_track_kwargs = (
+                    {
+                        "inference_pair_cache_payload": _payload(track_count=0),
+                        "inference_pair_cache_callback": callback_fn,
+                    }
+                    if callback_enabled
+                    else {}
+                )
+                reference = matching.match_trajs_and_dets([], self.dets, cfg)
+                actual = matching.match_trajs_and_dets(
+                    [], self.dets, cfg, **empty_track_kwargs
+                )
+                np.testing.assert_array_equal(actual[0], reference[0])
+                np.testing.assert_array_equal(actual[1], reference[1])
+                self.assertEqual(callback, [] if callback_enabled else None)
+
+                observed = []
+                empty_det_kwargs = (
+                    {
+                        "inference_pair_cache_payload": _payload(
+                            det_count=0, pair_indices=[]
+                        ),
+                        "inference_pair_cache_callback": observed.extend,
+                        "inference_pair_cache_gt_provider": lambda: _gt(
+                            det_count=0
+                        ),
+                    }
+                    if callback_enabled
+                    else {}
+                )
+                reference = matching.match_trajs_and_dets(
+                    self.trajs, [], cfg
+                )
+                actual = matching.match_trajs_and_dets(
+                    self.trajs, [], cfg, **empty_det_kwargs
+                )
+                np.testing.assert_array_equal(actual[0], reference[0])
+                np.testing.assert_array_equal(actual[1], reference[1])
+                self.assertEqual(len(observed), 2 if callback_enabled else 0)
+
+                if callback_enabled:
+                    observed = []
+                    with self._cost_patch(), patch.object(
+                        matching, "Hungarian", side_effect=self._hungarian
+                    ):
+                        reference = matching.match_trajs_and_dets(
+                            self.trajs, self.dets, cfg
+                        )
+                        actual = matching.match_trajs_and_dets(
+                            self.trajs,
+                            self.dets,
+                            cfg,
+                            inference_pair_cache_payload=_payload(),
+                            inference_pair_cache_callback=observed.extend,
+                            inference_pair_cache_gt_provider=lambda: {
+                                "track_gt_tokens": [None, None],
+                                "det_gt_tokens": [None, None],
+                            },
+                        )
+                    np.testing.assert_array_equal(actual[0], reference[0])
+                    np.testing.assert_array_equal(actual[1], reference[1])
+                    self.assertEqual(len(observed), 2)
+                    self.assertTrue(
+                        all(
+                            group["gt_target_status"] == "unknown"
+                            for group in observed
+                        )
+                    )
+
+    def test_callback_failure_strictness_never_precedes_production_solve(self):
+        scores = np.asarray([[0.8, 0.6], [0.6, 0.8]], dtype=np.float32)
+        for shadow in (False, True):
+            cfg = _cfg(shadow=shadow, head=True)
+            cfg["MATCHING"]["BEV"]["MATCHING_MODE"] = "Hungarian"
+            with self._cost_patch(), patch.object(
+                matching, "Hungarian", side_effect=self._hungarian
+            ):
+                reference = matching.match_trajs_and_dets(
+                    self.trajs,
+                    self.dets,
+                    cfg,
+                    association_scores=scores,
+                )
+
+            for strict in (False, True):
+                solved = []
+                real_solver = matching.solve_matching_cost_matrix
+
+                def record_solve(*args, **kwargs):
+                    result = real_solver(*args, **kwargs)
+                    solved.append(
+                        (
+                            np.array(result[0], copy=True),
+                            np.array(result[1], copy=True),
+                        )
+                    )
+                    return result
+
+                def fail_callback(groups):
+                    self.assertTrue(solved)
+                    raise RuntimeError("cache callback failed")
+
+                with self.subTest(
+                    shadow=shadow, strict=strict
+                ), self._cost_patch(), patch.object(
+                    matching, "Hungarian", side_effect=self._hungarian
+                ), patch.object(
+                    matching,
+                    "solve_matching_cost_matrix",
+                    side_effect=record_solve,
+                ):
+                    call = lambda: matching.match_trajs_and_dets(
+                        self.trajs,
+                        self.dets,
+                        cfg,
+                        association_scores=scores,
+                        inference_pair_cache_payload=_payload(),
+                        inference_pair_cache_callback=fail_callback,
+                        inference_pair_cache_gt_provider=lambda: _gt(),
+                        inference_pair_cache_strict=strict,
+                    )
+                    if strict:
+                        with self.assertRaisesRegex(
+                            RuntimeError, "cache callback failed"
+                        ):
+                            call()
+                    else:
+                        actual = call()
+                        np.testing.assert_array_equal(actual[0], reference[0])
+                        np.testing.assert_array_equal(actual[1], reference[1])
+
+                self.assertTrue(solved)
+                np.testing.assert_array_equal(solved[0][0], reference[0])
+                np.testing.assert_array_equal(solved[0][1], reference[1])
+
+    def test_serialized_pair_vector_feeds_declared_head_dimension_directly(self):
+        observed = []
+        with self._cost_patch():
+            matching.match_trajs_and_dets(
+                self.trajs,
+                self.dets,
+                _cfg(),
+                inference_pair_cache_payload=_payload(),
+                inference_pair_cache_callback=observed.extend,
+                inference_pair_cache_gt_provider=lambda: _gt(),
+            )
+
+        serialized_pair_vector = observed[0]["candidates"][0]["pair_vector"]
+        pair_input_dim = 2 * 4 + 7
+        head = ClassConditionedAssociationHeadBank(
+            input_dim=pair_input_dim,
+            num_classes=2,
+            hidden_dims=(),
+            dropout=0.0,
+        )
+        pair_batch = torch.tensor(
+            [serialized_pair_vector], dtype=torch.float32
+        )
+        self.assertEqual(pair_batch.shape[-1], pair_input_dim)
+        self.assertEqual(pair_batch.shape[-1], head.input_dim)
+        logits = head(pair_batch, torch.tensor([0], dtype=torch.long))
+        self.assertEqual(tuple(logits.shape), (1,))
 
     def test_non_shadow_exports_actual_assignment_with_untouched_base_costs(self):
         observed = []

@@ -394,6 +394,29 @@ def _cleanup_inference_pair_cache_spool(cfg):
         cfg.pop("_INFERENCE_PAIR_CACHE_SPOOL_DIR", None)
 
 
+def _run_inference_pair_cache_setup_step(cfg, operation):
+    """Clean an initialized cache spool when later process setup fails."""
+    try:
+        return operation()
+    except BaseException:
+        try:
+            _cleanup_inference_pair_cache_spool(cfg)
+        except Exception as cleanup_error:
+            print(
+                "[main] WARNING: failed to clean inference pair cache spool: "
+                f"{cleanup_error}"
+            )
+        raise
+
+
+def _load_tracking_detections(detections_root):
+    with open(detections_root, "r", encoding="utf-8") as file:
+        print(f"Loading data from {detections_root}...")
+        data = json.load(file)
+        print("Data loaded successfully.")
+    return data
+
+
 def _scene_inference_pair_cache_spool_path(scene_id, cfg):
     spool_value = cfg.get("_INFERENCE_PAIR_CACHE_SPOOL_DIR")
     if not isinstance(spool_value, str) or not spool_value.strip():
@@ -875,10 +898,10 @@ if __name__ == "__main__":
     detections_root = os.path.join(
         cfg["DETECTIONS_ROOT"], cfg["DETECTOR"], cfg["SPLIT"] + ".json"
     )
-    with open(detections_root, "r", encoding="utf-8") as file:
-        print(f"Loading data from {detections_root}...")
-        data = json.load(file)
-        print("Data loaded successfully.")
+    data = _run_inference_pair_cache_setup_step(
+        cfg,
+        lambda: _load_tracking_detections(detections_root),
+    )
 
     if args.debug:
         if args.dataset == "kitti":
@@ -890,7 +913,10 @@ if __name__ == "__main__":
     else:
         scene_lists = [scene_id for scene_id in data.keys()]
 
-    manager = multiprocessing.Manager()
+    manager = _run_inference_pair_cache_setup_step(
+        cfg,
+        multiprocessing.Manager,
+    )
     tracking_results = manager.dict()
     scene_audit_states = manager.dict()
     scene_dirty_states = manager.dict()

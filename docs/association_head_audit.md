@@ -232,6 +232,156 @@ Real assignment intervention requires another experimental config with
 frozen 0.740 baseline and the byte-identical shadow run; never reuse or modify
 the frozen config for intervention.
 
+## Inference-Style Pair Cache Export
+
+The pair cache exporter is audit-only and defaults to disabled. The reference
+run must use the frozen 0.740 configuration without editing its YAML:
+
+```bash
+/usr/bin/time -v -o debug/inference_pair_cache.time \
+python main.py \
+  --dataset nuscenes \
+  --eval \
+  --config config/nuscenes_single_stage_mctrack_motion_residual_combo.yaml \
+  -p 12 \
+  --inference-pair-cache-output debug/inference_pair_cache.pkl \
+  --inference-pair-cache-summary debug/inference_pair_cache_summary.json
+```
+
+This command records the exact track-to-detection candidate vectors seen by the
+primary BEV matching stage. It does not activate the association head and must
+not change matching. Record the timestamped result directory printed by
+`[SAVE]`; it is needed for the hash comparison below.
+
+Supervised stage-three labels require the audit-only GT sidecar described in
+`Audit-only GT enrichment`. Do not point the frozen configuration at enriched
+data by editing it. Create a temporary audit configuration copied from the
+frozen file and change only its detection-data root to the separately converted
+audit-GT dataset. Before running, inspect several frames and confirm that
+`audit_gt_tokens` exists, is aligned one-to-one with detections after filtering
+and NMS, and contains nuScenes instance tokens or `null`.
+
+With that prerequisite satisfied, use the fail-closed variant:
+
+```bash
+/usr/bin/time -v -o debug/inference_pair_cache_require_gt.time \
+python main.py \
+  --dataset nuscenes \
+  --eval \
+  --config config/nuscenes_single_stage_mctrack_motion_residual_combo_audit_gt.yaml \
+  -p 12 \
+  --inference-pair-cache-output debug/inference_pair_cache_require_gt.pkl \
+  --inference-pair-cache-summary debug/inference_pair_cache_require_gt_summary.json \
+  --inference-pair-cache-require-gt \
+  --inference-pair-cache-strict
+```
+
+`--inference-pair-cache-require-gt` excludes groups whose target remains
+unknown. `--inference-pair-cache-strict` makes payload, GT, merge, and write
+failures fatal. The strict run is invalid training evidence if the summary has
+any cache error or unknown retained label.
+
+### Output contract
+
+The pickle contains `schema_version`, `runtime_manifest`, and `groups`. Each
+group identifies one runtime track by scene, sample, frame, track ID, class, and
+matched/unmatched state. It stores the production assignment, optional track
+embedding, GT status, and a candidate list. Each candidate records its
+detection index, untouched geometric cost and gate, rank and cost gap,
+production-selection flag, optional association score, optional exact
+`pair_vector`, and GT label.
+
+The JSON summary contains the same schema version and runtime manifest plus
+`overall`, `per_class`, `per_class_state`, and `error_samples`. Check that the
+retained group and candidate counts reconcile with the pickle:
+
+```bash
+python - <<'PY'
+import json
+import pickle
+from pathlib import Path
+
+cache = pickle.loads(Path("debug/inference_pair_cache.pkl").read_bytes())
+summary = json.loads(
+    Path("debug/inference_pair_cache_summary.json").read_text()
+)
+assert cache["schema_version"] == summary["schema_version"] == 1
+assert cache["runtime_manifest"] == summary["runtime_manifest"]
+assert summary["overall"]["accepted_groups"] == len(cache["groups"]) > 0
+assert summary["overall"]["candidate_count"] == sum(
+    len(group["candidates"]) for group in cache["groups"]
+)
+assert summary["overall"]["candidate_count"] > 0
+assert summary["overall"]["error_count"] == 0
+assert summary["error_samples"] == []
+assert set(summary["per_class"]) == {
+    "bicycle", "bus", "car", "motorcycle",
+    "pedestrian", "trailer", "truck",
+}
+print(summary["overall"])
+PY
+```
+
+For the require-GT output, repeat the check with its paths and additionally
+require `rejected_unknown_groups >= 0`, `unknown_groups == 0`, and
+`unknown_label_count == 0`. Rejected unknown observations may be nonzero; they
+must not appear among retained groups.
+
+### Frozen-result acceptance
+
+Run the same frozen configuration, process count, checkpoint, detector input,
+and environment once without export and once with export. Use the two result
+directories printed by `[SAVE]`:
+
+```bash
+BASE_RESULT=/path/to/baseline/results.json
+EXPORT_RESULT=/path/to/export-enabled/results.json
+sha256sum "$BASE_RESULT" "$EXPORT_RESULT"
+cmp -s "$BASE_RESULT" "$EXPORT_RESULT"
+```
+
+Acceptance requires identical SHA-256 values and `cmp` exit status zero. A
+matching rounded AMOTA is insufficient; any byte-level `results.json`
+difference blocks use of the cache. Also compare `Maximum resident set size`
+and elapsed time in the two `/usr/bin/time -v` reports. During the full run,
+monitor the timestamped result directory and its
+`.inference_pair_cache_spool.*` child with `du -sh`; the uncapped default can
+still produce a large final pickle even though per-scene spooling avoids
+holding all worker states in `Manager.dict()`.
+
+### Local verification
+
+The Task 7 local verification on 2026-07-28 produced:
+
+- Focused second-stage suite: 312 tests passed, 1 skipped. The skipped test is
+  the real `multiprocessing.Manager` round trip because the restricted local
+  sandbox denied IPC startup.
+- Frozen association regression suite: 41 tests passed, 0 skipped.
+- `py_compile` passed for `main.py`, the cache/matching/tracker modules, and the
+  two Task 7 test modules.
+- `git diff --check` reported no whitespace errors.
+
+These are synthetic/unit checks. They do not replace the remote nuScenes
+baseline/export hash comparison.
+
+### Residual operational risks
+
+- The pickle/JSON publisher rolls back ordinary exceptions, but a process
+  `SIGKILL` between its two final `os.replace` calls cannot execute rollback.
+  Preserve the previous pair and summary until both new files pass the manifest
+  and count checks.
+- The real `multiprocessing.Manager` round-trip test is skipped when the local
+  sandbox forbids IPC startup. This does not validate the remote 12-process
+  manager, so inspect worker completion, spool cleanup, peak RSS, and disk use
+  during the remote acceptance run.
+- Detection JSON parsing and `Manager()` initialization failures now clean an
+  already-created spool and are covered by unit tests. Abrupt host loss or
+  kernel termination can still leave the hidden spool directory for manual
+  removal after confirming no evaluation process is using it.
+- No local nuScenes dataset or remote checkpoint is available in this
+  worktree. The commands above are required remote acceptance steps, not a
+  claim that end-to-end nuScenes export has been run locally.
+
 ## Rebuild Pairwise Cache After Audit Failure
 
 If the audit shows nearly all pairs being penalized, rebuild the pairwise cache
