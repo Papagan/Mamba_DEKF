@@ -1257,22 +1257,40 @@ def validate_accumulator_state(state, max_error_samples=None):
             )
         seen_keys.add(key)
         groups.append(group)
-    if accumulator_policy["require_audit_gt"] and any(
-        group["gt_target_status"] == "unknown" for group in groups
-    ):
-        raise ValueError(
-            "accumulator state retains a group rejected by require_audit_gt"
+
+    eligible_metadata = [
+        metadata
+        for metadata in observed_metadata
+        if not (
+            accumulator_policy["require_audit_gt"]
+            and metadata["gt_target_status"] == "unknown"
         )
+    ]
     max_groups = accumulator_policy["max_groups_per_class_state"]
     if max_groups:
-        bucket_counts = {}
-        for group in groups:
-            bucket = (group["class_id"], group["state_bucket"])
-            bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
-        if any(count > max_groups for count in bucket_counts.values()):
-            raise ValueError(
-                "accumulator state groups exceed max_groups_per_class_state"
+        eligible_buckets = {}
+        for metadata in eligible_metadata:
+            bucket = (metadata["class_id"], metadata["state_bucket"])
+            eligible_buckets.setdefault(bucket, []).append(
+                _group_key(metadata)
             )
+        expected_keys = {
+            key
+            for bucket_keys in eligible_buckets.values()
+            for key in sorted(bucket_keys)[:max_groups]
+        }
+    else:
+        expected_keys = {
+            _group_key(metadata) for metadata in eligible_metadata
+        }
+    if seen_keys != expected_keys:
+        missing = sorted(expected_keys - seen_keys)
+        unexpected = sorted(seen_keys - expected_keys)
+        raise ValueError(
+            "accumulator state groups do not match canonical retention for "
+            "max_groups_per_class_state and require_audit_gt; "
+            f"missing keys: {missing}; unexpected keys: {unexpected}"
+        )
     groups.sort(key=_group_key)
     error_samples = [validate_error_record(item) for item in state["error_samples"]]
     if error_count < len(error_samples):

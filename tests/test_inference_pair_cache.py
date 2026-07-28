@@ -1348,6 +1348,110 @@ class InferencePairCacheTask3Test(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "runtime manifest"):
             inference_pair_cache.validate_accumulator_state(require_mismatch)
 
+    def test_state_rejects_noncanonical_retained_key_at_cap_one(self):
+        first = self._group(frame_id=1, track_id=1)
+        second = self._group(frame_id=2, track_id=2)
+        accumulator = inference_pair_cache.InferencePairCacheAccumulator(
+            max_groups_per_class_state=1
+        )
+        accumulator.add_group(second)
+        accumulator.add_group(first)
+        state = accumulator.export_state()
+        state["groups"] = [
+            inference_pair_cache.validate_candidate_group(second)
+        ]
+
+        with self.assertRaisesRegex(ValueError, "canonical retention"):
+            inference_pair_cache.validate_accumulator_state(state)
+
+    def test_state_rejects_missing_second_expected_group_at_cap_two(self):
+        accumulator = inference_pair_cache.InferencePairCacheAccumulator(
+            max_groups_per_class_state=2
+        )
+        accumulator.add_group(self._group(frame_id=1, track_id=1))
+        accumulator.add_group(self._group(frame_id=2, track_id=2))
+        state = accumulator.export_state()
+        state["groups"].pop()
+
+        with self.assertRaisesRegex(ValueError, "missing keys"):
+            inference_pair_cache.validate_accumulator_state(state)
+
+    def test_uncapped_state_rejects_missing_eligible_group(self):
+        accumulator = inference_pair_cache.InferencePairCacheAccumulator()
+        accumulator.add_group(self._group(frame_id=1, track_id=1))
+        accumulator.add_group(self._group(frame_id=2, track_id=2))
+        state = accumulator.export_state()
+        state["groups"] = state["groups"][:1]
+
+        with self.assertRaisesRegex(ValueError, "missing keys"):
+            inference_pair_cache.validate_accumulator_state(state)
+
+    def test_require_gt_state_excludes_unknown_from_expected_groups(self):
+        known = self._group(frame_id=1, track_id=1)
+        unknown = self._group(frame_id=2, track_id=2, status="unknown")
+        accumulator = inference_pair_cache.InferencePairCacheAccumulator(
+            require_audit_gt=True
+        )
+        accumulator.add_group(unknown)
+        accumulator.add_group(known)
+        state = accumulator.export_state()
+
+        validated = inference_pair_cache.validate_accumulator_state(state)
+        self.assertEqual(
+            [group["frame_id"] for group in validated["groups"]], [1]
+        )
+
+        invalid = copy.deepcopy(state)
+        invalid["groups"].append(
+            inference_pair_cache.validate_candidate_group(unknown)
+        )
+        with self.assertRaisesRegex(ValueError, "unexpected keys"):
+            inference_pair_cache.validate_accumulator_state(invalid)
+
+    def test_reversed_valid_worker_states_merge_deterministically(self):
+        partitions = (
+            [
+                self._group(frame_id=4, track_id=4),
+                self._group(frame_id=1, track_id=1),
+            ],
+            [
+                self._group(frame_id=3, track_id=3),
+                self._group(frame_id=2, track_id=2),
+            ],
+        )
+        worker_states = []
+        for groups in partitions:
+            worker = inference_pair_cache.InferencePairCacheAccumulator(
+                max_groups_per_class_state=2
+            )
+            for group in groups:
+                worker.add_group(group)
+            state = worker.export_state()
+            state["observed_metadata"].reverse()
+            state["groups"].reverse()
+            worker_states.append(state)
+
+        outputs = []
+        for states in (worker_states, list(reversed(worker_states))):
+            receiver = inference_pair_cache.InferencePairCacheAccumulator(
+                max_groups_per_class_state=2
+            )
+            for state in states:
+                receiver.merge_state(state)
+            outputs.append(
+                (
+                    receiver.to_payload(),
+                    receiver.to_summary(),
+                    receiver.export_state(),
+                )
+            )
+
+        self.assertEqual(outputs[0], outputs[1])
+        self.assertEqual(
+            [group["frame_id"] for group in outputs[0][0]["groups"]],
+            [1, 2],
+        )
+
     def test_accumulator_options_fail_closed(self):
         cls = inference_pair_cache.InferencePairCacheAccumulator
         for kwargs in (
@@ -1473,7 +1577,7 @@ class InferencePairCacheTask3Test(unittest.TestCase):
         metadata["state_bucket"] = "matched"
 
         before = receiver.export_state()
-        with self.assertRaisesRegex(ValueError, "conflicting"):
+        with self.assertRaisesRegex(ValueError, "canonical retention"):
             receiver.merge_state(changed)
         self.assertEqual(receiver.export_state(), before)
 
