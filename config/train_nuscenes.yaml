@@ -159,7 +159,7 @@ TRAINING:
   WARMUP_UNCERTAINTY_EPOCHS: 8 # detach Q/R/kappa longer so state backbone stabilises before uncertainty learning
   WARMUP_TRANSITION_EPOCHS: 8  # slower smooth unfreeze (alpha ramp 0->1) after uncertainty warmup
   GRAD_CLIP_NORM: 1.0
-  LOG_EVERY: 10
+  LOG_EVERY: 50
   SAVE_EVERY: 10
   SAVE_DIR: checkpoints/mamba_dekf/
   REQUIRE_MAMBA_SSM: true        # fail fast if training would fall back to GRU

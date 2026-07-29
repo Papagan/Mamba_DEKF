@@ -64,6 +64,11 @@ cp /root/autodl-tmp/data/training_cache/nuscenes/mini/train_fusion.pkl /root/aut
     --output docs/train_pairwise_assoc_audit.json
 
 
+python tools/compare_pairwise_assoc_train_infer.py \
+    --train-cache /root/autodl-tmp/data/training_cache/nuscenes/mini/train_pairwise_assoc.pkl \
+    --infer-audit debug/association_head_audit.json \
+    --output docs/pairwise_assoc_train_infer_compare.json
+
 
   python tools/train_pairwise_association.py --train-config config/train_nuscenes.yaml
 
@@ -71,11 +76,11 @@ cp /root/autodl-tmp/data/training_cache/nuscenes/mini/train_fusion.pkl /root/aut
 
 
 
-python main.py --dataset nuscenes --eval  --config config/nuscenes_single_stage_mctrack_motion_residual_combo.yaml     -p 12
+python main.py --dataset nuscenes --eval  --config config/nuscenes_single_stage_mctrack_motion_residual_combo.yaml -p 12
 
 
 
-为什么执行了python training/train.py --config config/train_nuscenes.yaml后checkpoint中保存的模型并没有best_assoc.pt
+
 
 
  重点是 association head 必须按类别拆分。bicycle/motorcycle/trailer 的关联逻辑和 car/pedestrian 明显不同，单头会被大样本类别主导，弱类很难得到最优边界。
@@ -303,3 +308,37 @@ python main.py --dataset nuscenes --eval  --config config/nuscenes_single_stage_
   3. 如果训练内正样本 score 高、推理真匹配 score 低，就是输入分布错位。
   4. 如果训练内正样本 score 也低，那是训练/损失/模型本身失败。
   5. 如果训练和推理都能区分，但 AMOTA 不涨，才是介入方式或 ALPHA/MAX_DELTA 不足。
+
+
+
+    推荐实施方案
+
+  第一阶段只做审计闭环，不改变匹配结果：
+
+  - 增加 shadow 模式，同时计算原始和关联修正后的 Hungarian 结果，但正式跟踪仍使用原始结果。
+  - audit 写入配置哈希、checkpoint 哈希、git commit、有效类别状态表。
+  - 记录每类/状态的 assignment changed、阈值跨越、原始与新选择、score gap。
+  - 接入 GT instance 后统计“修正正确数、破坏正确数”，不再用生命周期 matched 代替 pair label。
+  - 修复多进程 sample 合并。
+
+  第二阶段重建真正的 inference-style cache：
+
+  - 从实际 predict_before_associate() 后直接导出 track embedding、det embedding 和最终 pair vector。
+  - 保存真实 RO_GDIOU_3D cost、candidate rank、cost gap、class/state 和 geometric gate。
+  - 同时覆盖 matched、unmatched 和 no-match 样本。
+  - 不再离线重构 fusion history，也不再用中心距离模拟线上 margin。
+
+  第三阶段重训关联头：
+
+  - 首轮冻结 Mamba 主干，只训练七类独立关联头。
+  - 损失改为候选组级 listwise cross-entropy，加近邻 hard-negative ranking loss；BCE 只作为辅助。
+  - 按 class/state 分桶采样和验证，保存每类最优 head。
+  - 对每类/状态单独做 temperature calibration，取消统一 MIN_SCORE=0.60。
+
+  第四阶段安全接入：
+
+  - 只在几何前两名 cost gap 足够小时介入。
+  - 使用候选间 score gap，而不是绝对 score 阈值。
+  - 只允许单向惩罚，且 delta 仅覆盖当前几何差距，不使用固定全局增量。
+  - car 首轮保持关闭；其他类别依据 shadow audit 的净正确修正率逐类启用。
+  - 每个 class/state 单独 A/B，只有总 AMOTA 严格高于 0.740 才合并。
