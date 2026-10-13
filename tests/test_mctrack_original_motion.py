@@ -100,22 +100,19 @@ class MCTrackOriginalMotionTest(unittest.TestCase):
         )
         self.assertEqual(cfg["MCTRACK_ORIGINAL_MOTION"]["ACTIVE_CLASSES"], [3])
 
-    def test_motion_residual_combo_keeps_only_known_positive_gates(self):
+    def test_motion_residual_combo_gives_learned_transition_full_ownership(self):
         cfg = yaml.safe_load(
             (REPO_ROOT / "config" / "nuscenes_single_stage_mctrack_motion_residual_combo.yaml")
             .read_text(encoding="utf-8")
         )
         self.assertEqual(cfg["FILTER_MODE"], "mamba_multihead_closure")
         self.assertEqual(cfg["MAMBA"]["NUM_CLASSES"], 7)
-        self.assertEqual(cfg["MCTRACK_ORIGINAL_MOTION"]["ACTIVE_CLASSES"], [3])
-        self.assertEqual(
-            cfg["MCTRACK_ORIGINAL_MOTION"]["APPLY_IN_FILTER_MODES"],
-            ["mamba_multihead_closure"],
-        )
-        self.assertEqual(
-            cfg["DEKF_BASE_NOISE"]["MAMBA_STATE_RESIDUAL"]["ACTIVE_CLASS_STATES"],
-            {3: ["unmatched"], 5: ["unmatched"]},
-        )
+        self.assertFalse(cfg["MCTRACK_ORIGINAL_MOTION"]["ENABLED"])
+        self.assertEqual(cfg["MAMBA"]["INPUT_HISTORY_SOURCE"], "track")
+        active = cfg["DEKF_BASE_NOISE"]["MAMBA_STATE_RESIDUAL"]["ACTIVE_CLASS_STATES"]
+        self.assertEqual(set(active), set(range(7)))
+        for class_id in range(7):
+            self.assertEqual(active[class_id], ["matched", "unmatched"])
 
     def test_motion_residual_combo_keeps_mamba_association_prior_disabled_by_default(self):
         cfg = yaml.safe_load(

@@ -1,27 +1,9 @@
 
-python main.py --dataset nuscenes --eval --config config/nuscenes_single_stage_mctrack_exact_noise_hybrid_mamba_multihead_closure.yaml -p 12
-  python tools/merge_class_heads.py \
-    --base checkpoints/mamba_dekf/best.pt \
-    --class-head 0=checkpoints/mamba_dekf/best_class_0.pt \
-    --class-head 1=checkpoints/mamba_dekf/best_class_1.pt \
-    --class-head 2=checkpoints/mamba_dekf/best_class_2.pt \
-    --class-head 3=checkpoints/mamba_dekf/best_class_3.pt \
-    --class-head 4=checkpoints/mamba_dekf/best_class_4.pt \
-    --class-head 5=checkpoints/mamba_dekf/best_class_5.pt \
-    --class-head 6=checkpoints/mamba_dekf/best_class_6.pt \
-    --output checkpoints/mamba_dekf/best_merged_classes_3_5.pt
+## 当前数据生成、训练与验证命令
 
-python - <<'PY'
-import torch
-ckpt = torch.load("checkpoints/mamba_dekf/best.pt", map_location="cpu")
-sd = ckpt.get("model_state_dict", ckpt)
-print(ckpt.get("runtime_contract", {}))
-print("fallback_gru keys:", sum(k.startswith("fallback_gru") for k in sd))
-print("mamba_layers keys:", sum(k.startswith("mamba_layers") for k in sd))
-PY
+从仓库根目录执行。此技术路线冒烟测试按约定复用 val 数据；产出的验证指标不能作为泛化性能结论。
 
-
-
+```bash
 python tools/build_centerpoint_mini_train_dataset.py \
   --det-json /root/autodl-tmp/data/base_version/nuscenes/centerpoint/val.json \
   --nusc-dataroot /root/autodl-tmp/data/nuscenes/datasets/ \
@@ -31,52 +13,48 @@ python tools/build_centerpoint_mini_train_dataset.py \
   --dist-th 2.0 \
   --min-frames 2 \
   --min-matched-frames 2 \
+  --scene-split val \
   --train-config config/train_nuscenes.yaml
 python tools/augment_tracklet_cache_with_fusion.py \
   --input /root/autodl-tmp/data/training_cache/nuscenes/mini/train_det.pkl \
   --output /root/autodl-tmp/data/training_cache/nuscenes/mini/train_fusion.pkl \
   --train-config config/train_nuscenes.yaml
-cp /root/autodl-tmp/data/training_cache/nuscenes/mini/train_fusion.pkl /root/autodl-tmp/data/training_cache/nuscenes/train_fusion.pkl /root/autodl-tmp/data/training_cache/nuscenes/mini/val_fusion.pkl 
+cp /root/autodl-tmp/data/training_cache/nuscenes/mini/train_fusion.pkl \
+   /root/autodl-tmp/data/training_cache/nuscenes/mini/val_fusion.pkl
 
-  python tools/build_pairwise_association_cache.py \
-    --input /root/autodl-tmp/data/training_cache/nuscenes/mini/train_fusion.pkl \
-    --output /root/autodl-tmp/data/training_cache/nuscenes/mini/train_pairwise_assoc.pkl \
-    --summary-output docs/train_pairwise_assoc_summary.json \
-    --train-config config/train_nuscenes.yaml \
-    --history-len 8 \
-    --future-step 1 \
-    --hard-negative-distance 4.0 \
-    --max-hard-negatives 4 \
-    --max-easy-negatives 2
-  
-  python tools/build_pairwise_association_cache.py \
-    --input /root/autodl-tmp/data/training_cache/nuscenes/mini/train_fusion.pkl \
-    --output /root/autodl-tmp/data/training_cache/nuscenes/mini/train_pairwise_assoc.pkl \
-    --summary-output docs/train_pairwise_assoc_summary.json \
-    --train-config config/train_nuscenes.yaml \
-    --max-hard-negatives 4 \
-    --max-easy-negatives 2 \
-    --max-pairs-per-class car=80000,pedestrian=70000
+python tools/build_pairwise_association_cache.py \
+  --input /root/autodl-tmp/data/training_cache/nuscenes/mini/train_fusion.pkl \
+  --output /root/autodl-tmp/data/training_cache/nuscenes/mini/train_pairwise_assoc.pkl \
+  --summary-output debug/train_pairwise_assoc_summary.json \
+  --train-config config/train_nuscenes.yaml \
+  --pair-geometry-source predicted_track_candidate \
+  --negative-mining-mode inference_margin \
+  --cost-margin-eps 0.05 \
+  --min-hard-negatives 2 \
+  --max-hard-negatives 8 \
+  --max-easy-negatives 0
 
+python tools/build_pairwise_association_cache.py \
+  --input /root/autodl-tmp/data/training_cache/nuscenes/mini/val_fusion.pkl \
+  --output /root/autodl-tmp/data/training_cache/nuscenes/mini/val_pairwise_assoc.pkl \
+  --summary-output debug/val_pairwise_assoc_summary.json \
+  --train-config config/train_nuscenes.yaml \
+  --pair-geometry-source predicted_track_candidate \
+  --negative-mining-mode inference_margin \
+  --cost-margin-eps 0.05 \
+  --min-hard-negatives 2 \
+  --max-hard-negatives 8 \
+  --max-easy-negatives 0
 
-  python tools/audit_pairwise_association_cache.py \
-    --input /root/autodl-tmp/data/training_cache/nuscenes/mini/train_pairwise_assoc.pkl \
-    --output docs/train_pairwise_assoc_audit.json
-
-
+python training/train.py --config config/train_nuscenes.yaml
+python main.py --dataset nuscenes --eval \
+  --config config/nuscenes_single_stage_mctrack_motion_residual_combo.yaml -p 12
 python tools/compare_pairwise_assoc_train_infer.py \
-    --train-cache /root/autodl-tmp/data/training_cache/nuscenes/mini/train_pairwise_assoc.pkl \
-    --infer-audit debug/association_head_audit.json \
-    --output docs/pairwise_assoc_train_infer_compare.json
-
-
-  python tools/train_pairwise_association.py --train-config config/train_nuscenes.yaml
-
-
-
-
-
-python main.py --dataset nuscenes --eval  --config config/nuscenes_single_stage_mctrack_motion_residual_combo.yaml -p 12
+  --train-cache /root/autodl-tmp/data/training_cache/nuscenes/mini/train_pairwise_assoc.pkl \
+  --infer-audit debug/association_head_audit.json \
+  --output debug/association_shadow_decision_report.json \
+  --min-known-changed 100
+```
 
 
 
@@ -342,3 +320,66 @@ python main.py --dataset nuscenes --eval  --config config/nuscenes_single_stage_
   - 只允许单向惩罚，且 delta 仅覆盖当前几何差距，不使用固定全局增量。
   - car 首轮保持关闭；其他类别依据 shadow audit 的净正确修正率逐类启用。
   - 每个 class/state 单独 A/B，只有总 AMOTA 严格高于 0.740 才合并。
+
+  下面的命令在项目根目录、存有 CenterPoint val.json 和 nuScenes 数据的机器上执行。它沿用你目前“训练与验证复用数据”的跑通方案，并重建修复后的缓存。
+
+cd /home/alvin/demo/Mamba-DEKF
+set -e
+
+CACHE=/root/autodl-tmp/data/training_cache/nuscenes/mini
+DET=/root/autodl-tmp/data/base_version/nuscenes/centerpoint/val.json
+TRAIN_CFG=config/train_nuscenes.yaml
+EVAL_CFG=config/nuscenes_single_stage_mctrack_motion_residual_combo.yaml
+
+# 1. CenterPoint 检测 + nuScenes GT → 检测轨迹缓存
+python tools/build_centerpoint_mini_train_dataset.py \
+  --det-json "$DET" \
+  --nusc-dataroot /root/autodl-tmp/data/nuscenes/datasets/ \
+  --nusc-version v1.0-trainval \
+  --scene-split val \
+  --max-scenes 0 \
+  --use-default-class-dist-th \
+  --min-frames 2 \
+  --min-matched-frames 2 \
+  --train-config "$TRAIN_CFG" \
+  --inference-config "$EVAL_CFG" \
+  --output "$CACHE/train_det.pkl"
+
+# 2. 生成融合历史；当前跑通实验复用它作验证缓存
+python tools/augment_tracklet_cache_with_fusion.py \
+  --input "$CACHE/train_det.pkl" \
+  --output "$CACHE/train_fusion.pkl" \
+  --train-config "$TRAIN_CFG"
+cp "$CACHE/train_fusion.pkl" "$CACHE/val_fusion.pkl"
+
+# 3. 生成关联样本；当前跑通实验复用它作验证缓存
+python tools/build_pairwise_association_cache.py \
+  --input "$CACHE/train_fusion.pkl" \
+  --output "$CACHE/train_pairwise_assoc.pkl" \
+  --summary-output "$CACHE/train_pairwise_summary.json" \
+  --train-config "$TRAIN_CFG" \
+  --pair-geometry-source predicted_track_candidate \
+  --negative-mining-mode inference_margin \
+  --cost-margin-eps 0.05 \
+  --min-hard-negatives 2 \
+  --max-hard-negatives 8 \
+  --max-easy-negatives 0 \
+  --max-pairs-per-class car=80000,pedestrian=70000
+cp "$CACHE/train_pairwise_assoc.pkl" "$CACHE/val_pairwise_assoc.pkl"
+
+# 4. 检查生成结果，然后训练
+python tools/audit_det_tracklet_cache.py \
+  --input "$CACHE/train_fusion.pkl" \
+  --train-config "$TRAIN_CFG" \
+  --output "$CACHE/train_fusion_audit.json"
+python tools/audit_pairwise_association_cache.py \
+  --input "$CACHE/train_pairwise_assoc.pkl" \
+  --output "$CACHE/train_pairwise_audit.json"
+python training/train.py --config "$TRAIN_CFG"
+
+# 5. 在 nuScenes val 上运行跟踪与评估
+python main.py --dataset nuscenes --eval --config "$EVAL_CFG" -p 12
+
+训练配置 (config/train_nuscenes.yaml:128) 已设为主训练结束后自动训练关联头，无需再单独运行关联训练命令。检查 train_pairwise_summary.json 中的 unmatched_detection_negative_pairs，可确认新增负样本是否进入缓存。
+
+当前评估配置 (config/nuscenes_single_stage_mctrack_motion_residual_combo.yaml:137) 的 SHADOW_MODE: true，关联头只做旁路审计，不会改变最终匹配。若要验证关联头实际作用，复制该配置、在副本中设为 SHADOW_MODE: false，再用副本运行第 5 步。

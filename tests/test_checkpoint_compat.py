@@ -1,14 +1,28 @@
 import unittest
+import tempfile
+from pathlib import Path
 
 import numpy as np
 
 from kalmanfilter.checkpoint_compat import (
     adapt_num_class_state_dict,
+    checkpoint_sha256,
     filter_heads_only_state_dict,
+    validate_association_backbone_binding,
 )
 
 
 class CheckpointCompatTest(unittest.TestCase):
+    def test_association_checkpoint_binds_to_exact_backbone_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "best.pt"
+            path.write_bytes(b"motion-one")
+            contract = {"backbone_sha256": checkpoint_sha256(path)}
+            validate_association_backbone_binding(contract, path)
+            path.write_bytes(b"motion-two")
+            with self.assertRaisesRegex(ValueError, "different motion backbone"):
+                validate_association_backbone_binding(contract, path)
+
     def test_adapt_num_class_state_dict_truncates_checkpoint_rows_to_model_rows(self):
         state_dict = {
             "raw_q_siz.weight": np.arange(30, dtype=np.float32).reshape(10, 3),

@@ -1,8 +1,31 @@
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
 from typing import Iterable, Mapping, MutableMapping
 
 _BACKBONE_PREFIXES = ("fallback_gru.", "mamba_layers.")
+
+
+def checkpoint_sha256(path: str | Path | None) -> str | None:
+    if path is None:
+        return None
+    digest = hashlib.sha256()
+    with open(path, "rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def validate_association_backbone_binding(runtime_contract: Mapping, backbone_path: str | Path) -> None:
+    expected = runtime_contract.get("backbone_sha256") if isinstance(runtime_contract, Mapping) else None
+    if not isinstance(expected, str) or len(expected) != 64:
+        raise ValueError("Association checkpoint has no valid backbone_sha256; retrain Stage B")
+    actual = checkpoint_sha256(backbone_path)
+    if actual != expected:
+        raise ValueError(
+            "Association checkpoint was trained with a different motion backbone; retrain Stage B"
+        )
 
 
 def _clone_like(value):

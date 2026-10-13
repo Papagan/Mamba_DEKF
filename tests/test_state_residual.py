@@ -136,6 +136,70 @@ class StateResidualTest(unittest.TestCase):
 
         self.assertAlmostEqual(float(out_ori[0, 0, 0]), -2.9515927, places=5)
 
+    def test_tanh_bounding_preserves_gradient_inside_physical_limit(self):
+        pos = torch.zeros(1, 6, 1)
+        siz = torch.zeros(1, 3, 1)
+        ori = torch.zeros(1, 2, 1)
+        residual = torch.tensor([[0.5, 0.0, 0.0, 0.0, 0.0, 0.0]], requires_grad=True)
+
+        out_pos, _, _, _ = apply_bounded_state_residuals(
+            pos,
+            siz,
+            ori,
+            residual,
+            class_ids=torch.tensor([0]),
+            state_buckets=["matched"],
+            cfg={
+                "ENABLED": True,
+                "BOUNDING_MODE": "tanh",
+                "ACTIVE_CLASS_STATES": {0: ["matched"]},
+                "DEFAULT_BOUNDS": {
+                    "POS_XY": 0.5,
+                    "POS_Z": 0.1,
+                    "VEL_XY": 1.0,
+                    "YAW": 0.2,
+                },
+            },
+        )
+        out_pos[0, 0, 0].backward()
+
+        self.assertAlmostEqual(float(out_pos[0, 0, 0]), math.tanh(0.5) * 0.5, places=6)
+        self.assertGreater(float(residual.grad[0, 0]), 0.0)
+
+    def test_time_scaling_matches_reference_frame_interval(self):
+        pos = torch.zeros(2, 6, 1)
+        siz = torch.zeros(2, 3, 1)
+        ori = torch.zeros(2, 2, 1)
+        residual = torch.ones(2, 6)
+        cfg = {
+            "ENABLED": True,
+            "TIME_SCALING": True,
+            "REFERENCE_DT": 0.5,
+            "MIN_TIME_SCALE": 0.25,
+            "MAX_TIME_SCALE": 4.0,
+            "ACTIVE_CLASS_STATES": {0: ["unmatched"]},
+            "DEFAULT_BOUNDS": {
+                "POS_XY": 0.5,
+                "POS_Z": 0.1,
+                "VEL_XY": 1.0,
+                "YAW": 0.2,
+            },
+        }
+
+        out_pos, _, _, _ = apply_bounded_state_residuals(
+            pos,
+            siz,
+            ori,
+            residual,
+            class_ids=torch.tensor([0, 0]),
+            state_buckets=["unmatched", "unmatched"],
+            cfg=cfg,
+            delta_t=torch.tensor([0.25, 1.0]),
+        )
+
+        self.assertAlmostEqual(float(out_pos[0, 0, 0]), 0.25)
+        self.assertAlmostEqual(float(out_pos[1, 0, 0]), 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

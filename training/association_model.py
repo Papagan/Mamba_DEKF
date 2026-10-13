@@ -86,16 +86,26 @@ class PairwiseAssociationModel(nn.Module):
             dropout=dropout,
         )
 
-    def encode(self, history: Tensor, class_ids: Tensor, state_buckets=None) -> Tensor:
-        current_range = torch.linalg.norm(history[:, -1, 0:2], dim=-1)
-        history_mask = history.abs().sum(dim=-1) > 0
+    def encode(self, history: Tensor, class_ids: Tensor, state_buckets=None, *,
+               current_range: Tensor | None = None,
+               history_mask: Tensor | None = None,
+               history_match_mask: Tensor | None = None,
+               detection_driven_mask: Tensor | None = None) -> Tensor:
+        if current_range is None:
+            current_range = torch.linalg.norm(history[:, -1, 0:2], dim=-1)
+        if history_mask is None:
+            history_mask = history.abs().sum(dim=-1) > 0
+        if history_match_mask is None:
+            history_match_mask = history_mask
+        if detection_driven_mask is None:
+            detection_driven_mask = history_match_mask[:, -1]
         out = self.temporal_encoder(
             history,
             class_ids=class_ids,
             current_range=current_range,
-            detection_driven_mask=history_mask[:, -1],
+            detection_driven_mask=detection_driven_mask,
             history_mask=history_mask,
-            history_match_mask=history_mask,
+            history_match_mask=history_match_mask,
             state_buckets=state_buckets,
             mode=self.encoder_mode,
         )
@@ -108,8 +118,25 @@ class PairwiseAssociationModel(nn.Module):
         pair_features: Tensor,
         class_ids: Tensor,
         state_buckets=None,
+        anchor_current_range: Tensor | None = None,
+        candidate_current_range: Tensor | None = None,
+        anchor_history_mask: Tensor | None = None,
+        anchor_history_match_mask: Tensor | None = None,
+        candidate_history_mask: Tensor | None = None,
+        anchor_detection_driven: Tensor | None = None,
     ) -> Tensor:
-        track_embedding = self.encode(anchor_history, class_ids, state_buckets=state_buckets)
-        det_embedding = self.encode(candidate_history, class_ids, state_buckets=["matched"] * int(class_ids.shape[0]))
+        track_embedding = self.encode(
+            anchor_history, class_ids, state_buckets=state_buckets,
+            current_range=anchor_current_range, history_mask=anchor_history_mask,
+            history_match_mask=anchor_history_match_mask,
+            detection_driven_mask=anchor_detection_driven,
+        )
+        det_embedding = self.encode(
+            candidate_history, class_ids,
+            state_buckets=["matched"] * int(class_ids.shape[0]),
+            current_range=candidate_current_range,
+            history_mask=candidate_history_mask,
+            history_match_mask=candidate_history_mask,
+        )
         pair = compose_pair_vectors(track_embedding, det_embedding, pair_features)
         return self.association_heads(pair, class_ids)

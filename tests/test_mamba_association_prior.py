@@ -820,6 +820,41 @@ class MambaAssociationPriorTest(unittest.TestCase):
         self.assertFalse(records[2]["active"])
         self.assertAlmostEqual(records[2]["delta"], 0.0, places=6)
 
+    def test_pairwise_head_bounded_log_factor_reranks_without_improving_row_gate(self):
+        cost = np.array([[1.00, 1.03, 1.30]], dtype=np.float32)
+        scores = np.array([[0.1, 0.9, 0.99]], dtype=np.float32)
+        records = []
+
+        out = apply_pairwise_association_head_to_cost_matrix(
+            cost,
+            [_Traj("trailer", unmatch_length=1)],
+            [_Box("trailer"), _Box("trailer"), _Box("trailer")],
+            {
+                "CATEGORY_MAP_TO_NUMBER": {"trailer": 5},
+                "MAMBA_ASSOCIATION_HEAD": {
+                    "ENABLED": True,
+                    "APPLY_MODE": "bounded_log_factor",
+                    "COST_MARGIN_EPS": 0.05,
+                    "ALPHA": 0.05,
+                    "MAX_DELTA": 0.03,
+                    "LOG_FACTOR_BOUND": 1.0,
+                    "LOGIT_TEMPERATURE": 1.0,
+                    "PRESERVE_ROW_MIN": True,
+                    "ACTIVE_CLASS_STATES": {5: ["unmatched"]},
+                },
+            },
+            association_scores=scores,
+            audit_callback=records.append,
+        )
+
+        self.assertAlmostEqual(float(out[0, 0]), 1.03, places=6)
+        self.assertAlmostEqual(float(out[0, 1]), 1.00, places=6)
+        self.assertAlmostEqual(float(out[0, 2]), 1.30, places=6)
+        self.assertGreaterEqual(float(np.min(out[0])), float(np.min(cost[0])))
+        self.assertGreater(records[0]["delta"], 0.0)
+        self.assertLess(records[1]["delta"], 0.0)
+        self.assertFalse(records[2]["active"])
+
     def test_match_trajs_applies_pairwise_head_scores_before_assignment(self):
         seen = {}
         original_cost = matching.cost_calculate_general

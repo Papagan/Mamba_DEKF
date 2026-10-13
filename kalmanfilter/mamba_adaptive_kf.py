@@ -1085,9 +1085,11 @@ class TemporalMamba(nn.Module):
             nn.LayerNorm(embed_dim),
         )
 
-        # ---- State delta head: predict initial-state correction [B, 6] ----
-        # Gives Mamba a direct gradient path through loss_pos, not only through
-        # R_pos via the KF update.  Output: [dx, dy, dz, dvx, dvy, dvz].
+        # ---- Learned residual dynamics heads ----
+        # The head is kept under its historical checkpoint key, while its
+        # semantics are now a bounded transition correction
+        # [dx, dy, dz, dvx, dvy, dyaw].  The same control is recursively applied
+        # during open-loop training; inference recomputes it every frame.
         self.head_delta_pos = nn.Sequential(
             nn.Linear(d_model, 32),
             nn.SiLU(),
@@ -1134,12 +1136,22 @@ class TemporalMamba(nn.Module):
                 "kappa_ori_unc" : [B, 1]     — pre-clamp κ for overconfidence penalty
                 "embedding" : [B, embed_dim] — temporal embedding for association
         """
+        # Remove padded-frame leakage before temporal encoding.  Histories are
+        # right-aligned, so h[:, -1] remains the latest valid state while the
+        # backbone cannot exploit arbitrary values in padding slots.
+        if history_mask is not None:
+            track_history = track_history * history_mask.to(
+                device=track_history.device, dtype=track_history.dtype
+            ).unsqueeze(-1)
+
         # input projection: [B, T, 12] → [B, T, d_model]
         h = self.input_proj(track_history)
 
         # LayerNorm before Mamba blocks — stabilises training by normalising
         # across the d_model dimension after the linear projection
         h = self.input_norm(h)
+        if history_mask is not None:
+            h = h * history_mask.to(device=h.device, dtype=h.dtype).unsqueeze(-1)
 
         # pass through Mamba layers with residual + LayerNorm
         if self.mamba_layers is not None:
@@ -1307,7 +1319,7 @@ class TemporalMamba(nn.Module):
             "kappa_ori": kappa_ori,
             "kappa_ori_unc": kappa_ori_unc,
             "embedding": embedding,
-            "delta_pos": delta_pos,               # [B, 6] — initial-state correction
+            "delta_pos": delta_pos,               # [B, 6] — transition correction
         }
 
 

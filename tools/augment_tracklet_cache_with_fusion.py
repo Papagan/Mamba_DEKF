@@ -106,18 +106,23 @@ def finalize_fusion_omegas(tracklet: dict) -> None:
     prev_yaw = None
     prev_ts = None
     for frame in tracklet["frames"]:
-        if frame.get("fusion_valid", False):
-            if prev_yaw is not None and prev_ts is not None:
-                dt = float(frame["timestamp"] - prev_ts)
-                if dt > 0:
-                    omega = wrap_to_pi(float(frame["fusion_yaw"]) - prev_yaw) / dt
-                    frame["fusion_feature_12"][10] = float(omega)
-            prev_yaw = float(frame["fusion_yaw"])
-            prev_ts = float(frame["timestamp"])
+        if not frame.get("fusion_valid", False):
+            prev_yaw = None
+            prev_ts = None
+            continue
+        if prev_yaw is not None and prev_ts is not None:
+            dt = float(frame["timestamp"] - prev_ts)
+            if dt > 0:
+                omega = wrap_to_pi(float(frame["fusion_yaw"]) - prev_yaw) / dt
+                frame["fusion_feature_12"][10] = float(omega)
+        prev_yaw = float(frame["fusion_yaw"])
+        prev_ts = float(frame["timestamp"])
 
 
 def augment_tracklet(tracklet: dict, base_noise_cfg: dict, device) -> Tuple[dict, Dict[str, int]]:
     import torch
+    from kalmanfilter.mctrack_exact_update import restore_exact_matched_components
+    from kalmanfilter.noise_priors import TRACKING_CAT_ID_MAP
 
     trk = copy.deepcopy(tracklet)
     frames = sorted(trk["frames"], key=lambda x: (x["timestamp"], x["frame_id"]))
@@ -149,6 +154,10 @@ def augment_tracklet(tracklet: dict, base_noise_cfg: dict, device) -> Tuple[dict
     R_siz = cov["R_siz_base"]
     R_ori = cov["R_ori_base"]
     max_predict_len = int(base_noise_cfg.get("TRACKER_LIMITS", {}).get("PREDICT_BBOX_LENGTH", 3))
+    exact_cfg = base_noise_cfg.get("MCTRACK_EXACT_UPDATE", {}) or {}
+    class_id = TRACKING_CAT_ID_MAP.get(str(trk["category"]), -1)
+    exact_matched = class_id in {int(v) for v in exact_cfg.get("MATCHED_CLASSES", [])}
+    exact_unmatched = class_id in {int(v) for v in exact_cfg.get("UNMATCHED_CLASSES", [])}
 
     kf = None
     active = False
@@ -210,6 +219,14 @@ def augment_tracklet(tracklet: dict, base_noise_cfg: dict, device) -> Tuple[dict
             pos_x_upd, pos_P_upd, siz_x_upd, siz_P_upd, ori_x_upd, ori_P_upd = kf.update(
                 z_pos, z_siz, z_ori, R_pos=R_pos, R_siz=R_siz, R_ori=R_ori
             )
+            if exact_matched:
+                pos_x_upd, pos_P_upd, siz_x_upd, siz_P_upd = restore_exact_matched_components(
+                    pos_x_pred, pos_P_pred, siz_x_pred, siz_P_pred,
+                    pos_x_upd, pos_P_upd, siz_x_upd, siz_P_upd,
+                    torch.ones(1, dtype=torch.bool, device=device),
+                )
+                kf.pos_filter.x, kf.pos_filter.P = pos_x_upd, pos_P_upd
+                kf.siz_filter.x, kf.siz_filter.P = siz_x_upd, siz_P_upd
             fused_xyz = [
                 float(pos_x_upd[0, 0, 0].item()),
                 float(pos_x_upd[0, 1, 0].item()),
@@ -225,6 +242,11 @@ def augment_tracklet(tracklet: dict, base_noise_cfg: dict, device) -> Tuple[dict
             frame_fake = False
             consecutive_miss = 0
         else:
+            if exact_unmatched:
+                zero_observation = torch.cat(
+                    [pos_x_pred[:, 0:3, :], pos_x_pred[:, 3:5, :]], dim=1
+                )
+                kf.pos_filter.update(zero_observation, R_pos)
             fused_xyz = [
                 float(pos_x_pred[0, 0, 0].item()),
                 float(pos_x_pred[0, 1, 0].item()),

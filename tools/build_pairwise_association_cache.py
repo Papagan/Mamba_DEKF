@@ -117,7 +117,7 @@ def main() -> int:
         help=(
             "Negative mining strategy. 'inference_margin' keeps only same-class "
             "candidates within best predicted-track distance + --cost-margin-eps, "
-            "matching the margin_tiebreak inference intervention set."
+            "as a center-distance proxy for the runtime geometric-cost margin."
         ),
     )
     parser.add_argument(

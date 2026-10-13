@@ -33,6 +33,33 @@ def _sample(anchor_id, class_id, label, value, negative_type="positive"):
 
 
 class TrainPairwiseAssociationCliTest(unittest.TestCase):
+    def test_precompute_forwards_online_history_metadata(self):
+        calls = []
+
+        class StubModel:
+            def encode(self, history, class_ids, state_buckets=None, **kwargs):
+                calls.append(kwargs)
+                return torch.ones(history.shape[0], 2)
+
+        batch = {
+            "anchor_history": torch.ones(1, 2, 12),
+            "candidate_history": torch.ones(1, 2, 12),
+            "pair_features": torch.zeros(1, 7),
+            "class_id": torch.tensor([0]),
+            "state_buckets": ["matched"],
+            "anchor_current_range": torch.tensor([12.0]),
+            "candidate_current_range": torch.tensor([13.0]),
+            "anchor_history_mask": torch.tensor([[True, True]]),
+            "anchor_history_match_mask": torch.tensor([[False, True]]),
+            "candidate_history_mask": torch.tensor([[False, True]]),
+            "anchor_detection_driven": torch.tensor([True]),
+        }
+        train_pairwise_association._pair_vectors_from_batch(StubModel(), batch, torch.device("cpu"))
+        self.assertEqual(float(calls[0]["current_range"][0]), 12.0)
+        self.assertEqual(bool(calls[0]["history_match_mask"][0, 0]), False)
+        self.assertEqual(bool(calls[0]["detection_driven_mask"][0]), True)
+        self.assertEqual(float(calls[1]["current_range"][0]), 13.0)
+
     def test_precompute_pair_composition_delegates_to_shared_helper(self):
         track_embeddings = torch.tensor([[1.0, 2.0]])
         detection_embeddings = torch.tensor([[3.0, 5.0]])
@@ -106,10 +133,17 @@ class TrainPairwiseAssociationCliTest(unittest.TestCase):
                     "4",
                     "--freeze-backbone",
                     "--precompute-embeddings",
+                    "--train-mode",
+                    "per_class",
+                    "--class-ids",
+                    "2",
                     "--ranking-margin",
                     "0.2",
                     "--ranking-weight",
                     "0.1",
+                    "--listwise-weight",
+                    "0.5",
+                    "--balance-positives",
                     "--dry-run",
                 ],
                 cwd=root,
@@ -123,9 +157,15 @@ class TrainPairwiseAssociationCliTest(unittest.TestCase):
             self.assertTrue(metrics_path.exists())
             self.assertTrue(ckpt_path.exists())
             self.assertIn("ranking", metrics_path.read_text(encoding="utf-8"))
+            self.assertIn("listwise", metrics_path.read_text(encoding="utf-8"))
             ckpt = torch.load(ckpt_path, map_location="cpu")
             runtime_contract = ckpt["runtime_contract"]
             self.assertTrue(runtime_contract["precompute_embeddings"])
+            self.assertEqual(runtime_contract["association_training_mode"], "per_class")
+            self.assertTrue(runtime_contract["independent_class_selection"])
+            self.assertTrue(ckpt["settings"]["balance_positives"])
+            self.assertEqual(ckpt["metrics"]["train"]["listwise"]["weight"], 0.5)
+            self.assertEqual(ckpt["metrics"]["classes"]["2"]["status"], "trained")
             self.assertEqual(
                 runtime_contract["filter_mode"], "mamba_multihead_closure"
             )

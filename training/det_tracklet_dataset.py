@@ -280,7 +280,8 @@ class DetectionTrackletDataset(Dataset):
             prev_ts = frm["timestamp"]
 
         matched_hist = history_match_mask.sum()
-        current_range = float(np.linalg.norm(np.asarray(cur["gt_global_xyz"][:2], dtype=np.float32)))
+        range_xyz = cur["det_global_xyz"] if cur["is_matched"] and cur["det_global_xyz"] is not None else ref_xyz
+        current_range = float(np.linalg.norm(np.asarray(range_xyz[:2], dtype=np.float32)))
         current_speed = float(np.linalg.norm(obs_current_pos[3:5]))
         current_det_score = float(cur["det_score"])
 

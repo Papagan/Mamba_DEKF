@@ -36,16 +36,18 @@ class MambaMultiheadClosureConfigTest(unittest.TestCase):
         self.assertEqual(closure_cfg["FORCE_PRIOR_STATES"], ["matched"])
         self.assertEqual(closure_cfg["ACTIVE_CLASS_STATES"], {})
 
-    def test_train_config_enables_residual_supervision_without_enabling_inference_residual(self):
+    def test_train_config_uses_recursive_motion_rollout_instead_of_one_step_auxiliary(self):
         cfg = yaml.safe_load((REPO_ROOT / "config" / "train_nuscenes.yaml").read_text(encoding="utf-8"))
         residual_loss = cfg["LOSS"]["RESIDUAL_SUPERVISION"]
         residual_runtime = cfg["BASE_NOISE"]["MAMBA_STATE_RESIDUAL"]
-        self.assertTrue(residual_loss["ENABLED"])
-        self.assertGreater(residual_loss["WEIGHT"], 0.0)
-        self.assertIn("W_POS_XY", residual_loss)
-        self.assertIn("W_YAW", residual_loss)
-        self.assertFalse(residual_runtime["ENABLED"])
-        self.assertEqual(residual_runtime["ACTIVE_CLASS_STATES"], {})
+        motion_rollout = cfg["BASE_NOISE"]["MOTION_ROLLOUT"]
+        self.assertFalse(residual_loss["ENABLED"])
+        self.assertEqual(residual_loss["WEIGHT"], 0.0)
+        self.assertTrue(residual_runtime["ENABLED"])
+        self.assertEqual(residual_runtime["BOUNDING_MODE"], "tanh")
+        self.assertTrue(motion_rollout["ENABLED"])
+        self.assertGreater(motion_rollout["TRAIN_OPEN_LOOP_PROB"], 0.5)
+        self.assertTrue(motion_rollout["VALIDATION_OPEN_LOOP"])
 
     def test_branch_config_keeps_frozen_baseline_path_separate(self):
         cfg = yaml.safe_load(
@@ -76,7 +78,7 @@ class MambaMultiheadClosureConfigTest(unittest.TestCase):
         self.assertEqual(closure_cfg["FORCE_PRIOR_STATES"], ["matched", "unmatched"])
         self.assertEqual(closure_cfg["ACTIVE_CLASS_STATES"], {})
 
-    def test_state_residual_is_disabled_by_default_in_train_and_eval_configs(self):
+    def test_frozen_guard_disables_residual_but_motion_branch_enables_it(self):
         eval_cfg = yaml.safe_load(
             (
                 REPO_ROOT
@@ -84,20 +86,26 @@ class MambaMultiheadClosureConfigTest(unittest.TestCase):
                 / "nuscenes_single_stage_mctrack_exact_noise_hybrid_mamba_multihead_closure.yaml"
             ).read_text(encoding="utf-8")
         )
-        train_cfg = yaml.safe_load(
-            (REPO_ROOT / "config" / "train_nuscenes.yaml").read_text(encoding="utf-8")
+        motion_cfg = yaml.safe_load(
+            (
+                REPO_ROOT
+                / "config"
+                / "nuscenes_single_stage_mctrack_motion_residual_combo.yaml"
+            ).read_text(encoding="utf-8")
         )
 
         eval_residual = eval_cfg["DEKF_BASE_NOISE"]["MAMBA_STATE_RESIDUAL"]
-        train_residual = train_cfg["BASE_NOISE"]["MAMBA_STATE_RESIDUAL"]
-        for residual_cfg in [eval_residual, train_residual]:
-            self.assertFalse(residual_cfg["ENABLED"])
-            self.assertEqual(residual_cfg["ACTIVE_CLASS_STATES"], {})
-            self.assertIn("DEFAULT_BOUNDS", residual_cfg)
-            self.assertIn(2, residual_cfg["CLASS_BOUNDS"])
-            self.assertIn(3, residual_cfg["CLASS_BOUNDS"])
-            self.assertIn(5, residual_cfg["CLASS_BOUNDS"])
-            self.assertIn(6, residual_cfg["CLASS_BOUNDS"])
+        motion_residual = motion_cfg["DEKF_BASE_NOISE"]["MAMBA_STATE_RESIDUAL"]
+        self.assertFalse(eval_residual["ENABLED"])
+        self.assertEqual(eval_residual["ACTIVE_CLASS_STATES"], {})
+        self.assertTrue(motion_residual["ENABLED"])
+        self.assertEqual(motion_cfg["MAMBA"]["INPUT_HISTORY_SOURCE"], "track")
+        self.assertFalse(motion_cfg["MCTRACK_ORIGINAL_MOTION"]["ENABLED"])
+        for class_id in range(7):
+            self.assertEqual(
+                motion_residual["ACTIVE_CLASS_STATES"][class_id],
+                ["matched", "unmatched"],
+            )
 
     def test_audit_keeps_agile_unmatched_gate_for_future_retraining(self):
         cfg = yaml.safe_load(

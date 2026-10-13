@@ -19,7 +19,7 @@ MCTRACK_EXACT_MATCHED_UPDATE_CLASSES: [5, 6]
 MCTRACK_EXACT_UNMATCH_UPDATE: true
 MCTRACK_EXACT_UNMATCH_UPDATE_CLASSES: [5, 6]
 MCTRACK_ORIGINAL_MOTION:
-  ENABLED: true
+  ENABLED: false  # learned residual dynamics owns the transition in this branch
   APPLY_IN_FILTER_MODES: ["mamba_multihead_closure"]
   ACTIVE_CLASSES: [3]
   MOTION_MODE: {0: "CV", 1: "CV", 2: "CTRA", 3: "CV", 4: "CA", 5: "CV", 6: "CA"}
@@ -74,7 +74,8 @@ CATEGORY_MAP_TO_NUMBER : {
 }
 
 MAMBA:
-  CHECKPOINT_PATH: "checkpoints/mamba_dekf/best.pt"
+  CHECKPOINT_PATH: "checkpoints/mamba_motion/best.pt"
+  REQUIRE_CHECKPOINT: true
   D_MODEL: 96
   D_STATE: 24
   D_CONV: 4
@@ -88,6 +89,7 @@ MAMBA:
   MIN_DIAG_SIZ: 0.15
   MIN_KAPPA: 0.5
   NUM_CLASSES: 7
+  INPUT_HISTORY_SOURCE: track
 
 MAMBA_ASSOCIATION_PRIOR:
   ENABLED: false
@@ -113,14 +115,19 @@ MAMBA_ASSOCIATION_PRIOR:
 
 MAMBA_ASSOCIATION_HEAD:
   ENABLED: true
-  CHECKPOINT_PATH: "checkpoints/mamba_dekf/best_assoc.pt"
+  CHECKPOINT_PATH: "checkpoints/mamba_motion/best_assoc.pt"
+  REQUIRE_CHECKPOINT: true
+  REQUIRE_BACKBONE_BINDING: true
   HIDDEN_DIMS: [256, 128]
   NUM_CLASSES: 7
-  APPLY_MODE: "margin_tiebreak"
+  APPLY_MODE: "bounded_log_factor"
   COST_MARGIN_EPS: 0.05
   MIN_SCORE: 0.60
   ALPHA: 0.05
   MAX_DELTA: 0.03
+  LOG_FACTOR_BOUND: 1.0
+  LOGIT_TEMPERATURE: 1.0
+  PRESERVE_ROW_MIN: true
   ACTIVE_CLASS_STATES:
     0: ["matched", "unmatched"]
     1: ["matched", "unmatched"]
@@ -132,6 +139,7 @@ MAMBA_ASSOCIATION_HEAD:
 
 ASSOCIATION_HEAD_AUDIT:
   ENABLED: true
+  SHADOW_MODE: true            # promote only after per-class improved/damaged audit passes
   INFER_OUTPUT_PATH: "debug/association_head_audit.json"
   MAX_SAMPLES_PER_BUCKET: 32
   STRICT: false
@@ -329,21 +337,46 @@ DEKF_BASE_NOISE:
           r_ori: [0.85, 2.80]
   MAMBA_STATE_RESIDUAL:
     ENABLED: true
-    ACTIVE_CLASS_STATES: {3: ["unmatched"], 5: ["unmatched"]}
+    BOUNDING_MODE: tanh
+    TIME_SCALING: true
+    REFERENCE_DT: 0.5
+    MIN_TIME_SCALE: 0.5
+    MAX_TIME_SCALE: 2.0
+    ACTIVE_CLASS_STATES:
+      0: ["matched", "unmatched"]
+      1: ["matched", "unmatched"]
+      2: ["matched", "unmatched"]
+      3: ["matched", "unmatched"]
+      4: ["matched", "unmatched"]
+      5: ["matched", "unmatched"]
+      6: ["matched", "unmatched"]
     DEFAULT_BOUNDS:
-      POS_XY: 0.30
-      POS_Z: 0.10
-      VEL_XY: 0.50
-      YAW: 0.08
+      POS_XY: 0.75
+      POS_Z: 0.15
+      VEL_XY: 1.50
+      YAW: 0.25
     CLASS_BOUNDS:
+      0:
+        matched: {POS_XY: 0.75, POS_Z: 0.12, VEL_XY: 1.50, YAW: 0.20}
+        unmatched: {POS_XY: 0.75, POS_Z: 0.12, VEL_XY: 1.50, YAW: 0.20}
+      1:
+        matched: {POS_XY: 0.40, POS_Z: 0.08, VEL_XY: 1.00, YAW: 0.40}
+        unmatched: {POS_XY: 0.40, POS_Z: 0.08, VEL_XY: 1.00, YAW: 0.40}
       2:
-        unmatched: {POS_XY: 0.35, POS_Z: 0.08, VEL_XY: 0.60, YAW: 0.10}
+        matched: {POS_XY: 0.70, POS_Z: 0.10, VEL_XY: 2.00, YAW: 0.35}
+        unmatched: {POS_XY: 0.70, POS_Z: 0.10, VEL_XY: 2.00, YAW: 0.35}
       3:
-        unmatched: {POS_XY: 0.08, POS_Z: 0.02, VEL_XY: 0.60, YAW: 0.01}
+        matched: {POS_XY: 1.00, POS_Z: 0.12, VEL_XY: 3.00, YAW: 0.35}
+        unmatched: {POS_XY: 1.00, POS_Z: 0.12, VEL_XY: 3.00, YAW: 0.35}
+      4:
+        matched: {POS_XY: 0.60, POS_Z: 0.12, VEL_XY: 1.00, YAW: 0.15}
+        unmatched: {POS_XY: 0.60, POS_Z: 0.12, VEL_XY: 1.00, YAW: 0.15}
       5:
-        unmatched: {POS_XY: 0.08, POS_Z: 0.02, VEL_XY: 0.25, YAW: 0.01}
+        matched: {POS_XY: 0.60, POS_Z: 0.12, VEL_XY: 1.00, YAW: 0.15}
+        unmatched: {POS_XY: 0.60, POS_Z: 0.12, VEL_XY: 1.00, YAW: 0.15}
       6:
-        unmatched: {POS_XY: 0.30, POS_Z: 0.08, VEL_XY: 0.45, YAW: 0.06}
+        matched: {POS_XY: 0.70, POS_Z: 0.12, VEL_XY: 1.50, YAW: 0.18}
+        unmatched: {POS_XY: 0.70, POS_Z: 0.12, VEL_XY: 1.50, YAW: 0.18}
 
 DIRTY_TRACK_SUPPRESSOR:
   ENABLED: true

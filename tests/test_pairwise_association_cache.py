@@ -34,6 +34,24 @@ def _frame(sample_token, frame_id, x, y, *, matched=True, score=0.8, fusion_vali
 
 
 class PairwiseAssociationCacheTest(unittest.TestCase):
+    def test_unmatched_detection_becomes_negative_candidate(self):
+        frames = [_frame("s0", 0, 0.0, 0.0), _frame("s1", 1, 1.0, 0.0)]
+        false_positive = _frame("s1", 1, 1.3, 0.0)
+        false_positive["candidate_id"] = "unmatched-s1-car-0"
+        frames[1]["unmatched_detections"] = [false_positive]
+        tracklets = [{"instance_token": "car-a", "category": "car", "frames": frames}]
+
+        samples, summary = build_pairwise_association_samples(
+            tracklets, history_len=2, hard_negative_distance=1.0,
+            max_hard_negatives=1, max_easy_negatives=0,
+        )
+
+        self.assertEqual([sample["label"] for sample in samples], [1, 0])
+        self.assertTrue(samples[1]["candidate_is_unmatched_gt"])
+        self.assertEqual(samples[1]["candidate_instance_token"], "unmatched-s1-car-0")
+        self.assertEqual(summary["overall"]["negative_pairs"], 1)
+        self.assertEqual(summary["overall"]["unmatched_detection_negative_pairs"], 1)
+
     def test_builds_positive_and_hard_negative_from_same_frame_same_class(self):
         tracklets = [
             {
@@ -162,8 +180,69 @@ class PairwiseAssociationCacheTest(unittest.TestCase):
             and sample["current_sample_token"] == "s1"
         )
         self.assertEqual(anchor["anchor_history_12"][0], [0.0] * 12)
-        self.assertEqual(anchor["anchor_history_12"][1][0], 12.0)
+        self.assertEqual(anchor["anchor_history_12"][1][0], 0.0)
+        self.assertAlmostEqual(anchor["anchor_current_range"], (12.0**2 + 10.0**2)**0.5)
+        self.assertEqual(anchor["anchor_history_mask"], [False, True])
+        self.assertEqual(anchor["anchor_history_match_mask"], [False, True])
+        self.assertEqual(anchor["feature_schema_version"], 2)
         self.assertEqual(anchor["history_source"], "fusion")
+
+    def test_fusion_history_is_relative_to_current_fused_track_position(self):
+        frames = [
+            _frame("s0", 0, 100.0, 50.0, fusion_valid=True),
+            _frame("s1", 1, 103.0, 52.0, fusion_valid=True),
+            _frame("s2", 2, 105.0, 52.0, fusion_valid=True),
+        ]
+        samples, _ = build_pairwise_association_samples(
+            [{"instance_token": "car-a", "category": "car", "frames": frames}],
+            history_len=2, history_source="fusion", max_hard_negatives=0,
+            max_easy_negatives=0,
+        )
+        anchor = next(sample for sample in samples if sample["current_sample_token"] == "s1")
+        self.assertEqual(anchor["anchor_history_12"][0][:2], [-3.0, -2.0])
+        self.assertEqual(anchor["anchor_history_12"][1][:2], [0.0, 0.0])
+        self.assertAlmostEqual(anchor["anchor_current_range"], (113.0**2 + 62.0**2)**0.5)
+
+    def test_fusion_history_drops_previous_lifecycle_after_rebirth(self):
+        frames = [
+            _frame("s0", 0, 100.0, 0.0, fusion_valid=True),
+            _frame("s1", 1, 101.0, 0.0, fusion_valid=False, matched=False),
+            _frame("s2", 2, 200.0, 0.0, fusion_valid=True),
+            _frame("s3", 3, 201.0, 0.0, fusion_valid=True),
+        ]
+        samples, _ = build_pairwise_association_samples(
+            [{"instance_token": "car-a", "category": "car", "frames": frames}],
+            history_len=3, history_source="fusion", max_hard_negatives=0,
+            max_easy_negatives=0,
+        )
+        anchor = next(sample for sample in samples if sample["current_sample_token"] == "s2")
+        self.assertEqual(anchor["anchor_history_mask"], [False, False, True])
+        self.assertEqual(anchor["anchor_history_12"][0], [0.0] * 12)
+        self.assertEqual(anchor["anchor_history_12"][1], [0.0] * 12)
+
+    def test_fusion_pairs_do_not_cross_track_death(self):
+        frames = [
+            _frame("s0", 0, 0.0, 0.0, fusion_valid=True),
+            _frame("s1", 1, 1.0, 0.0, fusion_valid=False, matched=False),
+            _frame("s2", 2, 2.0, 0.0, fusion_valid=True),
+        ]
+        samples, _ = build_pairwise_association_samples(
+            [{"instance_token": "car-a", "category": "car", "frames": frames}],
+            history_len=3, history_source="fusion", future_step=2,
+            max_hard_negatives=0, max_easy_negatives=0,
+        )
+        self.assertEqual(samples, [])
+
+    def test_predicted_geometry_uses_fused_anchor_velocity(self):
+        frames = [_frame("s0", 0, 0.0, 0.0, fusion_valid=True, vx=1.0),
+                  _frame("s1", 1, 5.0, 0.0, fusion_valid=True)]
+        frames[0]["fusion_velocity"] = [3.0, 0.0]
+        samples, _ = build_pairwise_association_samples(
+            [{"instance_token": "car-a", "category": "car", "frames": frames}],
+            history_len=2, history_source="fusion", max_hard_negatives=0,
+            max_easy_negatives=0,
+        )
+        self.assertAlmostEqual(samples[0]["center_distance"], (8.0**2 + 10.0**2)**0.5)
 
     def test_track_candidate_pair_geometry_uses_current_anchor_state(self):
         tracklets = [

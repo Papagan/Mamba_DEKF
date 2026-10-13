@@ -20,6 +20,11 @@ class TrainAssociationStageTest(unittest.TestCase):
                 "METRICS_OUTPUT": "docs/pairwise_assoc_metrics.json",
                 "BACKBONE_CHECKPOINT": "checkpoints/mamba_dekf/best.pt",
                 "FREEZE_BACKBONE": True,
+                "PRECOMPUTE_EMBEDDINGS": True,
+                "TRAIN_MODE": "per_class",
+                "CLASS_IDS": [0, 2],
+                "LISTWISE_WEIGHT": 0.5,
+                "BALANCE_POSITIVES": True,
             },
         }
 
@@ -67,6 +72,11 @@ class TrainAssociationStageTest(unittest.TestCase):
         args = runner.call_args.args[0]
         self.assertIsInstance(args, SimpleNamespace)
         self.assertTrue(args.freeze_backbone)
+        self.assertTrue(args.precompute_embeddings)
+        self.assertEqual(args.train_mode, "per_class")
+        self.assertEqual(args.class_ids, [0, 2])
+        self.assertEqual(args.listwise_weight, 0.5)
+        self.assertTrue(args.balance_positives)
         self.assertEqual(args.train_pkl, str(train_pkl))
         self.assertEqual(args.val_pkl, str(val_pkl))
         self.assertEqual(args.device, "cpu")

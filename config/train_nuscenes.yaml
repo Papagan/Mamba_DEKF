@@ -25,43 +25,43 @@ DATA:
   TRAIN_ADAPTIVE_WINDOWS: true
   VAL_ADAPTIVE_WINDOWS: false
   MIN_HISTORY_LEN: 4
-  MIN_ROLLOUT_STEPS: 1
+  MIN_ROLLOUT_STEPS: 2
   CLASS_WINDOW:
     car:
       MIN_HISTORY_LEN: 4
       MAX_HISTORY_LEN: 8
-      MIN_ROLLOUT_STEPS: 1
-      MAX_ROLLOUT_STEPS: 3
+      MIN_ROLLOUT_STEPS: 2
+      MAX_ROLLOUT_STEPS: 8
     bicycle:
       MIN_HISTORY_LEN: 3
       MAX_HISTORY_LEN: 6
-      MIN_ROLLOUT_STEPS: 1
-      MAX_ROLLOUT_STEPS: 2
+      MIN_ROLLOUT_STEPS: 2
+      MAX_ROLLOUT_STEPS: 6
     motorcycle:
       MIN_HISTORY_LEN: 3
       MAX_HISTORY_LEN: 6
-      MIN_ROLLOUT_STEPS: 1
-      MAX_ROLLOUT_STEPS: 2
+      MIN_ROLLOUT_STEPS: 2
+      MAX_ROLLOUT_STEPS: 6
     pedestrian:
       MIN_HISTORY_LEN: 4
       MAX_HISTORY_LEN: 7
-      MIN_ROLLOUT_STEPS: 1
-      MAX_ROLLOUT_STEPS: 3
+      MIN_ROLLOUT_STEPS: 2
+      MAX_ROLLOUT_STEPS: 8
     bus:
       MIN_HISTORY_LEN: 4
       MAX_HISTORY_LEN: 8
-      MIN_ROLLOUT_STEPS: 1
-      MAX_ROLLOUT_STEPS: 3
+      MIN_ROLLOUT_STEPS: 2
+      MAX_ROLLOUT_STEPS: 8
     trailer:
       MIN_HISTORY_LEN: 5
       MAX_HISTORY_LEN: 8
-      MIN_ROLLOUT_STEPS: 1
-      MAX_ROLLOUT_STEPS: 3
+      MIN_ROLLOUT_STEPS: 2
+      MAX_ROLLOUT_STEPS: 8
     truck:
       MIN_HISTORY_LEN: 4
       MAX_HISTORY_LEN: 8
-      MIN_ROLLOUT_STEPS: 1
-      MAX_ROLLOUT_STEPS: 3
+      MIN_ROLLOUT_STEPS: 2
+      MAX_ROLLOUT_STEPS: 8
   CATEGORY_FILTER: null   # null = all categories; or ["car", "pedestrian"]
 
 # ---- Model (TemporalMamba) ----
@@ -96,6 +96,7 @@ MODEL:
   # N_MAMBA_LAYERS: 6
   # EMBED_DIM: 64
   HISTORY_LEN: 8            # max history length; adaptive training may sample shorter valid suffixes
+  INPUT_HISTORY_SOURCE: track # must match inference MAMBA.INPUT_HISTORY_SOURCE
   NUM_CLASSES: 7             # nuScenes tracking classes with independent closure heads
   MIN_DIAG_Q: 0.1           # floor on Cholesky diagonal for position Q head
   MIN_DIAG_R: 0.1           # floor on Cholesky diagonal for position R head
@@ -127,14 +128,18 @@ MAMBA_ASSOCIATION_PRIOR:
 ASSOCIATION_HEAD_TRAINING:
   ENABLED: true
   RUN_AFTER_MAIN: true
+  REQUIRE_FEATURE_SCHEMA_VERSION: 2
   TRAIN_PAIRWISE_PKL: /root/autodl-tmp/data/training_cache/nuscenes/mini/train_pairwise_assoc.pkl
   VAL_PAIRWISE_PKL: /root/autodl-tmp/data/training_cache/nuscenes/mini/val_pairwise_assoc.pkl
-  OUTPUT: checkpoints/mamba_dekf/best_assoc.pt
+  OUTPUT: checkpoints/mamba_motion/best_assoc.pt
   METRICS_OUTPUT: docs/pairwise_assoc_metrics.json
-  BACKBONE_CHECKPOINT: checkpoints/mamba_dekf/best.pt
+  BACKBONE_CHECKPOINT: checkpoints/mamba_motion/best.pt
   FREEZE_BACKBONE: true
   PRECOMPUTE_EMBEDDINGS: true
-  TENSORBOARD_DIR: checkpoints/mamba_dekf/assoc_tb
+  TRAIN_MODE: per_class          # independently optimize/select each class head on one frozen shared backbone
+  CLASS_IDS: [0, 1, 2, 3, 4, 5, 6]
+  REQUIRE_ALL_CLASSES: true      # never ship a randomly initialized category head silently
+  TENSORBOARD_DIR: checkpoints/mamba_motion/assoc_tb
   EPOCHS: 20
   BATCH_SIZE: 256
   NUM_WORKERS: 0
@@ -146,6 +151,8 @@ ASSOCIATION_HEAD_TRAINING:
   HARD_NEGATIVE_WEIGHT: 2.0
   RANKING_MARGIN: 0.2
   RANKING_WEIGHT: 0.1
+  LISTWISE_WEIGHT: 0.5       # optimize the complete same-frame candidate set, not isolated pairs
+  BALANCE_POSITIVES: true    # zero logit remains a neutral association factor under one-positive/many-negative groups
 
 # ---- Training ----
 TRAINING:
@@ -161,11 +168,11 @@ TRAINING:
   GRAD_CLIP_NORM: 1.0
   LOG_EVERY: 50
   SAVE_EVERY: 10
-  SAVE_DIR: checkpoints/mamba_dekf/
+  SAVE_DIR: checkpoints/mamba_motion/
   REQUIRE_MAMBA_SSM: true        # fail fast if training would fall back to GRU
   AUTO_UNSEAL_EPOCH: 0           # disabled for bounded-residual closure training; avoid unrelated cost-mode mutations
   INFERENCE_CONFIG: config/nuscenes_single_stage_mctrack_motion_residual_combo.yaml
-  ROLLOUT_STEPS: 4               # max rollout depth; adaptive training may sample shorter valid futures
+  ROLLOUT_STEPS: 8               # train true multi-step coast prediction, not one-step denoising
   NOISE_MAP:                     # Category-specific noise injection (aligned to inference DEKF_BASE_NOISE.R)
     # Order: [Car, Pedestrian, Bicycle, Motorcycle, Bus, Trailer, Truck]
     POS_STD_XY:
@@ -346,24 +353,64 @@ BASE_NOISE:
           r_ori: [0.85, 2.80]
   MAMBA_STATE_RESIDUAL:
     ENABLED: true
-    ACTIVE_CLASS_STATES: {3: ["unmatched"], 5: ["unmatched"]}
+    BOUNDING_MODE: tanh
+    TIME_SCALING: true
+    REFERENCE_DT: 0.5
+    MIN_TIME_SCALE: 0.5
+    MAX_TIME_SCALE: 2.0
+    ACTIVE_CLASS_STATES:
+      0: ["matched", "unmatched"]
+      1: ["matched", "unmatched"]
+      2: ["matched", "unmatched"]
+      3: ["matched", "unmatched"]
+      4: ["matched", "unmatched"]
+      5: ["matched", "unmatched"]
+      6: ["matched", "unmatched"]
     DEFAULT_BOUNDS:
-      POS_XY: 0.30
-      POS_Z: 0.10
-      VEL_XY: 0.50
-      YAW: 0.08
+      POS_XY: 0.75
+      POS_Z: 0.15
+      VEL_XY: 1.50
+      YAW: 0.25
     CLASS_BOUNDS:
+      0:
+        matched: {POS_XY: 0.75, POS_Z: 0.12, VEL_XY: 1.50, YAW: 0.20}
+        unmatched: {POS_XY: 0.75, POS_Z: 0.12, VEL_XY: 1.50, YAW: 0.20}
+      1:
+        matched: {POS_XY: 0.40, POS_Z: 0.08, VEL_XY: 1.00, YAW: 0.40}
+        unmatched: {POS_XY: 0.40, POS_Z: 0.08, VEL_XY: 1.00, YAW: 0.40}
       2:
-        unmatched: {POS_XY: 0.35, POS_Z: 0.08, VEL_XY: 0.60, YAW: 0.10}
+        matched: {POS_XY: 0.70, POS_Z: 0.10, VEL_XY: 2.00, YAW: 0.35}
+        unmatched: {POS_XY: 0.70, POS_Z: 0.10, VEL_XY: 2.00, YAW: 0.35}
       3:
-        unmatched: {POS_XY: 0.08, POS_Z: 0.02, VEL_XY: 0.60, YAW: 0.01}
+        matched: {POS_XY: 1.00, POS_Z: 0.12, VEL_XY: 3.00, YAW: 0.35}
+        unmatched: {POS_XY: 1.00, POS_Z: 0.12, VEL_XY: 3.00, YAW: 0.35}
+      4:
+        matched: {POS_XY: 0.60, POS_Z: 0.12, VEL_XY: 1.00, YAW: 0.15}
+        unmatched: {POS_XY: 0.60, POS_Z: 0.12, VEL_XY: 1.00, YAW: 0.15}
       5:
-        unmatched: {POS_XY: 0.08, POS_Z: 0.02, VEL_XY: 0.25, YAW: 0.01}
+        matched: {POS_XY: 0.60, POS_Z: 0.12, VEL_XY: 1.00, YAW: 0.15}
+        unmatched: {POS_XY: 0.60, POS_Z: 0.12, VEL_XY: 1.00, YAW: 0.15}
       6:
-        unmatched: {POS_XY: 0.30, POS_Z: 0.08, VEL_XY: 0.45, YAW: 0.06}
+        matched: {POS_XY: 0.70, POS_Z: 0.12, VEL_XY: 1.50, YAW: 0.18}
+        unmatched: {POS_XY: 0.70, POS_Z: 0.12, VEL_XY: 1.50, YAW: 0.18}
+  MOTION_ROLLOUT:
+    ENABLED: true
+    TRAIN_OPEN_LOOP_PROB: 0.70
+    TRAIN_MIN_COAST_STEPS: 2
+    TRAIN_MAX_COAST_STEPS: 8
+    VALIDATION_OPEN_LOOP: true
+    WEIGHT: 2.0
+    W_POS: 2.0
+    W_VEL: 0.5
+    W_YAW: 0.5
+    FINAL_STEP_WEIGHT: 2.0
+    REG_WEIGHT: 0.002
   DETECTION_UPDATE:
     ENABLED: true
     MISS_R_SCALE: 1000.0
+  MCTRACK_EXACT_UPDATE:
+    MATCHED_CLASSES: [5, 6]
+    UNMATCHED_CLASSES: [5, 6]
 
 AUDIT:
   NOISE_AUDIT:
@@ -383,8 +430,8 @@ LOSS:
   INFONCE_TEMPERATURE: 0.07
   HARD_NEGATIVE_TOPK: 32
   RESIDUAL_SUPERVISION:
-    ENABLED: true
-    WEIGHT: 0.20
+    ENABLED: false  # replaced by recursive multi-step MOTION_ROLLOUT loss
+    WEIGHT: 0.0
     W_POS_XY: 1.0
     W_POS_Z: 0.3
     W_VEL_XY: 0.5

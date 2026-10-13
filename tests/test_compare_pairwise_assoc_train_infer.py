@@ -1042,6 +1042,19 @@ class ComparePairwiseAssocTrainInferCliTest(unittest.TestCase):
                     )
                 )
 
+    def test_bounded_log_factor_runtime_mode_is_auditable(self):
+        manifest = self._valid_runtime_manifest(apply_mode="bounded_log_factor")
+
+        data = self._run_compare(
+            self._complete_audit(runtime_manifest=manifest)
+        )
+
+        self.assertTrue(data["decision_evidence"]["usable"])
+        self.assertNotIn(
+            "invalid_runtime_manifest_field:apply_mode",
+            data["decision_evidence"]["incomplete_reasons"],
+        )
+
     def test_checkpoint_hash_validation_and_runtime_probes_fail_closed(self):
         cases = {
             "old_manifest_schema": (

@@ -123,11 +123,13 @@ def apply_pairwise_association_head_to_cost_matrix(
     state_buckets=None,
     audit_callback=None,
 ):
-    """Apply class-conditioned association-head penalties conservatively.
+    """Apply a bounded learned correction inside the existing geometric gate.
 
-    The learned head may only make a geometrically valid pair less attractive.
-    It never reduces cost, so it cannot create matches outside the existing
-    geometric gate.
+    Legacy modes keep the one-sided low-score penalty. ``bounded_log_factor``
+    interprets the classifier logit as a learned log-likelihood-ratio residual:
+    strong pairs may be promoted and weak pairs penalized, but only among the
+    near-best geometric candidates. ``PRESERVE_ROW_MIN`` prevents the learned
+    branch from making any row more matchable than its original geometric best.
     """
     out = np.array(cost_matrix, copy=True)
     head_cfg = (cfg.get("MAMBA_ASSOCIATION_HEAD", {}) or {})
@@ -150,6 +152,13 @@ def apply_pairwise_association_head_to_cost_matrix(
     min_score = float(head_cfg.get("MIN_SCORE", 0.5))
     alpha = float(head_cfg.get("ALPHA", 0.05))
     max_delta = float(head_cfg.get("MAX_DELTA", 0.03))
+    log_factor_bound = float(head_cfg.get("LOG_FACTOR_BOUND", 1.0))
+    logit_temperature = float(head_cfg.get("LOGIT_TEMPERATURE", 1.0))
+    preserve_row_min = bool(head_cfg.get("PRESERVE_ROW_MIN", True))
+    if log_factor_bound <= 0.0 or not np.isfinite(log_factor_bound):
+        raise ValueError("MAMBA_ASSOCIATION_HEAD.LOG_FACTOR_BOUND must be finite and positive")
+    if logit_temperature <= 0.0 or not np.isfinite(logit_temperature):
+        raise ValueError("MAMBA_ASSOCIATION_HEAD.LOGIT_TEMPERATURE must be finite and positive")
 
     for t, traj in enumerate(trajs):
         traj_category = traj.bboxes[-1].category
@@ -183,7 +192,15 @@ def apply_pairwise_association_head_to_cost_matrix(
             cost_before = float(out[t, d])
 
             mode_active = True
-            if apply_mode in {"margin_tiebreak", "margin", "tiebreak", "tie_break"}:
+            if apply_mode in {
+                "margin_tiebreak",
+                "margin",
+                "tiebreak",
+                "tie_break",
+                "bounded_log_factor",
+                "log_factor",
+                "likelihood_residual",
+            }:
                 if best_cost is None or cost_before > best_cost + cost_margin_eps:
                     mode_active = False
             cost_rank = 1
@@ -194,9 +211,22 @@ def apply_pairwise_association_head_to_cost_matrix(
 
             delta = 0.0
             if mode_active:
-                delta = alpha * max(0.0, min_score - score)
-                delta = min(max_delta, max(0.0, delta))
-                out[t, d] = out[t, d] + delta
+                if apply_mode in {"bounded_log_factor", "log_factor", "likelihood_residual"}:
+                    probability = float(np.clip(score, 1.0e-6, 1.0 - 1.0e-6))
+                    raw_log_factor = float(np.log(probability) - np.log1p(-probability))
+                    bounded_log_factor = log_factor_bound * float(
+                        np.tanh(raw_log_factor / logit_temperature)
+                    )
+                    delta = float(np.clip(-alpha * bounded_log_factor, -max_delta, max_delta))
+                    corrected_cost = cost_before + delta
+                    if preserve_row_min and best_cost is not None:
+                        corrected_cost = max(float(best_cost), corrected_cost)
+                    out[t, d] = corrected_cost
+                    delta = float(corrected_cost - cost_before)
+                else:
+                    delta = alpha * max(0.0, min_score - score)
+                    delta = min(max_delta, max(0.0, delta))
+                    out[t, d] = out[t, d] + delta
             if audit_callback is not None:
                 audit_callback({
                     "class_id": int(class_id),
@@ -215,6 +245,7 @@ def apply_pairwise_association_head_to_cost_matrix(
                         "best_cost": float(best_cost) if best_cost is not None else None,
                         "cost_margin_eps": float(cost_margin_eps),
                         "margin_gap": float(cost_before - best_cost) if best_cost is not None else None,
+                        "correction_mode": apply_mode,
                     },
                 })
 

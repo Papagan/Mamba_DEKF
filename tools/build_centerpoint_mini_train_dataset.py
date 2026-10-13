@@ -148,19 +148,24 @@ def match_classwise(gt_items: List[dict], det_items: List[dict], dist_th: float)
     if not gt_items or not det_items:
         return [], list(range(len(gt_items))), list(range(len(det_items)))
 
-    cost = np.full((len(gt_items), len(det_items)), fill_value=1e6, dtype=np.float32)
+    distances = np.empty((len(gt_items), len(det_items)), dtype=np.float64)
     for i, gt in enumerate(gt_items):
         for j, det in enumerate(det_items):
-            cost[i, j] = center_distance_2d(gt["global_xyz"], det["global_xyz"])
+            distances[i, j] = center_distance_2d(gt["global_xyz"], det["global_xyz"])
 
+    # Dummy columns allow a GT to remain unmatched. Make one extra valid match
+    # preferable to any possible saving in the total matched distance.
+    unmatched_cost = (min(len(gt_items), len(det_items)) + 1) * dist_th + 1.0
+    cost = np.full((len(gt_items), len(det_items) + len(gt_items)), unmatched_cost, dtype=np.float64)
+    cost[:, :len(det_items)] = np.where(distances <= dist_th, distances, 2.0 * unmatched_cost)
     row_ind, col_ind = linear_sum_assignment(cost)
 
     matches = []
     matched_gt = set()
     matched_det = set()
     for r, c in zip(row_ind, col_ind):
-        dist = float(cost[r, c])
-        if dist <= dist_th:
+        if c < len(det_items) and distances[r, c] <= dist_th:
+            dist = float(distances[r, c])
             matches.append((r, c, dist))
             matched_gt.add(r)
             matched_det.add(c)
@@ -168,6 +173,49 @@ def match_classwise(gt_items: List[dict], det_items: List[dict], dist_th: float)
     unmatched_gt = [i for i in range(len(gt_items)) if i not in matched_gt]
     unmatched_det = [j for j in range(len(det_items)) if j not in matched_det]
     return matches, unmatched_gt, unmatched_det
+
+
+def normalize_timestamp_seconds(raw_timestamp: float, reference_seconds: float) -> float:
+    """Accept BaseVersion microseconds and already-converted seconds."""
+    raw = float(raw_timestamp)
+    scaled = raw / 1e6
+    return scaled if abs(scaled - reference_seconds) < abs(raw - reference_seconds) else raw
+
+
+def filter_detections_for_runtime(bboxes: List[dict], cfg: Optional[dict], nms_fn=None) -> List[dict]:
+    """Apply the same category, score and NMS filtering as the runtime dataset."""
+    if not cfg:
+        return [box for box in bboxes if box.get("category") in TRACKING_CLASSES]
+    category_ids = cfg["CATEGORY_MAP_TO_NUMBER"]
+    mode = str(cfg.get("TRACKING_MODE", "ONLINE")).upper()
+    score_thresholds = cfg["THRESHOLD"]["INPUT_SCORE"][mode]
+    filtered = [
+        box for box in bboxes
+        if box.get("category") in category_ids
+        and float(box["detection_score"]) > float(score_thresholds[category_ids[box["category"]]])
+    ]
+    if not filtered:
+        return []
+    if nms_fn is None:
+        from utils.nusc_utils import filter_bboxes_with_nms
+        nms_fn = filter_bboxes_with_nms
+    return nms_fn(filtered, cfg)
+
+
+def attach_unmatched_candidates(tracklets: List[dict], candidates_by_frame: Dict[Tuple[str, str, str], List[dict]]) -> int:
+    """Store each unmatched detection once, without creating GT-less motion tracklets."""
+    available_frames = {}
+    for trk in tracklets:
+        for frame in trk["frames"]:
+            key = (str(frame["scene_id"]), str(frame["sample_token"]), str(trk["category"]))
+            available_frames.setdefault(key, frame)
+    attached = 0
+    for key, candidates in candidates_by_frame.items():
+        frame = available_frames.get(key)
+        if frame is not None:
+            frame["unmatched_detections"] = candidates
+            attached += len(candidates)
+    return attached
 
 
 def finalize_tracklet_frames(tracklet: dict) -> None:
@@ -323,10 +371,14 @@ def build_mini_dataset(
     scene_split: str,
     class_dist_th: Optional[str],
     use_default_class_dist_th: bool,
+    inference_config_path: Optional[str] = None,
 ) -> Dict[str, int]:
     from nuscenes.nuscenes import NuScenes
 
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    train_cfg = load_training_config(train_config_path)
+    inference_config_path = inference_config_path or train_cfg.get("TRAINING", {}).get("INFERENCE_CONFIG")
+    inference_cfg = load_training_config(inference_config_path) if inference_config_path else None
 
     print(f"[mini-train] loading detections: {det_json_path}")
     scenes_data = load_baseversion_json(det_json_path)
@@ -359,14 +411,18 @@ def build_mini_dataset(
     print(f"[mini-train] selected scenes: {len(selected_scene_ids)}")
 
     tracklets = {}
+    unmatched_candidates = defaultdict(list)
     stats = {
         "scenes": len(selected_scene_ids),
         "frames": 0,
         "gt_boxes": 0,
         "det_boxes": 0,
+        "det_boxes_raw": 0,
+        "filtered_dets": 0,
         "matches": 0,
         "misses": 0,
         "ignored_dets": 0,
+        "ambiguous_unmatched_dets": 0,
         "timestamp_diff_max": 0.0,
         "timestamp_diff_mean_abs_accum": 0.0,
     }
@@ -378,8 +434,8 @@ def build_mini_dataset(
             stats["frames"] += 1
             sample_token = frame["cur_sample_token"]
             sample = nusc.get("sample", sample_token)
-            timestamp_json = float(frame["timestamp"])
             timestamp_nusc = float(sample["timestamp"]) / 1e6
+            timestamp_json = normalize_timestamp_seconds(frame["timestamp"], timestamp_nusc)
             timestamp = timestamp_nusc
             frame_id = int(frame["frame_id"])
             ts_diff = abs(timestamp_json - timestamp_nusc)
@@ -405,7 +461,10 @@ def build_mini_dataset(
                 stats["gt_boxes"] += 1
 
             det_by_cls = defaultdict(list)
-            for det in frame["bboxes"]:
+            stats["det_boxes_raw"] += len(frame["bboxes"])
+            filtered_bboxes = filter_detections_for_runtime(frame["bboxes"], inference_cfg)
+            stats["filtered_dets"] += len(frame["bboxes"]) - len(filtered_bboxes)
+            for det in filtered_bboxes:
                 category = det["category"]
                 if category not in TRACKING_CLASSES:
                     continue
@@ -496,6 +555,28 @@ def build_mini_dataset(
                         })
                         stats["misses"] += 1
 
+                for det_idx in unmatched_det:
+                    det = det_items[det_idx]
+                    # A second detection near a GT may be a duplicate or a
+                    # localization error. Its identity is not a safe negative.
+                    if any(center_distance_2d(det["global_xyz"], gt["global_xyz"]) <= 2.0 * class_dist_thresholds[category]
+                           for gt in gt_items):
+                        stats["ambiguous_unmatched_dets"] += 1
+                        continue
+                    candidate_id = f"__unmatched_det__:{scene_id}:{sample_token}:{category}:{det_idx}"
+                    unmatched_candidates[(str(scene_id), str(sample_token), category)].append({
+                        "candidate_id": candidate_id,
+                        "sample_token": sample_token,
+                        "scene_id": scene_id,
+                        "timestamp": timestamp,
+                        "frame_id": frame_id,
+                        "det_score": det["score"],
+                        "obs_feature_12": list(det["obs_feature_12"]),
+                        "det_global_xyz": list(det["global_xyz"]),
+                        "det_lwh": list(det["lwh"]),
+                        "det_yaw": float(det["yaw"]),
+                        "det_velocity": list(det["velocity"]),
+                    })
                 stats["ignored_dets"] += len(unmatched_det)
 
     result = []
@@ -508,11 +589,13 @@ def build_mini_dataset(
         result.append(tracklet)
 
     result.sort(key=lambda x: (x["category"], x["instance_token"]))
+    stats["unmatched_candidates_attached"] = attach_unmatched_candidates(result, unmatched_candidates)
+    stats["unmatched_dets"] = stats["ignored_dets"]
+    stats["ignored_dets"] -= stats["unmatched_candidates_attached"]
 
     with open(output_path, "wb") as f:
         pickle.dump(result, f)
 
-    train_cfg = load_training_config(train_config_path)
     model_cfg = train_cfg.get("MODEL", {})
     runtime_cfg = train_cfg.get("TRAINING", {})
     data_cfg = train_cfg.get("DATA", {})
@@ -572,6 +655,7 @@ def build_mini_dataset(
             "class_dist_th": class_dist_th,
             "use_default_class_dist_th": use_default_class_dist_th,
             "resolved_class_dist_thresholds": class_dist_thresholds,
+            "inference_config_path": inference_config_path,
         },
     }
     if stats["frames"] > 0:
@@ -671,6 +755,11 @@ def parse_args() -> argparse.Namespace:
         default="config/train_nuscenes.yaml",
         help="Training config used to estimate HISTORY_LEN / ROLLOUT_STEPS / BATCH_SIZE.",
     )
+    parser.add_argument(
+        "--inference-config",
+        default=None,
+        help="Runtime filtering config; defaults to TRAINING.INFERENCE_CONFIG in --train-config.",
+    )
     return parser.parse_args()
 
 
@@ -690,6 +779,7 @@ def main() -> None:
         scene_split=args.scene_split,
         class_dist_th=args.class_dist_th,
         use_default_class_dist_th=args.use_default_class_dist_th,
+        inference_config_path=args.inference_config,
     )
 
 

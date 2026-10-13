@@ -35,6 +35,9 @@ ASSOCIATION_APPLY_MODES = {
     "margin",
     "tiebreak",
     "tie_break",
+    "bounded_log_factor",
+    "log_factor",
+    "likelihood_residual",
 }
 DECISION_COUNTER_FIELDS = (
     "total_decisions",

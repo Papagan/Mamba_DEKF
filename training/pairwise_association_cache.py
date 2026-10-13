@@ -76,7 +76,26 @@ def _det_velocity_xy(frame: Dict[str, Any]) -> List[float]:
     return _as_float_list(obs[3:5], 2)
 
 
-def _predict_anchor_frame(current_frame: Dict[str, Any], future_frame: Dict[str, Any]) -> Dict[str, Any]:
+def _anchor_frame(current_frame: Dict[str, Any], history_source: str) -> Dict[str, Any]:
+    if history_source != "fusion" or not current_frame.get("fusion_valid", False):
+        return current_frame
+    fused = dict(current_frame)
+    feature = _as_float_list(current_frame.get("fusion_feature_12"), 12)
+    fused["det_global_xyz"] = _as_float_list(
+        current_frame.get("fusion_global_xyz") or feature[:3], 3
+    )
+    fused["det_velocity"] = _as_float_list(
+        current_frame.get("fusion_velocity") or feature[3:5], 2
+    )
+    fused["det_lwh"] = _as_float_list(current_frame.get("fusion_lwh") or feature[6:9], 3)
+    fused["det_yaw"] = float(current_frame.get("fusion_yaw") if current_frame.get("fusion_yaw") is not None else feature[9])
+    fused["obs_feature_12"] = feature
+    return fused
+
+
+def _predict_anchor_frame(current_frame: Dict[str, Any], future_frame: Dict[str, Any],
+                          history_source: str = "det") -> Dict[str, Any]:
+    current_frame = _anchor_frame(current_frame, history_source)
     predicted = dict(current_frame)
     xyz = _det_xyz(current_frame)
     if xyz is None:
@@ -115,6 +134,18 @@ def _state_bucket_from_history(frames: List[Dict[str, Any]], current_index: int)
     return "matched" if bool(frames[current_index].get("is_matched", False)) else "unmatched"
 
 
+def _selected_history_frames(frames: List[Dict[str, Any]], end_index: int,
+                             history_len: int, history_source: str) -> List[Dict[str, Any]]:
+    selected = frames[max(0, end_index - history_len + 1):end_index + 1]
+    if history_source == "fusion":
+        # Offline tracklets retain frames across a pseudo-track death and
+        # rebirth. The online tracker starts a new history after that gap.
+        for index in range(len(selected) - 1, -1, -1):
+            if not selected[index].get("fusion_valid", False):
+                return selected[index + 1:]
+    return selected
+
+
 def _history_feature(
     frames: List[Dict[str, Any]],
     end_index: int,
@@ -122,22 +153,49 @@ def _history_feature(
     *,
     history_source: str = "det",
 ) -> List[List[float]]:
-    start = max(0, end_index - history_len + 1)
-    selected = frames[start : end_index + 1]
-    pad = [[0.0] * 12 for _ in range(max(0, history_len - len(selected)))]
     source = str(history_source).strip().lower()
     if source not in {"det", "fusion"}:
         raise ValueError(f"Unsupported history_source={history_source!r}; expected 'det' or 'fusion'")
+    selected = _selected_history_frames(frames, end_index, history_len, source)
+    pad = [[0.0] * 12 for _ in range(max(0, history_len - len(selected)))]
+    if selected:
+        latest = selected[-1]
+        reference = (
+            (latest.get("fusion_global_xyz") or _as_float_list(latest.get("fusion_feature_12"), 12)[:3])
+            if source == "fusion" and latest.get("fusion_valid", False)
+            else _det_xyz(latest)
+        )
+    else:
+        reference = None
+    ref_xy = _as_float_list(reference, 3)[:2] if reference is not None else [0.0, 0.0]
     features = []
     for frame in selected:
         if source == "fusion":
             if bool(frame.get("fusion_valid", False)):
-                features.append(_as_float_list(frame.get("fusion_feature_12"), 12))
+                feature = _as_float_list(frame.get("fusion_feature_12"), 12)
             else:
-                features.append([0.0] * 12)
+                feature = [0.0] * 12
         else:
-            features.append(_as_float_list(frame.get("obs_feature_12"), 12))
+            feature = _as_float_list(frame.get("obs_feature_12"), 12)
+        if feature != [0.0] * 12:
+            feature[0] -= ref_xy[0]
+            feature[1] -= ref_xy[1]
+        features.append(feature)
     return pad + features
+
+
+def _anchor_history_masks(frames: List[Dict[str, Any]], end_index: int, history_len: int,
+                          history_source: str) -> Tuple[List[bool], List[bool]]:
+    selected = _selected_history_frames(frames, end_index, history_len, history_source)
+    padding = [False] * max(0, history_len - len(selected))
+    if history_source == "fusion":
+        valid = [bool(frame.get("fusion_valid", False)) for frame in selected]
+        matched = [v and not bool(frame.get("fusion_is_fake", False))
+                   for v, frame in zip(valid, selected)]
+    else:
+        valid = [True] * len(selected)
+        matched = [bool(frame.get("is_matched", False)) for frame in selected]
+    return padding + valid, padding + matched
 
 
 def _inference_detection_history_feature(frame: Dict[str, Any], history_len: int) -> List[List[float]]:
@@ -164,21 +222,28 @@ def _index_matched_frames(tracklets: Iterable[Dict[str, Any]]) -> Dict[Tuple[str
     for trk in tracklets:
         category = _tracking_category(trk.get("category", ""))
         for frame_index, frame in enumerate(trk.get("frames", [])):
-            if not bool(frame.get("is_matched", False)):
-                continue
             key = (
                 str(frame.get("scene_id", "")),
                 str(frame.get("sample_token", "")),
                 category,
             )
-            item = {
-                "tracklet": trk,
-                "frame": frame,
-                "frame_index": frame_index,
-                "instance_token": trk.get("instance_token"),
-                "category": category,
-            }
-            index[key].append(item)
+            if bool(frame.get("is_matched", False)):
+                index[key].append({
+                    "tracklet": trk,
+                    "frame": frame,
+                    "frame_index": frame_index,
+                    "instance_token": trk.get("instance_token"),
+                    "category": category,
+                })
+            for detection in frame.get("unmatched_detections", []):
+                index[key].append({
+                    "tracklet": None,
+                    "frame": detection,
+                    "frame_index": frame_index,
+                    "instance_token": detection["candidate_id"],
+                    "category": category,
+                    "unmatched_gt": True,
+                })
     return index
 
 
@@ -201,20 +266,35 @@ def _make_pair(
     candidate_frame = candidate["frame"]
     category = _tracking_category(anchor_tracklet.get("category", ""))
     if pair_geometry_source == "predicted_track_candidate":
-        geometry_anchor = _predict_anchor_frame(current_frame, future_frame)
+        geometry_anchor = _predict_anchor_frame(current_frame, future_frame, history_source)
     elif pair_geometry_source == "track_candidate":
-        geometry_anchor = current_frame
+        geometry_anchor = _anchor_frame(current_frame, history_source)
     else:
         geometry_anchor = future_frame
     anchor_lwh = _det_lwh(geometry_anchor)
     candidate_lwh = _det_lwh(candidate_frame)
     center_distance = _center_distance_xy(geometry_anchor, candidate_frame)
+    frames = anchor_tracklet.get("frames", [])
+    anchor_history_mask, anchor_history_match_mask = _anchor_history_masks(
+        frames, current_index, history_len, history_source
+    )
+    current_xyz = (
+        (current_frame.get("fusion_global_xyz") or
+         _as_float_list(current_frame.get("fusion_feature_12"), 12)[:3])
+        if history_source == "fusion" and current_frame.get("fusion_valid", False)
+        else _det_xyz(current_frame)
+    )
+    current_xyz = _as_float_list(current_xyz, 3)
+    candidate_xyz = _det_xyz(candidate_frame)
+    candidate_xyz = _as_float_list(candidate_xyz, 3)
     return {
+        "feature_schema_version": 2,
         "category": category,
         "class_id": TRACKING_CLASS_TO_ID.get(category, -1),
         "state_bucket": _state_bucket_from_history(anchor_tracklet.get("frames", []), current_index),
         "anchor_instance_token": anchor_tracklet.get("instance_token"),
         "candidate_instance_token": candidate.get("instance_token"),
+        "candidate_is_unmatched_gt": bool(candidate.get("unmatched_gt", False)),
         "current_sample_token": current_frame.get("sample_token"),
         "future_sample_token": future_frame.get("sample_token"),
         "scene_id": future_frame.get("scene_id"),
@@ -230,7 +310,7 @@ def _make_pair(
             else None
         ),
         "anchor_history_12": _history_feature(
-            anchor_tracklet.get("frames", []),
+            frames,
             current_index,
             history_len,
             history_source=history_source,
@@ -238,6 +318,11 @@ def _make_pair(
         "positive_obs_feature_12": _as_float_list(future_frame.get("obs_feature_12"), 12),
         "candidate_obs_feature_12": _as_float_list(candidate_frame.get("obs_feature_12"), 12),
         "candidate_history_12": _inference_detection_history_feature(candidate_frame, history_len),
+        "anchor_history_mask": anchor_history_mask,
+        "anchor_history_match_mask": anchor_history_match_mask,
+        "anchor_current_range": float(math.hypot(current_xyz[0], current_xyz[1])),
+        "anchor_detection_driven": bool(current_frame.get("is_matched", False)),
+        "candidate_current_range": float(math.hypot(candidate_xyz[0], candidate_xyz[1])),
         "center_distance": center_distance,
         "margin_gap": (
             float(center_distance - best_candidate_distance)
@@ -320,6 +405,13 @@ def build_pairwise_association_samples(
         for current_index in range(0, len(frames) - future_step):
             current_frame = frames[current_index]
             future_frame = frames[current_index + future_step]
+            if history_source == "fusion" and not all(
+                bool(frame.get("fusion_valid", False))
+                for frame in frames[current_index:current_index + future_step]
+            ):
+                # A dead pseudo-track cannot be associated to a later
+                # detection even when both ends share a GT instance token.
+                continue
             if require_current_match and not bool(current_frame.get("is_matched", False)):
                 continue
             if require_future_match and not bool(future_frame.get("is_matched", False)):
@@ -339,9 +431,9 @@ def build_pairwise_association_samples(
                 continue
 
             if pair_geometry_source == "predicted_track_candidate":
-                geometry_anchor = _predict_anchor_frame(current_frame, future_frame)
+                geometry_anchor = _predict_anchor_frame(current_frame, future_frame, history_source)
             elif pair_geometry_source == "track_candidate":
-                geometry_anchor = current_frame
+                geometry_anchor = _anchor_frame(current_frame, history_source)
             else:
                 geometry_anchor = future_frame
             ranked_candidates = sorted(
@@ -468,6 +560,7 @@ def summarize_pairwise_association_samples(samples: List[Dict[str, Any]]) -> Dic
         "pairs": 0,
         "positive_pairs": 0,
         "negative_pairs": 0,
+        "unmatched_detection_negative_pairs": 0,
         "hard_negative_pairs": 0,
         "easy_negative_pairs": 0,
         "anchors": set(),
@@ -479,6 +572,7 @@ def summarize_pairwise_association_samples(samples: List[Dict[str, Any]]) -> Dic
         "candidate_pairs": 0,
         "positive_pairs": 0,
         "negative_pairs": 0,
+        "unmatched_detection_negative_pairs": 0,
         "hard_negative_pairs": 0,
         "easy_negative_pairs": 0,
     }
@@ -497,6 +591,9 @@ def summarize_pairwise_association_samples(samples: List[Dict[str, Any]]) -> Dic
         else:
             stat["negative_pairs"] += 1
             overall["negative_pairs"] += 1
+            if bool(sample.get("candidate_is_unmatched_gt", False)):
+                stat["unmatched_detection_negative_pairs"] += 1
+                overall["unmatched_detection_negative_pairs"] += 1
             if _is_hard_negative_type(negative_type):
                 stat["hard_negative_pairs"] += 1
                 overall["hard_negative_pairs"] += 1
@@ -520,6 +617,7 @@ def summarize_pairwise_association_samples(samples: List[Dict[str, Any]]) -> Dic
             "anchors": len(stat["anchors"]),
             "positive_pairs": stat["positive_pairs"],
             "negative_pairs": stat["negative_pairs"],
+            "unmatched_detection_negative_pairs": stat["unmatched_detection_negative_pairs"],
             "hard_negative_pairs": stat["hard_negative_pairs"],
             "easy_negative_pairs": stat["easy_negative_pairs"],
             "positive_ratio": (

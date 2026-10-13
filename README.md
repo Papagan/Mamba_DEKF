@@ -1,6 +1,6 @@
 # Mamba-DEKF
 
-`Mamba-DEKF` is a single-stage 3D MOT project built around a decoupled Kalman filtering stack and a Mamba-based noise predictor. The active development path is now:
+`Mamba-DEKF` is a single-stage 3D MOT project built around a decoupled Kalman filtering stack and a Mamba-based residual motion model. Mamba now predicts bounded state-mean corrections over an open-loop horizon; Q/R prediction remains an auxiliary uncertainty branch.
 
 1. detection-driven nuScenes cache construction
 2. fusion-history augmentation aligned with the tracker runtime
@@ -123,6 +123,9 @@ Important behavior:
 
 - each frame stores both GT features and detector observation features
 - misses can be preserved unless `--no-misses` is used
+- detections pass through the score gate and NMS from `TRAINING.INFERENCE_CONFIG` before GT matching; use `--inference-config` to override it
+- unmatched detections farther than twice the class matching radius from every same-class GT are kept as association negative candidates; they do not become motion targets
+- rebuild the detection, fusion, and pairwise caches after changing the inference filtering config or this generator
 - the script estimates effective sample counts using `HISTORY_LEN`, `ROLLOUT_STEPS`, and adaptive window settings from `config/train_nuscenes.yaml`
 
 ### 2. Add fusion-history fields
@@ -219,7 +222,7 @@ Resume training:
 ```bash
 python training/train.py \
   --config config/train_nuscenes.yaml \
-  --resume checkpoints/mamba_dekf/checkpoint_epoch70.pt
+  --resume checkpoints/mamba_motion/checkpoint_epoch70.pt
 ```
 
 Optional GT-only extraction mode:
@@ -232,10 +235,16 @@ python training/train.py \
 
 Training outputs:
 
-- periodic checkpoints in `checkpoints/mamba_dekf/`
-- best checkpoint in `checkpoints/mamba_dekf/best.pt`
-- per-class best checkpoints in `checkpoints/mamba_dekf/best_class_{id}.pt`
+- periodic checkpoints in `checkpoints/mamba_motion/`
+- best checkpoint in `checkpoints/mamba_motion/best.pt`
+- per-class best checkpoints in `checkpoints/mamba_motion/best_class_{id}.pt`
 - TensorBoard logs under the configured save directory
+
+The active motion objective uses 2–8 step rollouts. Seventy percent of training samples suppress future updates for a contiguous coast interval, and validation is fully open-loop. This prevents detector teacher forcing or covariance inflation from hiding state-mean prediction errors.
+
+After the motion stage, the configured association Stage B reuses `best.pt` as one frozen shared temporal backbone. It computes pair embeddings once, then trains and validates the seven category heads independently. Each category restores its own lowest-validation-loss weights before all heads are merged into `checkpoints/mamba_motion/best_assoc.pt`. Complete same-track candidate groups stay in one batch, and the objective combines balanced BCE, pair ranking, and listwise top-1 loss. `REQUIRE_ALL_CLASSES: true` makes the remote run fail explicitly if either split lacks samples for any configured category, instead of silently exporting an untrained head.
+
+The runtime association head is configured as a bounded log-factor correction inside the existing geometric near-best gate. It remains in shadow mode until the per-class/state decision audit passes. The design and remote acceptance sequence are documented in [docs/neural_affinity_association.md](/home/alvin/demo/Mamba-DEKF/docs/neural_affinity_association.md).
 
 ### Class/State Closure Training
 
@@ -269,10 +278,13 @@ python main.py \
   -p 12
 ```
 
-If you want to evaluate a newly trained Mamba checkpoint:
+To evaluate the learned residual-dynamics checkpoint, use the dedicated motion config. It already points to `checkpoints/mamba_motion/best.pt`:
 
-1. update `MAMBA.CHECKPOINT_PATH` in [config/nuscenes_single_stage_mctrack_exact_noise_hybrid_mamba_multihead_closure.yaml](/home/alvin/demo/Mamba-DEKF/config/nuscenes_single_stage_mctrack_exact_noise_hybrid_mamba_multihead_closure.yaml)
-2. run the same evaluation command again
+```bash
+python main.py --dataset nuscenes --eval \
+  --config config/nuscenes_single_stage_mctrack_motion_residual_combo.yaml \
+  -p 12
+```
 
 Results are written to:
 

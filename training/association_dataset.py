@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import pickle
+import random
+from collections import OrderedDict
 from typing import Any, Dict, Iterable, List
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 
 
 STATE_BUCKET_TO_ID = {"matched": 0, "unmatched": 1}
@@ -48,7 +50,8 @@ def _pair_features(sample: Dict[str, Any]) -> np.ndarray:
 class PairwiseAssociationDataset(Dataset):
     """Dataset for offline class-conditioned track-detection association."""
 
-    def __init__(self, samples_or_path: str | List[Dict[str, Any]], history_len: int = 8) -> None:
+    def __init__(self, samples_or_path: str | List[Dict[str, Any]], history_len: int = 8,
+                 required_feature_schema_version: int | None = None) -> None:
         if isinstance(samples_or_path, str):
             with open(samples_or_path, "rb") as f:
                 samples = pickle.load(f)
@@ -56,8 +59,22 @@ class PairwiseAssociationDataset(Dataset):
             samples = samples_or_path
         if not isinstance(samples, list):
             raise TypeError("PairwiseAssociationDataset expects a list of sample dictionaries")
+        if required_feature_schema_version is not None:
+            invalid = sum(
+                int(sample.get("feature_schema_version", 0)) != required_feature_schema_version
+                for sample in samples
+            )
+            if invalid:
+                raise ValueError(
+                    f"{invalid} pairwise samples use an outdated feature schema; "
+                    "rebuild both pairwise caches with tools/build_pairwise_association_cache.py"
+                )
         self.samples = samples
         self.history_len = int(history_len)
+        self.anchor_keys = [
+            f"{sample.get('anchor_instance_token')}::{sample.get('current_sample_token')}"
+            for sample in samples
+        ]
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -65,16 +82,27 @@ class PairwiseAssociationDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         sample = self.samples[idx]
         class_id = int(sample.get("class_id", -1))
-        anchor_key = f"{sample.get('anchor_instance_token')}::{sample.get('current_sample_token')}"
+        anchor_history = _float_array(sample.get("anchor_history_12"), (self.history_len, 12))
+        candidate_history = _candidate_history(sample, self.history_len)
+        inferred_anchor_mask = anchor_history.any(axis=-1)
+        inferred_candidate_mask = candidate_history.any(axis=-1)
         return {
-            "anchor_history": torch.from_numpy(
-                _float_array(sample.get("anchor_history_12"), (self.history_len, 12))
-            ),
-            "candidate_history": torch.from_numpy(_candidate_history(sample, self.history_len)),
+            "anchor_history": torch.from_numpy(anchor_history),
+            "candidate_history": torch.from_numpy(candidate_history),
+            "anchor_history_mask": torch.from_numpy(_float_array(
+                sample.get("anchor_history_mask", inferred_anchor_mask), (self.history_len,)
+            ).astype(np.bool_)),
+            "anchor_history_match_mask": torch.from_numpy(_float_array(
+                sample.get("anchor_history_match_mask", inferred_anchor_mask), (self.history_len,)
+            ).astype(np.bool_)),
+            "candidate_history_mask": torch.from_numpy(inferred_candidate_mask),
+            "anchor_current_range": torch.tensor(float(sample.get("anchor_current_range", 0.0)), dtype=torch.float32),
+            "candidate_current_range": torch.tensor(float(sample.get("candidate_current_range", 0.0)), dtype=torch.float32),
+            "anchor_detection_driven": torch.tensor(bool(sample.get("anchor_detection_driven", True)), dtype=torch.bool),
             "pair_features": torch.from_numpy(_pair_features(sample)),
             "class_id": torch.tensor(class_id, dtype=torch.long),
             "label": torch.tensor(float(sample.get("label", 0)), dtype=torch.float32),
-            "anchor_key": anchor_key,
+            "anchor_key": self.anchor_keys[idx],
             "negative_type": str(sample.get("negative_type", "")),
             "state_bucket": str(sample.get("state_bucket", "matched")),
             "category": str(sample.get("category", "")),
@@ -82,7 +110,11 @@ class PairwiseAssociationDataset(Dataset):
 
 
 def pairwise_association_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
-    tensor_keys = ["anchor_history", "candidate_history", "pair_features", "class_id", "label"]
+    tensor_keys = [
+        "anchor_history", "candidate_history", "pair_features", "class_id", "label",
+        "anchor_history_mask", "anchor_history_match_mask", "candidate_history_mask",
+        "anchor_current_range", "candidate_current_range", "anchor_detection_driven",
+    ]
     out = {key: torch.stack([item[key] for item in batch], dim=0) for key in tensor_keys}
     out["anchor_keys"] = [item["anchor_key"] for item in batch]
     out["negative_types"] = [item["negative_type"] for item in batch]
@@ -150,3 +182,49 @@ def precomputed_pairwise_association_collate_fn(batch: List[Dict[str, Any]]) -> 
     out["negative_types"] = [item["negative_type"] for item in batch]
     out["categories"] = [item["category"] for item in batch]
     return out
+
+
+class AnchorGroupBatchSampler(Sampler[List[int]]):
+    """Pack complete candidate sets so listwise/ranking losses never split an anchor."""
+
+    def __init__(self, anchor_keys: Iterable[str], batch_size: int, *, shuffle: bool) -> None:
+        if int(batch_size) <= 0:
+            raise ValueError("batch_size must be positive")
+        groups: OrderedDict[str, List[int]] = OrderedDict()
+        for index, key in enumerate(anchor_keys):
+            groups.setdefault(str(key), []).append(index)
+        self.groups = list(groups.values())
+        self.batch_size = int(batch_size)
+        self.shuffle = bool(shuffle)
+
+    def _ordered_groups(self) -> List[List[int]]:
+        groups = list(self.groups)
+        if self.shuffle and len(groups) > 1:
+            random.shuffle(groups)
+        return groups
+
+    def __iter__(self):
+        batch: List[int] = []
+        for group in self._ordered_groups():
+            if batch and len(batch) + len(group) > self.batch_size:
+                yield batch
+                batch = []
+            batch.extend(group)
+            if len(batch) >= self.batch_size:
+                yield batch
+                batch = []
+        if batch:
+            yield batch
+
+    def __len__(self) -> int:
+        batches = 0
+        used = 0
+        for group in self.groups:
+            if used and used + len(group) > self.batch_size:
+                batches += 1
+                used = 0
+            used += len(group)
+            if used >= self.batch_size:
+                batches += 1
+                used = 0
+        return batches + int(used > 0)

@@ -48,6 +48,7 @@ def apply_bounded_state_residuals(
     class_ids: Optional[Tensor],
     state_buckets: Optional[Sequence[str]],
     cfg: Optional[dict],
+    delta_t: Optional[Tensor] = None,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
     cfg = cfg or {}
     batch = pos_x.shape[0]
@@ -77,6 +78,29 @@ def apply_bounded_state_residuals(
     out_siz = siz_x.clone()
     out_ori = ori_x.clone()
 
+    bounding_mode = str(cfg.get("BOUNDING_MODE", "clamp")).strip().lower()
+    if bounding_mode not in {"clamp", "tanh"}:
+        raise ValueError("BOUNDING_MODE must be 'clamp' or 'tanh'")
+
+    if delta_t is None:
+        dt_values = torch.ones(batch, device=device, dtype=pos_x.dtype)
+    elif isinstance(delta_t, Tensor):
+        dt_values = delta_t.to(device=device, dtype=pos_x.dtype).reshape(-1)
+        if dt_values.numel() == 1 and batch > 1:
+            dt_values = dt_values.expand(batch)
+        if dt_values.numel() != batch:
+            raise ValueError("delta_t must be scalar or have one value per batch item")
+    else:
+        dt_values = torch.full(
+            (batch,), float(delta_t), device=device, dtype=pos_x.dtype
+        )
+
+    def _bounded(value: Tensor, bound: float, time_scale: Tensor) -> Tensor:
+        effective_bound = value.new_tensor(max(float(bound), 0.0)) * time_scale
+        if bounding_mode == "tanh":
+            return torch.tanh(value) * effective_bound
+        return torch.clamp(value, -effective_bound, effective_bound)
+
     for idx in torch.nonzero(mask, as_tuple=False).flatten().tolist():
         class_id = int(class_ids[idx].item())
         state_bucket = str(state_buckets[idx]).strip().lower()
@@ -85,18 +109,28 @@ def apply_bounded_state_residuals(
         vel_xy_bound = _bound_for(cfg, class_id, state_bucket, "VEL_XY")
         yaw_bound = _bound_for(cfg, class_id, state_bucket, "YAW")
 
-        out_pos[idx, 0:2, 0] = out_pos[idx, 0:2, 0] + torch.clamp(
-            residual[idx, 0:2], -pos_xy_bound, pos_xy_bound
+        time_scale = dt_values[idx].new_tensor(1.0)
+        if bool(cfg.get("TIME_SCALING", False)):
+            reference_dt = max(float(cfg.get("REFERENCE_DT", 0.5)), 1e-6)
+            time_scale = dt_values[idx] / reference_dt
+            time_scale = torch.clamp(
+                time_scale,
+                min=float(cfg.get("MIN_TIME_SCALE", 0.25)),
+                max=float(cfg.get("MAX_TIME_SCALE", 4.0)),
+            )
+
+        out_pos[idx, 0:2, 0] = out_pos[idx, 0:2, 0] + _bounded(
+            residual[idx, 0:2], pos_xy_bound, time_scale
         )
-        out_pos[idx, 2, 0] = out_pos[idx, 2, 0] + torch.clamp(
-            residual[idx, 2], -pos_z_bound, pos_z_bound
+        out_pos[idx, 2, 0] = out_pos[idx, 2, 0] + _bounded(
+            residual[idx, 2], pos_z_bound, time_scale
         )
-        out_pos[idx, 3:5, 0] = out_pos[idx, 3:5, 0] + torch.clamp(
-            residual[idx, 3:5], -vel_xy_bound, vel_xy_bound
+        out_pos[idx, 3:5, 0] = out_pos[idx, 3:5, 0] + _bounded(
+            residual[idx, 3:5], vel_xy_bound, time_scale
         )
         out_ori[idx, 0, 0] = wrap_to_pi(
             out_ori[idx, 0, 0]
-            + torch.clamp(residual[idx, 5], -yaw_bound, yaw_bound)
+            + _bounded(residual[idx, 5], yaw_bound, time_scale)
         )
 
     return out_pos, out_siz, out_ori, mask

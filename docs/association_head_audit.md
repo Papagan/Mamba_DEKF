@@ -66,10 +66,12 @@ per-track-state score and cost distributions only:
 
 - `pair_count`: same-class finite pairs scored by the head.
 - `active_pair_count`: pairs in configured active class/state buckets.
-- `penalized_pair_count`: active pairs that received a positive cost delta.
+- `penalized_pair_count`: active pairs that received a positive cost delta;
+  bounded-log-factor promotions (negative deltas) are not included in this count.
 - `penalized_ratio`: `penalized_pair_count / active_pair_count`.
 - `avg_score`: mean association score.
-- `avg_delta`: mean cost increase applied to the geometric cost.
+- `avg_delta`: signed mean correction applied to the geometric cost; it can be
+  negative in `bounded_log_factor` mode.
 - `avg_cost_before` and `avg_cost_after`: cost shift caused by the head.
 - `score_quantiles`, `delta_quantiles`, `cost_before_quantiles`, and
   `cost_after_quantiles`: observed distribution summaries.

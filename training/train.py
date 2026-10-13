@@ -15,6 +15,7 @@
 # ------------------------------------------------------------------------
 
 import os
+import math
 import sys
 import time
 import yaml
@@ -79,6 +80,7 @@ from training.losses import (
     orientation_saturation_penalty,
     wrap_to_pi_torch,
 )
+from kalmanfilter.state_residual import apply_bounded_state_residuals
 from kalmanfilter.mamba_adaptive_kf import (
     TemporalMamba,
     DecoupledAdaptiveKF,
@@ -104,7 +106,14 @@ from training.class_state_metrics import (
 )
 from training.association_loss import association_ranking_loss
 from training.association_tokens import build_future_detection_history
-from training.association_stage import run_association_head_stage_if_requested
+from training.association_stage import (
+    build_association_training_args,
+    run_association_head_stage_if_requested,
+)
+from kalmanfilter.mctrack_exact_update import (
+    restore_exact_matched_components,
+    validate_exact_update_contract,
+)
 
 logger = logging.getLogger("train")
 
@@ -318,6 +327,120 @@ def _build_cv_prior_states_for_residual_target(obs_pos, obs_ori, delta_t):
     ori_prior[:, 0, 0] = wrap_to_pi_torch(obs_ori[:, 0] + obs_ori[:, 1] * dt)
     ori_prior[:, 1, 0] = obs_ori[:, 1]
     return pos_prior, ori_prior
+
+
+def _derive_future_velocities(
+    current_pos: torch.Tensor,
+    future_pos: torch.Tensor,
+    delta_ts: torch.Tensor,
+    future_mask: torch.Tensor = None,
+) -> torch.Tensor:
+    """Finite-difference GT velocity for every rollout step."""
+    batch, steps, _ = future_pos.shape
+    out = future_pos.new_zeros(batch, steps, 2)
+    previous_xy = current_pos[:, 0:2]
+    for step in range(steps):
+        dt = torch.clamp(delta_ts[:, step], min=1e-6).unsqueeze(-1)
+        velocity = (future_pos[:, step, 0:2] - previous_xy) / dt
+        if future_mask is not None:
+            active = future_mask[:, step].to(dtype=torch.bool).unsqueeze(-1)
+            velocity = torch.where(active, velocity, current_pos[:, 3:5])
+            previous_xy = torch.where(active, future_pos[:, step, 0:2], previous_xy)
+        else:
+            previous_xy = future_pos[:, step, 0:2]
+        out[:, step, :] = velocity
+    return out
+
+
+def _build_open_loop_mask(
+    future_mask: torch.Tensor,
+    cfg: dict,
+    *,
+    training: bool,
+) -> torch.Tensor:
+    """Select contiguous coast horizons beginning at the first future step."""
+    cfg = cfg or {}
+    active = future_mask.to(dtype=torch.bool)
+    batch, steps = active.shape
+    coast = torch.zeros_like(active)
+    if not bool(cfg.get("ENABLED", False)) or steps == 0:
+        return coast
+    if not training:
+        return active.clone() if bool(cfg.get("VALIDATION_OPEN_LOOP", True)) else coast
+
+    probability = min(max(float(cfg.get("TRAIN_OPEN_LOOP_PROB", 0.0)), 0.0), 1.0)
+    selected = torch.rand(batch, device=active.device) < probability
+    min_steps = max(1, min(int(cfg.get("TRAIN_MIN_COAST_STEPS", 1)), steps))
+    max_steps = max(min_steps, min(int(cfg.get("TRAIN_MAX_COAST_STEPS", steps)), steps))
+    horizons = torch.randint(
+        min_steps,
+        max_steps + 1,
+        (batch,),
+        device=active.device,
+    )
+    step_ids = torch.arange(steps, device=active.device).unsqueeze(0)
+    coast = selected.unsqueeze(1) & (step_ids < horizons.unsqueeze(1))
+    return coast & active
+
+
+def _compute_motion_rollout_loss(
+    pos_x: torch.Tensor,
+    ori_x: torch.Tensor,
+    gt_pos: torch.Tensor,
+    gt_vel: torch.Tensor,
+    gt_ori: torch.Tensor,
+    active_mask: torch.Tensor,
+    final_mask: torch.Tensor,
+    cfg: dict,
+) -> tuple:
+    """Deterministic state-mean objective that covariance inflation cannot hide."""
+    cfg = cfg or {}
+    zero = pos_x.new_zeros(())
+    if not bool(cfg.get("ENABLED", False)) or not bool(active_mask.any().item()):
+        return zero, {"loss_motion_pos": 0.0, "loss_motion_vel": 0.0, "loss_motion_yaw": 0.0}
+
+    pos_loss = F.smooth_l1_loss(
+        pos_x[active_mask, 0:3, 0], gt_pos[active_mask], reduction="mean"
+    )
+    vel_loss = F.smooth_l1_loss(
+        pos_x[active_mask, 3:5, 0], gt_vel[active_mask], reduction="mean"
+    )
+    yaw_error = wrap_to_pi_torch(
+        ori_x[active_mask, 0, 0] - gt_ori[active_mask, 0]
+    )
+    yaw_loss = F.smooth_l1_loss(yaw_error, torch.zeros_like(yaw_error), reduction="mean")
+    base_loss = (
+        float(cfg.get("W_POS", 1.0)) * pos_loss
+        + float(cfg.get("W_VEL", 0.5)) * vel_loss
+        + float(cfg.get("W_YAW", 0.5)) * yaw_loss
+    )
+    final_extra = pos_x.new_zeros(())
+    final_scale = max(float(cfg.get("FINAL_STEP_WEIGHT", 1.0)) - 1.0, 0.0)
+    final_mask = final_mask.to(device=pos_x.device, dtype=torch.bool) & active_mask
+    if final_scale > 0.0 and bool(final_mask.any().item()):
+        final_pos = F.smooth_l1_loss(
+            pos_x[final_mask, 0:3, 0], gt_pos[final_mask], reduction="mean"
+        )
+        final_vel = F.smooth_l1_loss(
+            pos_x[final_mask, 3:5, 0], gt_vel[final_mask], reduction="mean"
+        )
+        final_yaw_error = wrap_to_pi_torch(
+            ori_x[final_mask, 0, 0] - gt_ori[final_mask, 0]
+        )
+        final_yaw = F.smooth_l1_loss(
+            final_yaw_error, torch.zeros_like(final_yaw_error), reduction="mean"
+        )
+        final_extra = final_scale * (
+            float(cfg.get("W_POS", 1.0)) * final_pos
+            + float(cfg.get("W_VEL", 0.5)) * final_vel
+            + float(cfg.get("W_YAW", 0.5)) * final_yaw
+        )
+    loss = float(cfg.get("WEIGHT", 1.0)) * (base_loss + final_extra)
+    return loss, {
+        "loss_motion_pos": float(pos_loss.detach().item()),
+        "loss_motion_vel": float(vel_loss.detach().item()),
+        "loss_motion_yaw": float(yaw_loss.detach().item()),
+    }
 
 
 def _trace_covariance_batch(cov: torch.Tensor) -> torch.Tensor:
@@ -650,8 +773,17 @@ def training_step(
     history_match_mask = batch.get("history_match_mask", history_mask).to(device)
     use_det_update = bool((base_noise_cfg or {}).get("DETECTION_UPDATE", {}).get("ENABLED", True))
     miss_r_scale = float((base_noise_cfg or {}).get("DETECTION_UPDATE", {}).get("MISS_R_SCALE", 1000.0))
+    motion_rollout_cfg = (base_noise_cfg or {}).get("MOTION_ROLLOUT", {}) or {}
+    state_residual_cfg = (base_noise_cfg or {}).get("MAMBA_STATE_RESIDUAL", {}) or {}
+    exact_update_cfg = (base_noise_cfg or {}).get("MCTRACK_EXACT_UPDATE", {}) or {}
 
     class_ids = categories_to_class_ids(categories, device=device)  # [B]
+    exact_matched_category_mask = torch.zeros(B, dtype=torch.bool, device=device)
+    exact_unmatched_category_mask = torch.zeros(B, dtype=torch.bool, device=device)
+    for exact_class_id in exact_update_cfg.get("MATCHED_CLASSES", []):
+        exact_matched_category_mask |= class_ids == int(exact_class_id)
+    for exact_class_id in exact_update_cfg.get("UNMATCHED_CLASSES", []):
+        exact_unmatched_category_mask |= class_ids == int(exact_class_id)
 
     # ---- Step 1: TemporalMamba forward (ONCE) → Q/R/embedding ----
     branch_name = str(filter_mode).strip().lower()
@@ -761,20 +893,12 @@ def training_step(
             prior_r_ori=audit_prior_r_ori.diagonal(dim1=-2, dim2=-1).sum(-1),
         )
 
-    # When residual supervision is enabled, delta_pos is trained as a direct
-    # bounded correction target and must not also perturb the KF initial state.
+    # Motion residuals belong to the transition, never to the initial state.
+    # They are applied after every CV prediction below so rollout losses have a
+    # direct gradient path into the dynamics heads.
     residual_supervision_cfg = getattr(loss_fn, "residual_supervision", {}) or {}
     association_supervision_cfg = getattr(loss_fn, "association_supervision", {}) or {}
-    direct_residual_supervision = bool(residual_supervision_cfg.get("ENABLED", False))
-    delta_pos = mamba_out["delta_pos"].unsqueeze(-1)                  # [B, 6, 1]
-    if epoch < warmup_epochs:
-        delta_pos = delta_pos.detach()
-
-    pos_x0 = _build_initial_pos_state_with_residual(
-        obs_pos,
-        delta_pos,
-        apply_residual=not direct_residual_supervision,
-    )
+    pos_x0 = obs_pos.unsqueeze(-1)
     siz_x0 = obs_siz.unsqueeze(-1)                                   # [B, 3, 1]
     ori_x0 = obs_ori.unsqueeze(-1)                                   # [B, 2, 1]
 
@@ -782,10 +906,12 @@ def training_step(
     pos_noise_std_6 = torch.cat(
         [noise_scale_pos_xyz, torch.zeros(B, 3, device=device)], dim=1
     ).unsqueeze(-1)  # [B,6,1]
-    pos_x0 = pos_x0 + torch.randn_like(pos_x0) * pos_noise_std_6
-    siz_x0 = siz_x0 + torch.randn_like(siz_x0) * noise_scale_siz_lwh.unsqueeze(-1)
-    ori_x0 = ori_x0 + torch.randn_like(ori_x0) * noise_scale_ori * torch.tensor(
-        [1.0, 0.0], device=device).view(1, 2, 1)  # noise on theta, not omega
+    if mamba.training:
+        pos_x0 = pos_x0 + torch.randn_like(pos_x0) * pos_noise_std_6
+        siz_x0 = siz_x0 + torch.randn_like(siz_x0) * noise_scale_siz_lwh.unsqueeze(-1)
+        ori_x0 = ori_x0 + torch.randn_like(ori_x0) * noise_scale_ori * torch.tensor(
+            [1.0, 0.0], device=device
+        ).view(1, 2, 1)  # noise on theta, not omega
 
     pos_P0 = torch.eye(6, device=device).unsqueeze(0).expand(B, -1, -1).clone()
     pos_P0[:, 3, 3] = 10.0   # vx variance: high — K can infer speed from position
@@ -795,6 +921,10 @@ def training_step(
 
     kf = DecoupledAdaptiveKF(batch_size=B, device=device)
     kf.init_states(pos_x0, pos_P0, siz_x0, siz_P0, ori_x0, ori_P0)
+    # Pure-CV shadow state for an honest open-loop baseline.  It never receives
+    # a future measurement or a learned residual.
+    cv_shadow_pos = pos_x0.clone()
+    cv_shadow_ori = ori_x0.clone()
 
     # Measurement noise for teacher forcing — scaled proportionally to std mapped from category
     meas_mult = noise_cfg.get("MEAS_MULTIPLIER", 0.7)
@@ -885,8 +1015,21 @@ def training_step(
     R_ori = _blend_detach(R_ori, unfreeze_alpha)
     kappa_ori = _blend_detach(kappa_ori, unfreeze_alpha)
 
-    # GT velocity for all rollout steps (constant-velocity approximation over K≤3 frames)
-    vel_gt = gt_pos[:, 3:5]  # [B, 2]
+    if future_mask is None:
+        future_mask_for_motion = torch.ones(B, K, dtype=torch.bool, device=device)
+    else:
+        future_mask_for_motion = future_mask.bool()
+    future_vel_gt = _derive_future_velocities(
+        gt_pos,
+        gt_future_pos,
+        delta_ts_future,
+        future_mask_for_motion,
+    )
+    forced_coast_mask = _build_open_loop_mask(
+        future_mask_for_motion,
+        motion_rollout_cfg,
+        training=bool(mamba.training),
+    )
 
     total_state_loss = 0.0
     total_contrast_loss = 0.0
@@ -895,6 +1038,13 @@ def training_step(
     total_weight = 0.0
     total_aux_loss_tensor = torch.zeros((), device=device, dtype=history.dtype)
     total_residual_loss_tensor = torch.zeros((), device=device, dtype=history.dtype)
+    total_motion_loss_tensor = torch.zeros((), device=device, dtype=history.dtype)
+    cv_ade_sum = 0.0
+    motion_ade_sum = 0.0
+    cv_fde_sum = 0.0
+    motion_fde_sum = 0.0
+    fde_count = 0
+    motion_metric_weight = 0.0
     sample_loss_sum = torch.zeros(B, device=device, dtype=history.dtype)
     sample_loss_count = torch.zeros(B, device=device, dtype=history.dtype)
     sample_residual_weighted = torch.zeros(B, device=device, dtype=history.dtype)
@@ -975,9 +1125,89 @@ def training_step(
         dt_k = delta_ts_future[:, k].clone()                  # [B]
         dt_k[~active_k] = 1e-6
 
+        cv_shadow_pos = cv_shadow_pos.clone()
+        cv_shadow_ori = cv_shadow_ori.clone()
+        cv_shadow_pos[:, 0, 0] = cv_shadow_pos[:, 0, 0] + cv_shadow_pos[:, 3, 0] * dt_k
+        cv_shadow_pos[:, 1, 0] = cv_shadow_pos[:, 1, 0] + cv_shadow_pos[:, 4, 0] * dt_k
+        cv_shadow_pos[:, 2, 0] = cv_shadow_pos[:, 2, 0] + cv_shadow_pos[:, 5, 0] * dt_k
+        cv_shadow_ori[:, 0, 0] = wrap_to_pi_torch(
+            cv_shadow_ori[:, 0, 0] + cv_shadow_ori[:, 1, 0] * dt_k
+        )
+
         # KF predict with same Q for all steps
         pos_x_pred, pos_P_pred, siz_x_pred, siz_P_pred, ori_x_pred, ori_P_pred = \
             kf.predict(dt_k, Q_pos=Q_pos, Q_siz=Q_siz, Q_ori=Q_ori)
+
+        # Learned residual transition.  Unlike Q/R, this changes the state
+        # mean and is written back into the filter, so later open-loop steps
+        # recursively depend on earlier neural motion predictions.
+        cv_pos_x_pred = pos_x_pred
+        cv_ori_x_pred = ori_x_pred
+        # Reuse one control across the synthetic coast horizon.  This forces
+        # every rollout loss into the exact head consumed by online inference;
+        # the tracker then replans that control from updated history each frame.
+        motion_delta_k = mamba_out["delta_pos"]
+        motion_state_buckets = [
+            "unmatched" if bool(forced_coast_mask[idx, k].item()) else "matched"
+            for idx in range(B)
+        ]
+        pos_x_pred, siz_x_pred, ori_x_pred, motion_active_mask = apply_bounded_state_residuals(
+            pos_x_pred,
+            siz_x_pred,
+            ori_x_pred,
+            motion_delta_k,
+            class_ids=class_ids,
+            state_buckets=motion_state_buckets,
+            cfg=state_residual_cfg,
+            delta_t=dt_k,
+        )
+        kf.pos_filter.x = pos_x_pred
+        kf.siz_filter.x = siz_x_pred
+        kf.ori_filter.x = ori_x_pred
+
+        final_k = active_k & (
+            torch.ones_like(active_k)
+            if k == K - 1
+            else ~future_mask_for_motion[:, k + 1]
+        )
+        with torch.no_grad():
+            cv_step_error = torch.linalg.norm(
+                cv_shadow_pos[:, 0:3, 0] - gt_future_pos[:, k, :], dim=-1
+            )
+            motion_step_error = torch.linalg.norm(
+                pos_x_pred[:, 0:3, 0] - gt_future_pos[:, k, :], dim=-1
+            )
+            comparison_k = active_k & forced_coast_mask[:, k]
+            if bool(comparison_k.any().item()):
+                comparison_weight = int(comparison_k.sum().item()) / float(max(B, 1))
+                motion_metric_weight += comparison_weight
+                cv_ade_sum += float(cv_step_error[comparison_k].mean().item()) * comparison_weight
+                motion_ade_sum += float(motion_step_error[comparison_k].mean().item()) * comparison_weight
+            final_comparison_k = final_k & forced_coast_mask[:, k]
+            if bool(final_comparison_k.any().item()):
+                cv_fde_sum += float(cv_step_error[final_comparison_k].sum().item())
+                motion_fde_sum += float(motion_step_error[final_comparison_k].sum().item())
+                fde_count += int(final_comparison_k.sum().item())
+
+        motion_loss_k, motion_detail_k = _compute_motion_rollout_loss(
+            pos_x_pred,
+            ori_x_pred,
+            gt_future_pos[:, k, :],
+            future_vel_gt[:, k, :],
+            gt_future_ori[:, k, :],
+            active_k,
+            final_k,
+            motion_rollout_cfg,
+        )
+        total_motion_loss_tensor = total_motion_loss_tensor + motion_loss_k * step_weight
+        for key, value in motion_detail_k.items():
+            detail_accum[key] = detail_accum.get(key, 0.0) + value * step_weight
+        detail_accum["motion_active_ratio"] = detail_accum.get("motion_active_ratio", 0.0) + float(
+            motion_active_mask.float().mean().detach().item()
+        ) * step_weight
+        detail_accum["forced_coast_ratio"] = detail_accum.get("forced_coast_ratio", 0.0) + float(
+            forced_coast_mask[:, k].float().mean().detach().item()
+        ) * step_weight
 
         # NLL vs GT at this rollout step
         loss_k, detail_k = loss_fn(
@@ -989,7 +1219,7 @@ def training_step(
             [tok for idx, tok in enumerate(instance_tokens) if bool(active_k[idx].item())] if k == 0 else None,
             R_pos=R_pos[active_k], R_siz=R_siz[active_k], R_ori=R_ori[active_k],
             kappa_ori=kappa_ori[active_k],
-            gt_next_vel=vel_gt[active_k] if vel_active else None,
+            gt_next_vel=future_vel_gt[:, k, :][active_k] if vel_active else None,
             in_warmup=in_warmup,
             ori_nll_alpha=unfreeze_alpha,
             class_ids=class_ids[active_k],
@@ -1027,12 +1257,12 @@ def training_step(
                 )
                 detail_k["_loss_ori_per_sample"] = blended_ori_per_sample
 
-            aux_pos = F.huber_loss(
+            aux_pos = F.smooth_l1_loss(
                 pos_x_pred[active_k, 0:3, 0],
                 gt_future_pos[:, k, :][active_k],
                 reduction="mean",
             )
-            aux_siz = F.huber_loss(
+            aux_siz = F.smooth_l1_loss(
                 siz_x_pred[active_k, :, 0],
                 gt_future_siz[:, k, :][active_k],
                 reduction="mean",
@@ -1078,23 +1308,18 @@ def training_step(
                     sample_component_counts[public_name][active_k] + 1.0
                 )
 
-        if k == 0:
-            residual_pos_prior, residual_ori_prior = _build_cv_prior_states_for_residual_target(
-                obs_pos,
-                obs_ori,
-                dt_k,
-            )
+        if bool(residual_supervision_cfg.get("ENABLED", False)):
             residual_loss_k, residual_detail_k = _compute_residual_supervision_loss(
-                mamba_out["delta_pos"],
-                residual_pos_prior,
-                residual_ori_prior,
+                motion_delta_k,
+                cv_pos_x_pred,
+                cv_ori_x_pred,
                 gt_future_pos[:, k, :],
-                vel_gt,
+                future_vel_gt[:, k, :],
                 gt_future_ori[:, k, :],
                 active_k,
                 residual_supervision_cfg,
             )
-            total_residual_loss_tensor = total_residual_loss_tensor + residual_loss_k
+            total_residual_loss_tensor = total_residual_loss_tensor + residual_loss_k * step_weight
             for key, value in residual_detail_k.items():
                 if key.startswith("_"):
                     continue
@@ -1139,11 +1364,16 @@ def training_step(
 
         # Monitor delta_pos norm (per-step, tracked inside rollout).
         detail_accum["delta_pos_norm"] = detail_accum.get("delta_pos_norm", 0.0) + \
-            mamba_out["delta_pos"].norm(dim=-1).mean().item() * step_weight
+            motion_delta_k.norm(dim=-1).mean().item() * step_weight
 
         # Noisy teacher forcing with category-aware measurement noise
+        match_k = torch.zeros(B, dtype=torch.bool, device=device)
         if use_det_update and obs_future_pos is not None and obs_future_match is not None:
-            match_k = obs_future_match[:, k].bool() & active_k  # [B]
+            match_k = (
+                obs_future_match[:, k].bool()
+                & active_k
+                & ~forced_coast_mask[:, k]
+            )  # [B]
 
             pred_obs_pos = torch.cat([
                 pos_x_pred[:, 0:3, 0],
@@ -1183,33 +1413,86 @@ def training_step(
             ], dim=1)  # [B,5]
             pred_obs_siz = siz_x_pred[:, :, 0]
             pred_obs_ori = ori_x_pred[:, 0:1, 0]
-            gt_vel_xy = gt_pos[:, 3:5]  # [B, 2] — GT velocity
+            gt_vel_xy = future_vel_gt[:, k, :]  # [B, 2]
             z_pos_vals = torch.cat([
                 gt_future_pos[:, k, :] + torch.randn(B, 3, device=device) * meas_noise_pos.squeeze(-1),
                 gt_vel_xy + torch.randn(B, 2, device=device) * meas_noise_vel.squeeze(-1),
             ], dim=1)
             z_siz_vals = gt_future_siz[:, k, :] + torch.randn(B, 3, device=device) * meas_noise_siz.squeeze(-1)
             z_ori_vals = gt_future_ori[:, k, :] + torch.randn(B, 1, device=device) * meas_noise_ori.squeeze(-1)
-            if (~active_k).any():
-                z_pos_vals[~active_k] = pred_obs_pos[~active_k]
-                z_siz_vals[~active_k] = pred_obs_siz[~active_k]
-                z_ori_vals[~active_k] = pred_obs_ori[~active_k]
+            update_k = active_k & ~forced_coast_mask[:, k]
+            no_update_k = ~update_k
+            if no_update_k.any():
+                z_pos_vals[no_update_k] = pred_obs_pos[no_update_k]
+                z_siz_vals[no_update_k] = pred_obs_siz[no_update_k]
+                z_ori_vals[no_update_k] = pred_obs_ori[no_update_k]
             z_pos_k = z_pos_vals.unsqueeze(-1)
             z_siz_k = z_siz_vals.unsqueeze(-1)
             z_ori_k = z_ori_vals.unsqueeze(-1)
             R_pos_step = R_pos.clone()
             R_siz_step = R_siz.clone()
             R_ori_step = R_ori.clone()
-            if (~active_k).any():
-                R_pos_step[~active_k] = R_pos_step[~active_k] * miss_r_scale
-                R_siz_step[~active_k] = R_siz_step[~active_k] * miss_r_scale
-                R_ori_step[~active_k] = R_ori_step[~active_k] * miss_r_scale
+            if no_update_k.any():
+                R_pos_step[no_update_k] = R_pos_step[no_update_k] * miss_r_scale
+                R_siz_step[no_update_k] = R_siz_step[no_update_k] * miss_r_scale
+                R_ori_step[no_update_k] = R_ori_step[no_update_k] * miss_r_scale
             kf.update(z_pos_k, z_siz_k, z_ori_k,
                       R_pos=R_pos_step, R_siz=R_siz_step, R_ori=R_ori_step)
+
+        # Keep the trailer/truck posterior semantics identical to online
+        # MCTrack exact update. The motion loss above remains pre-update.
+        exact_matched = match_k & exact_matched_category_mask
+        exact_unmatched = active_k & ~match_k & exact_unmatched_category_mask
+        if bool(exact_matched.any().item()) or bool(exact_unmatched.any().item()):
+            post_pos_x, post_pos_P = kf.pos_filter.x, kf.pos_filter.P
+            post_siz_x, post_siz_P = kf.siz_filter.x, kf.siz_filter.P
+            post_ori_x, post_ori_P = kf.ori_filter.x, kf.ori_filter.P
+            post_pos_x, post_pos_P, post_siz_x, post_siz_P = restore_exact_matched_components(
+                pos_x_pred, pos_P_pred, siz_x_pred, siz_P_pred,
+                post_pos_x, post_pos_P, post_siz_x, post_siz_P,
+                exact_matched,
+            )
+            if bool(exact_unmatched.any().item()):
+                # Online fake update observes the predicted position with the
+                # unscaled R_pos, and does not update size or orientation.
+                kf.pos_filter.x = pos_x_pred
+                kf.pos_filter.P = pos_P_pred
+                zero_observation = torch.cat(
+                    [pos_x_pred[:, 0:3, :], pos_x_pred[:, 3:5, :]], dim=1
+                )
+                fake_pos_x, fake_pos_P = kf.pos_filter.update(zero_observation, R_pos)
+                post_pos_x = torch.where(
+                    exact_unmatched[:, None, None], fake_pos_x, post_pos_x
+                )
+                post_pos_P = torch.where(
+                    exact_unmatched[:, None, None], fake_pos_P, post_pos_P
+                )
+                post_siz_x = torch.where(
+                    exact_unmatched[:, None, None], siz_x_pred, post_siz_x
+                )
+                post_siz_P = torch.where(
+                    exact_unmatched[:, None, None], siz_P_pred, post_siz_P
+                )
+                post_ori_x = torch.where(
+                    exact_unmatched[:, None, None], ori_x_pred, post_ori_x
+                )
+                post_ori_P = torch.where(
+                    exact_unmatched[:, None, None], ori_P_pred, post_ori_P
+                )
+            kf.pos_filter.x, kf.pos_filter.P = post_pos_x, post_pos_P
+            kf.siz_filter.x, kf.siz_filter.P = post_siz_x, post_siz_P
+            kf.ori_filter.x, kf.ori_filter.P = post_ori_x, post_ori_P
 
     # ---- Logging detail (uses .item() floats, no gradient impact) ----
     norm = max(total_weight, 1e-6)
     detail = {k: v / norm for k, v in detail_accum.items()}
+    motion_metric_norm = max(motion_metric_weight, 1e-6)
+    detail["cv_ade"] = cv_ade_sum / motion_metric_norm
+    detail["motion_ade"] = motion_ade_sum / motion_metric_norm
+    detail["motion_ade_gain"] = detail["cv_ade"] - detail["motion_ade"]
+    detail["cv_fde"] = cv_fde_sum / max(fde_count, 1)
+    detail["motion_fde"] = motion_fde_sum / max(fde_count, 1)
+    detail["motion_fde_gain"] = detail["cv_fde"] - detail["motion_fde"]
     detail["loss_contrastive"] = detail_contrastive["loss_contrastive"]
     detail["n_valid_anchors"] = detail_contrastive["n_valid_anchors"]
     detail["loss_total"] = (
@@ -1237,8 +1520,10 @@ def training_step(
     detail["loss_kappa_reg"] = kappa_reg.item()
     detail["loss_ori_saturation_reg"] = ori_saturation_reg.item()
 
-    # Δpos L2 penalty: mild regularisation to keep delta_pos bounded.
-    delta_pos_reg = 0.01 * mamba_out["delta_pos"].pow(2).mean()
+    # Mild regularisation across the entire motion horizon.  The transition
+    # itself is physically bounded by apply_bounded_state_residuals().
+    delta_pos_reg = float(motion_rollout_cfg.get("REG_WEIGHT", 0.002)) * \
+        mamba_out["delta_pos"].pow(2).mean()
     detail["loss_delta_pos_reg"] = delta_pos_reg.item()
     for key, value in ratio_anchor_detail.items():
         detail[key] = value.item()
@@ -1276,7 +1561,8 @@ def training_step(
     real_loss = (
         total_loss_tensor / norm
         + total_aux_loss_tensor / norm
-        + total_residual_loss_tensor
+        + total_residual_loss_tensor / norm
+        + total_motion_loss_tensor / norm
         + kappa_reg
         + ori_saturation_reg
         + delta_pos_reg
@@ -1287,6 +1573,7 @@ def training_step(
     detail["loss_real"] = real_loss.item()
     detail["unfreeze_alpha"] = unfreeze_alpha
     detail["effective_rollout_weight"] = float(total_weight)
+    detail["loss_motion_rollout"] = float((total_motion_loss_tensor / norm).detach().item())
     detail["_class_ids"] = [int(v.item()) for v in class_ids.detach().cpu()]
     detail["_state_buckets"] = list(state_buckets)
     if emit_sample_metrics:
@@ -1417,11 +1704,21 @@ def main():
     # ---- Load config ----
     with open(args.config, "r") as f:
         cfg = yaml.safe_load(f)
+    inference_config_path = ((cfg.get("TRAINING", {}) or {}).get("INFERENCE_CONFIG"))
+    if inference_config_path:
+        with open(inference_config_path, "r") as f:
+            validate_exact_update_contract(cfg, yaml.safe_load(f) or {})
     assoc_cfg = cfg.setdefault("ASSOCIATION_HEAD_TRAINING", {})
     if args.train_association_head:
         assoc_cfg["RUN_AFTER_MAIN"] = True
     if args.skip_association_head:
         assoc_cfg["RUN_AFTER_MAIN"] = False
+    if (
+        not args.extract_only
+        and assoc_cfg.get("ENABLED", False)
+        and assoc_cfg.get("RUN_AFTER_MAIN", False)
+    ):
+        build_association_training_args(cfg, config_path=args.config, device="cpu")
 
     # ---- Device ----
     if args.device:
@@ -1558,6 +1855,14 @@ def main():
         collate_fn=val_collate_fn,
         pin_memory=True,
     )
+    if len(train_loader) == 0:
+        raise ValueError(
+            f"Training dataset has {len(train_dataset)} windows, fewer than "
+            f"TRAINING.BATCH_SIZE={train_cfg['BATCH_SIZE']} with drop_last=true; "
+            "generate more tracklets or lower the batch size"
+        )
+    if len(val_loader) == 0:
+        raise ValueError("Validation tracklet cache produced no training windows")
 
     logger.info(
         f"Train: {len(train_dataset)} samples, {len(train_loader)} batches "
@@ -1752,6 +2057,18 @@ def main():
         "closure_force_prior_states": list(closure_runtime_cfg.get("FORCE_PRIOR_STATES", ["matched"])),
         "closure_active_class_states": dict(closure_runtime_cfg.get("ACTIVE_CLASS_STATES", {}) or {}),
         "closure_train_all_class_states": bool(closure_runtime_cfg.get("TRAIN_ALL_CLASS_STATES", False)),
+        "model_input_history_source": str(
+            model_cfg.get("INPUT_HISTORY_SOURCE", "track")
+        ).strip().lower(),
+        "motion_rollout_enabled": bool(
+            ((cfg.get("BASE_NOISE", {}) or {}).get("MOTION_ROLLOUT", {}) or {}).get("ENABLED", False)
+        ),
+        "exact_matched_update_classes": list(
+            ((cfg.get("BASE_NOISE", {}) or {}).get("MCTRACK_EXACT_UPDATE", {}) or {}).get("MATCHED_CLASSES", [])
+        ),
+        "exact_unmatched_update_classes": list(
+            ((cfg.get("BASE_NOISE", {}) or {}).get("MCTRACK_EXACT_UPDATE", {}) or {}).get("UNMATCHED_CLASSES", [])
+        ),
     }
     train_filter_mode = runtime_contract["filter_mode"]
     train_noise_audit_cfg = _build_noise_audit_cfg(cfg)
@@ -1858,6 +2175,9 @@ def main():
             f"vel={avg_train.get('loss_vel', 0):.4f} "
             f"nis={avg_train.get('loss_nis', 0):.4f} "
             f"res={avg_train.get('loss_residual', 0):.4f} "
+            f"motion={avg_train.get('loss_motion_rollout', 0):.4f} "
+            f"coast={avg_train.get('forced_coast_ratio', 0):.2f} "
+            f"ADEgain={avg_train.get('motion_ade_gain', 0):+.3f} "
             f"ua={avg_train.get('unfreeze_alpha', 1.0):.2f} "
             f"contrast={avg_train.get('loss_contrastive', 0):.4f} | "
             f"val={avg_val.get('loss_real', avg_val.get('loss_total', 0)):.4f} "
@@ -1882,6 +2202,17 @@ def main():
         writer.add_scalar("train/loss_residual_pos", avg_train.get("loss_residual_pos", 0), step)
         writer.add_scalar("train/loss_residual_vel", avg_train.get("loss_residual_vel", 0), step)
         writer.add_scalar("train/loss_residual_yaw", avg_train.get("loss_residual_yaw", 0), step)
+        writer.add_scalar("train/loss_motion_rollout", avg_train.get("loss_motion_rollout", 0), step)
+        writer.add_scalar("train/loss_motion_pos", avg_train.get("loss_motion_pos", 0), step)
+        writer.add_scalar("train/loss_motion_vel", avg_train.get("loss_motion_vel", 0), step)
+        writer.add_scalar("train/loss_motion_yaw", avg_train.get("loss_motion_yaw", 0), step)
+        writer.add_scalar("train/forced_coast_ratio", avg_train.get("forced_coast_ratio", 0), step)
+        writer.add_scalar("train/cv_ade", avg_train.get("cv_ade", 0), step)
+        writer.add_scalar("train/motion_ade", avg_train.get("motion_ade", 0), step)
+        writer.add_scalar("train/motion_ade_gain", avg_train.get("motion_ade_gain", 0), step)
+        writer.add_scalar("train/cv_fde", avg_train.get("cv_fde", 0), step)
+        writer.add_scalar("train/motion_fde", avg_train.get("motion_fde", 0), step)
+        writer.add_scalar("train/motion_fde_gain", avg_train.get("motion_fde_gain", 0), step)
         writer.add_scalar("train/loss_contrastive", avg_train.get("loss_contrastive", 0), step)
         writer.add_scalar("train/loss_association_raw", avg_train.get("loss_association_raw", 0), step)
         writer.add_scalar("train/loss_association", avg_train.get("loss_association", 0), step)
@@ -1900,6 +2231,16 @@ def main():
         writer.add_scalar("val/loss_residual_pos", avg_val.get("loss_residual_pos", 0), step)
         writer.add_scalar("val/loss_residual_vel", avg_val.get("loss_residual_vel", 0), step)
         writer.add_scalar("val/loss_residual_yaw", avg_val.get("loss_residual_yaw", 0), step)
+        writer.add_scalar("val/loss_motion_rollout", avg_val.get("loss_motion_rollout", 0), step)
+        writer.add_scalar("val/loss_motion_pos", avg_val.get("loss_motion_pos", 0), step)
+        writer.add_scalar("val/loss_motion_vel", avg_val.get("loss_motion_vel", 0), step)
+        writer.add_scalar("val/loss_motion_yaw", avg_val.get("loss_motion_yaw", 0), step)
+        writer.add_scalar("val/cv_ade", avg_val.get("cv_ade", 0), step)
+        writer.add_scalar("val/motion_ade", avg_val.get("motion_ade", 0), step)
+        writer.add_scalar("val/motion_ade_gain", avg_val.get("motion_ade_gain", 0), step)
+        writer.add_scalar("val/cv_fde", avg_val.get("cv_fde", 0), step)
+        writer.add_scalar("val/motion_fde", avg_val.get("motion_fde", 0), step)
+        writer.add_scalar("val/motion_fde_gain", avg_val.get("motion_fde_gain", 0), step)
         writer.add_scalar("val/loss_contrastive", avg_val.get("loss_contrastive", 0), step)
         writer.add_scalar("val/loss_association_raw", avg_val.get("loss_association_raw", 0), step)
         writer.add_scalar("val/loss_association", avg_val.get("loss_association", 0), step)
@@ -2006,6 +2347,11 @@ def main():
                 )
 
     writer.close()
+    if not math.isfinite(best_val_loss):
+        raise RuntimeError(
+            "No finite validation checkpoint was saved; refusing to train Stage B "
+            "against a missing or stale best.pt"
+        )
     logger.info(f"Training complete. Best val_loss={best_val_loss:.4f}")
     run_association_head_stage_if_requested(
         cfg,

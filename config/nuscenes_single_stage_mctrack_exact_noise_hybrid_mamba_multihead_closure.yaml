@@ -239,8 +239,8 @@ DEKF_BASE_NOISE:
           r_siz: [0.85, 1.55]
           r_ori: [0.85, 2.80]
   MAMBA_STATE_RESIDUAL:
-    ENABLED: true
-    ACTIVE_CLASS_STATES: {3: ["unmatched"], 5: ["unmatched"]}
+    ENABLED: false
+    ACTIVE_CLASS_STATES: {}
     DEFAULT_BOUNDS:
       POS_XY: 0.30
       POS_Z: 0.10

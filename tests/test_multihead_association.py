@@ -3,8 +3,10 @@ import unittest
 from pathlib import Path
 
 import torch
+from torch.utils.data import DataLoader
 
 from training.association_dataset import (
+    AnchorGroupBatchSampler,
     PairwiseAssociationDataset,
     PrecomputedPairwiseAssociationDataset,
     pairwise_association_collate_fn,
@@ -12,6 +14,13 @@ from training.association_dataset import (
 )
 from training.association_model import ClassConditionedAssociationHeadBank
 from training.association_metrics import _binary_auc, compute_association_metrics
+from tools.train_pairwise_association import (
+    _association_bce_weights,
+    _association_listwise_loss_from_logits,
+    _parse_class_ids,
+    _run_precomputed_epoch,
+    _select_precomputed_class,
+)
 
 
 def _sample(anchor_id, class_id, label, logit_hint=0.0, negative_type="positive"):
@@ -35,6 +44,140 @@ def _sample(anchor_id, class_id, label, logit_hint=0.0, negative_type="positive"
 
 
 class MultiHeadAssociationTest(unittest.TestCase):
+    def test_old_pairwise_feature_schema_is_rejected_for_stage_b(self):
+        sample = _sample("a", 2, 1)
+        with self.assertRaisesRegex(ValueError, "outdated feature schema"):
+            PairwiseAssociationDataset(
+                [sample], history_len=3, required_feature_schema_version=2
+            )
+        sample["feature_schema_version"] = 2
+        self.assertEqual(
+            len(PairwiseAssociationDataset(
+                [sample], history_len=3, required_feature_schema_version=2
+            )),
+            1,
+        )
+
+    def test_balanced_bce_weights_preserve_hard_negative_ratio_and_neutral_prior(self):
+        labels = torch.tensor([1.0, 0.0, 0.0])
+
+        weights = _association_bce_weights(
+            labels,
+            ["positive", "hard", "easy"],
+            hard_negative_weight=2.0,
+            balance_positives=True,
+        )
+
+        positive_mass = weights[labels > 0.5].sum()
+        negative_mass = weights[labels <= 0.5].sum()
+        self.assertTrue(torch.allclose(positive_mass, negative_mass))
+        self.assertAlmostEqual(float(weights.mean()), 1.0, places=6)
+        self.assertAlmostEqual(float(weights[1] / weights[2]), 2.0, places=6)
+
+    def test_anchor_group_batch_sampler_never_splits_candidate_set(self):
+        keys = ["a", "a", "a", "b", "b", "c"]
+        sampler = AnchorGroupBatchSampler(keys, batch_size=4, shuffle=False)
+
+        batches = list(sampler)
+
+        self.assertEqual(batches, [[0, 1, 2], [3, 4, 5]])
+        for key in set(keys):
+            containing = [batch for batch in batches if any(keys[index] == key for index in batch)]
+            self.assertEqual(len(containing), 1)
+
+    def test_listwise_loss_prefers_correct_candidate_ranking(self):
+        labels = torch.tensor([1.0, 0.0, 1.0, 0.0])
+        anchor_keys = ["a", "a", "b", "b"]
+
+        good = _association_listwise_loss_from_logits(
+            torch.tensor([3.0, -1.0, 2.0, -2.0]), labels, anchor_keys
+        )
+        bad = _association_listwise_loss_from_logits(
+            torch.tensor([-1.0, 3.0, -2.0, 2.0]), labels, anchor_keys
+        )
+
+        self.assertLess(float(good), float(bad))
+
+    def test_precomputed_samples_can_be_partitioned_without_reencoding(self):
+        samples = {
+            "pair_vector": torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]),
+            "class_id": torch.tensor([0, 2, 0]),
+            "label": torch.tensor([1.0, 0.0, 0.0]),
+            "anchor_keys": ["a", "b", "c"],
+            "negative_types": ["positive", "hard", "hard"],
+            "categories": ["car", "bicycle", "car"],
+        }
+
+        selected = _select_precomputed_class(samples, 0)
+
+        self.assertEqual(selected["class_id"].tolist(), [0, 0])
+        self.assertEqual(selected["anchor_keys"], ["a", "c"])
+        self.assertTrue(torch.equal(selected["pair_vector"], torch.tensor([[1.0, 2.0], [5.0, 6.0]])))
+
+    def test_class_id_parser_rejects_out_of_range_heads(self):
+        self.assertEqual(_parse_class_ids("2,0,2", 3), [2, 0])
+        with self.assertRaises(ValueError):
+            _parse_class_ids("3", 3)
+
+    def test_single_class_optimizer_cannot_update_other_heads(self):
+        bank = ClassConditionedAssociationHeadBank(
+            input_dim=4,
+            num_classes=3,
+            hidden_dims=(8,),
+            dropout=0.0,
+        )
+        samples = [
+            {
+                "pair_vector": [1.0, 0.0, 0.0, 0.0],
+                "class_id": 1,
+                "label": 1,
+                "anchor_key": "a",
+                "negative_type": "positive",
+                "category": "pedestrian",
+            },
+            {
+                "pair_vector": [0.0, 1.0, 0.0, 0.0],
+                "class_id": 1,
+                "label": 0,
+                "anchor_key": "a",
+                "negative_type": "hard",
+                "category": "pedestrian",
+            },
+        ]
+        loader = DataLoader(
+            PrecomputedPairwiseAssociationDataset(samples),
+            batch_size=2,
+            shuffle=False,
+            collate_fn=precomputed_pairwise_association_collate_fn,
+        )
+        untouched_before = {
+            key: value.detach().clone() for key, value in bank.heads[0].state_dict().items()
+        }
+        target_before = {
+            key: value.detach().clone() for key, value in bank.heads[1].state_dict().items()
+        }
+        optimizer = torch.optim.AdamW(bank.heads[1].parameters(), lr=1.0e-2)
+
+        _run_precomputed_epoch(
+            bank,
+            loader,
+            optimizer,
+            torch.device("cpu"),
+            train=True,
+            hard_negative_weight=1.0,
+            ranking_margin=0.2,
+            ranking_weight=0.1,
+        )
+
+        self.assertTrue(all(
+            torch.equal(value, untouched_before[key])
+            for key, value in bank.heads[0].state_dict().items()
+        ))
+        self.assertTrue(any(
+            not torch.equal(value, target_before[key])
+            for key, value in bank.heads[1].state_dict().items()
+        ))
+
     def test_pairwise_dataset_returns_model_ready_tensors(self):
         samples = [_sample("a", 2, 1), _sample("a", 2, 0, negative_type="hard")]
         ds = PairwiseAssociationDataset(samples, history_len=3)

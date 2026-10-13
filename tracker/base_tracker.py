@@ -47,10 +47,14 @@ from tracker.association_runtime_manifest import (
 from tracker.mctrack_motion import MCTrackOriginalPoseMotion
 from tracker.trajectory import Trajectory
 from tracker.bbox import BBox
-from kalmanfilter.checkpoint_compat import adapt_num_class_state_dict
+from kalmanfilter.checkpoint_compat import (
+    adapt_num_class_state_dict,
+    validate_association_backbone_binding,
+)
 from kalmanfilter.mamba_adaptive_kf import MambaDecoupledEKF, build_noise_audit_samples
 from kalmanfilter.bounded_residual import infer_state_bucket
 from kalmanfilter.state_residual import apply_bounded_state_residuals
+from kalmanfilter.mctrack_exact_update import restore_exact_matched_components
 from kalmanfilter.noise_audit import NoiseAuditAccumulator
 from training.association_model import ClassConditionedAssociationHeadBank
 from training.association_features import compose_pair_vectors
@@ -73,6 +77,7 @@ _DEFAULT_MAMBA_CFG = {
     "MIN_DIAG_SIZ": 0.05,   # size noise floor (prevents NLL→-∞)
     "MIN_KAPPA": 0.1,        # kappa floor (prevents R_ori→∞)
     "NUM_CLASSES": 10,        # number of object categories for size embeddings
+    "INPUT_HISTORY_SOURCE": "residual",  # residual (legacy closure) / track
 }
 
 
@@ -332,22 +337,11 @@ def run_mctrack_exact_matched_kf_step(
         R_pos=R_pos, R_siz=R_siz, R_ori=R_ori,
     )
 
-    upd_pos_x = upd_pos_x.clone()
-    upd_pos_P = upd_pos_P.clone()
-    upd_siz_x = upd_siz_x.clone()
-    upd_siz_P = upd_siz_P.clone()
-
-    # MCTrack pose filter is 2D/velocity-centric. Restore z and vz to the
-    # predicted state, and keep their covariance block from the predicted P.
-    for idx in (2, 5):
-        upd_pos_x[:, idx, :] = pos_x[:, idx, :]
-        upd_pos_P[:, idx, :] = pos_P[:, idx, :]
-        upd_pos_P[:, :, idx] = pos_P[:, :, idx]
-
-    # MCTrack size filter only consumes l/w. Restore h to the predicted state.
-    upd_siz_x[:, 2, :] = siz_x[:, 2, :]
-    upd_siz_P[:, 2, :] = siz_P[:, 2, :]
-    upd_siz_P[:, :, 2] = siz_P[:, :, 2]
+    upd_pos_x, upd_pos_P, upd_siz_x, upd_siz_P = restore_exact_matched_components(
+        pos_x, pos_P, siz_x, siz_P,
+        upd_pos_x, upd_pos_P, upd_siz_x, upd_siz_P,
+        torch.ones(pos_x.shape[0], dtype=torch.bool, device=pos_x.device),
+    )
 
     return upd_pos_x, upd_pos_P, upd_siz_x, upd_siz_P, upd_ori_x, upd_ori_P
 
@@ -388,6 +382,12 @@ class Base3DTracker:
         # Mamba layers would be randomly initialized and the trained GRU weights
         # would be skipped (strict=False silently ignores the mismatch).
         ckpt_path = mamba_cfg.get("CHECKPOINT_PATH", None)
+        require_checkpoint = bool(mamba_cfg.get("REQUIRE_CHECKPOINT", False))
+        if require_checkpoint and (not ckpt_path or not os.path.isfile(ckpt_path)):
+            raise FileNotFoundError(
+                f"MAMBA.REQUIRE_CHECKPOINT is true, but CHECKPOINT_PATH={ckpt_path!r} "
+                "is not a readable checkpoint file"
+            )
         force_gru = False
         if ckpt_path and os.path.exists(ckpt_path):
             ckpt_peek = torch.load(ckpt_path, map_location="cpu")
@@ -439,6 +439,28 @@ class Base3DTracker:
                 resolved_ckpt_path = os.path.abspath(ckpt_path)
                 ckpt = torch.load(ckpt_path, map_location=self.device)
                 runtime_contract = ckpt.get("runtime_contract", None)
+                if require_checkpoint and (
+                    not isinstance(runtime_contract, dict)
+                    or not bool(runtime_contract.get("motion_rollout_enabled", False))
+                ):
+                    raise RuntimeError(
+                        f"Motion checkpoint {ckpt_path} has no enabled motion-rollout runtime contract"
+                    )
+                if require_checkpoint:
+                    for contract_key, enabled_key, classes_key in (
+                        ("exact_matched_update_classes", "MCTRACK_EXACT_MATCHED_UPDATE", "MCTRACK_EXACT_MATCHED_UPDATE_CLASSES"),
+                        ("exact_unmatched_update_classes", "MCTRACK_EXACT_UNMATCH_UPDATE", "MCTRACK_EXACT_UNMATCH_UPDATE_CLASSES"),
+                    ):
+                        expected = {int(value) for value in runtime_contract.get(contract_key, [])}
+                        actual = (
+                            {int(value) for value in self.cfg.get(classes_key, [])}
+                            if self.cfg.get(enabled_key, False) else set()
+                        )
+                        if expected != actual:
+                            raise RuntimeError(
+                                f"Motion checkpoint {contract_key}={sorted(expected)} "
+                                f"does not match runtime {classes_key}={sorted(actual)}"
+                            )
                 # checkpoints saved by training/train.py contain "model_state_dict"
                 state_dict = ckpt.get("model_state_dict", ckpt)
                 head_bank_key_count = sum(
@@ -453,8 +475,33 @@ class Base3DTracker:
                         "[Base3DTracker] Checkpoint runtime_contract: "
                         f"{runtime_contract}"
                     )
+                    expected_input_source = runtime_contract.get(
+                        "model_input_history_source", None
+                    )
+                    if require_checkpoint and expected_input_source is None:
+                        raise RuntimeError(
+                            "Motion checkpoint is missing model_input_history_source"
+                        )
+                    runtime_input_source = str(
+                        mamba_cfg.get("INPUT_HISTORY_SOURCE", "residual")
+                    ).strip().lower()
+                    if (
+                        expected_input_source is not None
+                        and str(expected_input_source).strip().lower() != runtime_input_source
+                    ):
+                        raise ValueError(
+                            "Checkpoint model_input_history_source="
+                            f"{expected_input_source} does not match runtime "
+                            f"MAMBA.INPUT_HISTORY_SOURCE={runtime_input_source}"
+                        )
                     expected_backbone_type = str(runtime_contract.get("backbone_type", "")).strip().lower()
+                    if require_checkpoint and not expected_backbone_type:
+                        raise RuntimeError("Motion checkpoint is missing backbone_type")
                     if expected_backbone_type and expected_backbone_type != ("fallback_gru" if force_gru else "mamba_ssm"):
+                        if require_checkpoint:
+                            raise RuntimeError(
+                                f"Motion checkpoint backbone mismatch: expected {expected_backbone_type}"
+                            )
                         print(
                             "[Base3DTracker] WARNING: checkpoint runtime_contract backbone_type="
                             f"{expected_backbone_type} but runtime backbone="
@@ -473,20 +520,29 @@ class Base3DTracker:
                     state_dict, strict=False,
                 )
                 if adapted_keys:
+                    if require_checkpoint:
+                        raise RuntimeError(
+                            "Motion checkpoint class tensor shapes do not match runtime: "
+                            + ", ".join(adapted_keys)
+                        )
                     print(
                         "[Base3DTracker] Adapted class-count-dependent checkpoint tensors: "
                         + ", ".join(adapted_keys)
                     )
                 if missing:
+                    if require_checkpoint:
+                        raise RuntimeError(f"Motion checkpoint is missing model keys: {missing}")
                     print(f"[Base3DTracker] WARNING: missing keys in checkpoint: {missing}")
                 if unexpected:
+                    if require_checkpoint:
+                        raise RuntimeError(f"Motion checkpoint has unexpected model keys: {unexpected}")
                     print(f"[Base3DTracker] WARNING: unexpected keys in checkpoint: {unexpected}")
                 print(f"[Base3DTracker] Loaded Mamba weights from {ckpt_path}")
                 if runtime_contract:
                     current_cost_mode = str(
                         self.cfg.get("THRESHOLD", {}).get("BEV", {}).get("COST_MODE", "unknown")
                     ).strip().lower()
-                    for warning in build_runtime_contract_warnings(
+                    contract_warnings = build_runtime_contract_warnings(
                         runtime_contract=runtime_contract,
                         tracker_compat_mode=self.tracker_compat_mode,
                         filter_mode=self.filter_mode,
@@ -494,7 +550,13 @@ class Base3DTracker:
                         current_history_source=self.cfg.get("HISTORY_SOURCE", None),
                         current_init_state_source=self.cfg.get("INIT_STATE_SOURCE", None),
                         current_closure_cfg=(self.cfg.get("DEKF_BASE_NOISE", {}) or {}).get("MAMBA_CLOSURE", {}),
-                    ):
+                    )
+                    if require_checkpoint and contract_warnings:
+                        raise RuntimeError(
+                            "Motion checkpoint runtime contract does not match inference config: "
+                            + " | ".join(contract_warnings)
+                        )
+                    for warning in contract_warnings:
                         print(warning)
             else:
                 print(f"[Base3DTracker] WARNING: CHECKPOINT_PATH={ckpt_path} not found. "
@@ -1054,9 +1116,12 @@ class Base3DTracker:
         error: Optional[BaseException] = None,
         context: Optional[Dict] = None,
     ) -> None:
-        if self._association_checkpoint_audit_strict():
+        if (
+            self._association_checkpoint_audit_strict()
+            or bool(self._pairwise_association_head_cfg().get("REQUIRE_CHECKPOINT", False))
+        ):
             raise RuntimeError(
-                f"association checkpoint audit strict failure: {message}"
+                f"association checkpoint validation failed: {message}"
             ) from error
 
         if (
@@ -1208,6 +1273,13 @@ class Base3DTracker:
             ckpt = torch.load(ckpt_path, map_location=self.device)
             if not isinstance(ckpt, Mapping):
                 raise TypeError("checkpoint payload must be a mapping")
+            if head_cfg.get("REQUIRE_BACKBONE_BINDING", False):
+                motion_path = ((self.cfg.get("MAMBA", {}) or {}).get("CHECKPOINT_PATH"))
+                if not motion_path:
+                    raise ValueError("MAMBA.CHECKPOINT_PATH is required for association backbone binding")
+                validate_association_backbone_binding(
+                    ckpt.get("runtime_contract"), motion_path
+                )
             contract_validation = validate_association_runtime_contract(
                 ckpt.get("runtime_contract"), self.cfg
             )
@@ -2023,7 +2095,17 @@ class Base3DTracker:
         B = len(trajs)
 
         # ---- 1. Extract histories [B, T, 12] ----
-        if self.filter_mode == "mamba_multihead_closure":
+        input_history_source = str(
+            ((getattr(self, "cfg", {}) or {}).get("MAMBA", {}) or {}).get(
+                "INPUT_HISTORY_SOURCE", "residual"
+            )
+        ).strip().lower()
+        if input_history_source not in {"residual", "track"}:
+            raise ValueError(
+                "MAMBA.INPUT_HISTORY_SOURCE must be 'residual' or 'track'"
+            )
+
+        if self.filter_mode == "mamba_multihead_closure" and input_history_source == "residual":
             history, history_mask, history_match_mask = self._extract_residual_token_history(trajs)
             prior_track_history, prior_history_mask, prior_history_match_mask = self._extract_track_history(trajs)
         else:
@@ -2080,7 +2162,7 @@ class Base3DTracker:
             )
 
             px, sx, ox, state_residual_mask = self._apply_state_residual_to_prediction(
-                px, sx, ox, mamba_out, class_ids, state_buckets
+                px, sx, ox, mamba_out, class_ids, state_buckets, delta_t
             )
             mamba_out["state_residual_active_mask"] = state_residual_mask
 
@@ -2305,6 +2387,7 @@ class Base3DTracker:
         mamba_out: Dict,
         class_ids: torch.Tensor,
         state_buckets: List[str],
+        delta_t=None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         return apply_bounded_state_residuals(
             pos_x,
@@ -2314,6 +2397,7 @@ class Base3DTracker:
             class_ids=class_ids,
             state_buckets=state_buckets,
             cfg=self._state_residual_cfg(),
+            delta_t=delta_t,
         )
 
     def _summarize_small_class_pending_reasons(self) -> Dict[str, Dict[str, int]]:
