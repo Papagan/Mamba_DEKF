@@ -116,8 +116,7 @@ def main() -> int:
         choices=["legacy", "inference_margin"],
         help=(
             "Negative mining strategy. 'inference_margin' keeps only same-class "
-            "candidates within best predicted-track distance + --cost-margin-eps, "
-            "as a center-distance proxy for the runtime geometric-cost margin."
+            "candidates within best predicted-track cost + --cost-margin-eps."
         ),
     )
     parser.add_argument(
@@ -127,17 +126,52 @@ def main() -> int:
         help="Margin used by --negative-mining-mode inference_margin.",
     )
     parser.add_argument(
+        "--inference-margin-metric",
+        default="runtime_geometric",
+        choices=["runtime_geometric", "center_distance"],
+        help=(
+            "Ranking metric for inference-margin mining. runtime_geometric uses "
+            "the inference Ro_GDIoU cost and is the production-safe default."
+        ),
+    )
+    parser.add_argument(
+        "--inference-config",
+        default=None,
+        help="Runtime YAML used for Ro_GDIoU weights; defaults to TRAINING.INFERENCE_CONFIG.",
+    )
+    parser.add_argument(
         "--max-pairs-per-class",
         default=None,
         help="Optional class caps, e.g. 'car=60000,pedestrian=50000'. Defaults to no cap.",
     )
-    parser.add_argument("--allow-current-miss", action="store_true")
+    current_match_args = parser.add_mutually_exclusive_group()
+    current_match_args.add_argument("--allow-current-miss", action="store_true")
+    current_match_args.add_argument("--require-current-match", action="store_true")
     parser.add_argument("--allow-future-miss", action="store_true")
+    parser.add_argument("--sampling-seed", type=int, default=0)
     args = parser.parse_args()
 
     train_cfg = _load_yaml(args.train_config)
+    inference_config_path = args.inference_config or (
+        (train_cfg.get("TRAINING", {}) or {}).get("INFERENCE_CONFIG")
+    )
+    runtime_cost_config = _load_yaml(inference_config_path) if inference_config_path else None
+    if (
+        str(args.negative_mining_mode) == "inference_margin"
+        and str(args.inference_margin_metric) == "runtime_geometric"
+        and not runtime_cost_config
+    ):
+        raise ValueError(
+            "runtime_geometric inference-margin mining requires --inference-config "
+            "or TRAINING.INFERENCE_CONFIG"
+        )
     history_len = int(args.history_len or _resolve_default_history_len(train_cfg, 8))
     history_source = args.history_source or _resolve_default_history_source(train_cfg, "det")
+    require_current_match = bool((train_cfg.get("DATA", {}) or {}).get("REQUIRE_CURRENT_MATCH", True))
+    if args.allow_current_miss:
+        require_current_match = False
+    if args.require_current_match:
+        require_current_match = True
 
     with open(args.input, "rb") as f:
         tracklets = pickle.load(f)
@@ -164,9 +198,13 @@ def main() -> int:
         max_easy_negatives=int(args.max_easy_negatives),
         negative_mining_mode=str(args.negative_mining_mode),
         cost_margin_eps=float(args.cost_margin_eps),
+        inference_margin_metric=str(args.inference_margin_metric),
+        runtime_cost_config=runtime_cost_config,
         max_pairs_per_class=max_pairs_per_class,
-        require_current_match=not bool(args.allow_current_miss),
+        require_current_match=require_current_match,
         require_future_match=not bool(args.allow_future_miss),
+        sampling_seed=int(args.sampling_seed),
+        class_window_cfg=(train_cfg.get("DATA", {}) or {}).get("CLASS_WINDOW", {}),
     )
 
     output_path = Path(args.output)
@@ -175,6 +213,7 @@ def main() -> int:
         pickle.dump(samples, f)
 
     summary_payload = {
+        "geometry_stage": "offline_cv_bootstrap_not_online_replay",
         "input": args.input,
         "output": str(output_path),
         "settings": {
@@ -189,9 +228,13 @@ def main() -> int:
             "max_easy_negatives": int(args.max_easy_negatives),
             "negative_mining_mode": str(args.negative_mining_mode),
             "cost_margin_eps": float(args.cost_margin_eps),
+            "inference_margin_metric": str(args.inference_margin_metric),
+            "inference_config": inference_config_path,
             "max_pairs_per_class": max_pairs_per_class,
-            "require_current_match": not bool(args.allow_current_miss),
+            "require_current_match": require_current_match,
             "require_future_match": not bool(args.allow_future_miss),
+            "sampling_seed": int(args.sampling_seed),
+            "class_cap_policy": "stable_random_complete_anchor_groups",
         },
         **summary,
     }

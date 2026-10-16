@@ -291,7 +291,7 @@ class TemporalMambaPriorConditionedBranchTest(unittest.TestCase):
         self.assertTrue(torch.allclose(out["prior_covariances"]["Q_pos"], base_cov["Q_pos_base"]))
         self.assertTrue(torch.allclose(out["prior_covariances"]["R_ori"], base_cov["R_ori_base"]))
 
-    def test_multihead_closure_keeps_kappa_outputs_and_legacy_clamp_ceiling(self):
+    def test_multihead_closure_preserves_prior_ratio_without_legacy_clamp(self):
         model = TemporalMamba(
             d_model=8,
             d_state=4,
@@ -341,7 +341,6 @@ class TemporalMambaPriorConditionedBranchTest(unittest.TestCase):
         self.assertIn("kappa_ori_unc", out)
         self.assertEqual(out["kappa_ori"].shape, (1, 1))
         self.assertEqual(out["kappa_ori_unc"].shape, (1, 1))
-        self.assertLessEqual(float(out["kappa_ori"].max()), 5.0)
         self.assertGreater(float(out["kappa_ori_unc"].item()), 5.0)
-        self.assertTrue(torch.allclose(out["kappa_ori"], torch.tensor([[5.0]])))
-        self.assertTrue(torch.allclose(out["R_ori"], torch.tensor([[[0.2]]])))
+        self.assertTrue(torch.allclose(out["kappa_ori"], out["kappa_ori_unc"]))
+        self.assertTrue(torch.allclose(out["R_ori"], torch.tensor([[[0.0001]]])))

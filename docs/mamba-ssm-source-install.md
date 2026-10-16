@@ -40,7 +40,7 @@ pip install . --no-build-isolation --no-cache-dir -v
 
 # 第5步：验证
 #  ————————————————————————————————————————————————
-python -c "from mamba_ssm import Mamba; print('OK')"
+python -c "from mamba_ssm import Mamba2; print('Mamba2 import OK')"
 ```
 
 ---
@@ -107,21 +107,14 @@ v2.2.2 对 PyTorch 2.1 的兼容性更好，CUDA 扩展接口更稳定。
 ## 验证安装完整性
 
 ```bash
-# 注意：用 submodule 直接导入，避免 mamba_ssm.__init__.py 触发
-# transformers 依赖链（项目中已改用此方式）
 python -c "
 import torch
-from mamba_ssm.modules.mamba_simple import Mamba
-model = Mamba(d_model=64, d_state=16, d_conv=4, expand=2).cuda()
-x = torch.randn(2, 4, 64).cuda()
+from mamba_ssm import Mamba2
+model = Mamba2(d_model=96, d_state=64, d_conv=4, expand=2, headdim=64).cuda()
+x = torch.randn(2, 8, 96).cuda()
 y = model(x)
 print(f'Input: {x.shape}, Output: {y.shape}')
-print('Mamba forward OK')
-for n,_ in model.named_parameters():
-    if 'A_log' in n or 'dt_proj' in n:
-        print(f'Found: {n}'); break
-else:
-    print('WARNING: no Mamba params')
+print('Mamba2 forward OK')
 "
 ```
 
@@ -129,6 +122,6 @@ else:
 
 ## 备注
 
-- 如果当前训练跑的是 GRU fallback，用 Mamba 从头训练需要**重新调 MAMBA_LR**（Mamba 学习率通常比 GRU 低 3–5 倍）
-- Mamba 推理速度通常比 GRU 慢 20–30%（多了 selective scan），但你的 T=4 序列太短，差异可忽略
-- 源码安装保留了 GRU fallback 代码路径——如果 `Mamba is None` 自动回退，不影响已有检查点加载
+- Mamba-1 与 Mamba-2 参数结构不同，旧 checkpoint 不能直接加载，必须重新训练主干和关联头。
+- 当前 nuScenes 配置使用 `D_MODEL=96, EXPAND=2, MAMBA2_HEADDIM=64`，满足 `D_MODEL * EXPAND` 可被 head dim 整除。
+- 源码仍保留 GRU fallback，但正式训练启用 `REQUIRE_MAMBA_SSM` 时不会接受静默回退。

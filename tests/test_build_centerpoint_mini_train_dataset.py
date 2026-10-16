@@ -15,15 +15,25 @@ from tools.build_centerpoint_mini_train_dataset import (
     build_mini_dataset,
     filter_detections_for_runtime,
     match_classwise,
+    match_ambiguity_diagnostics,
     normalize_timestamp_seconds,
     parse_class_dist_thresholds,
     resolve_class_dist_thresholds,
     resolve_split_scene_names,
+    estimate_training_samples_adaptive,
 )
 from training.pairwise_association_cache import build_pairwise_association_samples
 
 
 class BuildCenterPointMiniTrainDatasetTest(unittest.TestCase):
+    def test_sample_estimate_includes_short_history_policy(self):
+        tracklets = [{"category": "car", "frames": [{}] * 6},
+                     {"category": "car", "frames": [{}] * 100, "association_only": True}]
+        kwargs = dict(history_len=8, rollout_steps=8, min_history_len=4,
+                      min_rollout_steps=2, class_window_cfg={})
+        self.assertEqual(estimate_training_samples_adaptive(tracklets, **kwargs), 1)
+        self.assertEqual(estimate_training_samples_adaptive(tracklets, include_short_histories=True, **kwargs), 4)
+
     def test_matching_maximizes_valid_pairs_before_minimizing_distance(self):
         gt = [
             {"global_xyz": [-0.1064643151, 0.9950107155, 0.0]},
@@ -114,9 +124,19 @@ class BuildCenterPointMiniTrainDatasetTest(unittest.TestCase):
                 )
             with output_path.open("rb") as stream:
                 tracklets = pickle.load(stream)
+            with patch("tools.build_centerpoint_mini_train_dataset.match_ambiguity_diagnostics", return_value={
+                "match_identity_margin": 0.01,
+                "match_row_margin": 0.01, "match_column_margin": None,
+            }), contextlib.redirect_stdout(io.StringIO()):
+                ambiguous_summary = build_mini_dataset(
+                    str(det_path), "v1.0-trainval", tmp, str(output_path), 0, 2.0, 2, 2,
+                    True, None, "val", None, False,
+                )
+            with output_path.open("rb") as stream:
+                ambiguous_tracklets = pickle.load(stream)
 
         self.assertEqual(summary["timestamp_diff_max"], 0.0)
-        self.assertEqual(summary["unmatched_candidates_attached"], 2)
+        self.assertEqual(summary["unmatched_candidates_attached"], 4)
         self.assertEqual(summary["ambiguous_unmatched_dets"], 2)
         self.assertEqual(len(tracklets), 1)
         self.assertEqual(len(tracklets[0]["frames"]), 2)
@@ -126,6 +146,26 @@ class BuildCenterPointMiniTrainDatasetTest(unittest.TestCase):
         )
         self.assertEqual([sample["label"] for sample in samples], [1, 0])
         self.assertTrue(samples[1]["candidate_is_unmatched_gt"])
+        self.assertEqual(ambiguous_summary["matches"], 0)
+        self.assertEqual(ambiguous_summary["ambiguous_matches_quarantined"], 2)
+        self.assertTrue(ambiguous_tracklets[0]["association_only"])
+        self.assertTrue(all(not frame["is_matched"] for frame in ambiguous_tracklets[0]["frames"]))
+
+    def test_ambiguity_checks_both_detection_and_gt_alternatives(self):
+        gt = [{"global_xyz": [0.0, 0.0, 0.0]}, {"global_xyz": [0.11, 0.0, 0.0]}]
+        det = [{"global_xyz": [0.04, 0.0, 0.0]}, {"global_xyz": [2.0, 0.0, 0.0]}]
+        diagnosis = match_ambiguity_diagnostics(gt, det, 0, 0, 0.04)
+        self.assertAlmostEqual(diagnosis["match_identity_margin"], 0.03)
+        self.assertGreater(diagnosis["match_row_margin"], 1.0)
+
+    def test_keeps_candidates_in_frames_without_any_gt_track(self):
+        tracklets = []
+        candidate = {"candidate_id": "fp", "timestamp": 0.5, "frame_id": 1}
+        count = attach_unmatched_candidates(tracklets, {("scene", "sample", "car"): [candidate]})
+        self.assertEqual(count, 1)
+        self.assertTrue(tracklets[0]["association_only"])
+        self.assertTrue(tracklets[0]["candidate_only"])
+        self.assertEqual(tracklets[0]["frames"][0]["unmatched_detections"], [candidate])
 
     def test_resolve_split_scene_names_selects_requested_split(self):
         splits = {

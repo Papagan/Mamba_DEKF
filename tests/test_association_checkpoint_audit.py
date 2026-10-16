@@ -94,6 +94,16 @@ def _load_tracker_type(head_type=_StubHead):
 
 
 class AssociationCheckpointAuditTest(unittest.TestCase):
+    def test_production_rejects_bootstrap_weights_but_accepts_replay_weights(self):
+        tracker = self._tracker(checkpoint_path=str(self.checkpoint_path), head_type=ClassConditionedAssociationHeadBank)
+        tracker.cfg["MAMBA_ASSOCIATION_HEAD"].update(REQUIRE_CHECKPOINT=True, REQUIRE_TRAINING_SOURCE="tracker_replay")
+        state = self._real_head_state()
+        self._save_checkpoint(state, self._runtime_contract(association_sample_source="offline_cv_bootstrap"))
+        with self.assertRaisesRegex(RuntimeError, "tracker-replay"):
+            tracker._load_pairwise_association_head()
+        self._save_checkpoint(state, self._runtime_contract(association_sample_source="tracker_replay"))
+        self.assertIsNotNone(tracker._load_pairwise_association_head())
+
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)

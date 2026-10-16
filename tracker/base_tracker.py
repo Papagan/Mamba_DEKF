@@ -12,6 +12,8 @@
 #   7. Write fused state back into Trajectory bboxes
 # ------------------------------------------------------------------------
 
+from __future__ import annotations
+
 import os
 import copy
 import numpy as np
@@ -34,6 +36,8 @@ from tracker.compat_utils import (
     sync_bbox_fields_from_state,
     use_mctrack_exact_matched_update,
     use_mctrack_exact_unmatch_update,
+    uses_filter_state_output,
+    resolve_bev_cost_state,
 )
 from tracker.dirty_suppressor_audit import DirtySuppressorAuditAccumulator
 from tracker.association_head_audit import AssociationHeadAuditAccumulator
@@ -64,6 +68,7 @@ from utils.utils import norm_realative_radian
 
 # ---- Mamba config defaults (can be overridden via cfg) ----
 _DEFAULT_MAMBA_CFG = {
+    "BACKBONE": "mamba1",
     "D_MODEL": 64,
     "D_STATE": 16,
     "D_CONV": 4,
@@ -77,6 +82,8 @@ _DEFAULT_MAMBA_CFG = {
     "MIN_DIAG_SIZ": 0.05,   # size noise floor (prevents NLL→-∞)
     "MIN_KAPPA": 0.1,        # kappa floor (prevents R_ori→∞)
     "NUM_CLASSES": 10,        # number of object categories for size embeddings
+    "MAMBA2_HEADDIM": 64,
+    "MAMBA2_NGROUPS": 1,
     "INPUT_HISTORY_SOURCE": "residual",  # residual (legacy closure) / track
 }
 
@@ -191,7 +198,7 @@ def build_runtime_contract_warnings(
     current_closure_cfg = current_closure_cfg or {}
 
     warnings = []
-    if expected_compat != tracker_compat_mode:
+    if expected_compat != tracker_compat_mode and runtime_contract.get("state_output_mode") != "filter":
         warnings.append(
             "[Base3DTracker] WARNING: checkpoint runtime_contract expects "
             f"TRACKER_COMPAT_MODE={expected_compat}, but current config uses "
@@ -373,6 +380,7 @@ class Base3DTracker:
         self.tracker_compat_mode = normalize_tracker_compat_mode(
             cfg.get("TRACKER_COMPAT_MODE", "default")
         )
+        self.filter_state_output = uses_filter_state_output(cfg)
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -413,7 +421,13 @@ class Base3DTracker:
             device=self.device,
             base_noise_cfg=cfg.get("DEKF_BASE_NOISE", None),
             force_gru=force_gru,
+            backbone_variant=mamba_cfg.get("BACKBONE", "mamba1"),
+            mamba2_headdim=mamba_cfg.get("MAMBA2_HEADDIM", 64),
+            mamba2_ngroups=mamba_cfg.get("MAMBA2_NGROUPS", 1),
         ).to(self.device)
+        actual_backbone_type = str(
+            getattr(self.mamba_ekf.mamba, "backbone_type", "fallback_gru")
+        )
         self.embed_dim: int = mamba_cfg["EMBED_DIM"]
         self.mamba_input_dim: int = int(getattr(self.mamba_ekf.mamba, "INPUT_DIM", 12))
         self.default_window_cfg, self.runtime_window_cfg = parse_residual_history_window_cfg(
@@ -427,6 +441,8 @@ class Base3DTracker:
             filter_mode=self.filter_mode,
         )
         if self.original_motion.active():
+            if self._state_residual_cfg().get("ENABLED", False):
+                raise ValueError("MCTRACK_ORIGINAL_MOTION cannot overwrite enabled learned state residuals")
             print(
                 "[Base3DTracker] MCTRACK_ORIGINAL_MOTION enabled "
                 f"for FILTER_MODE={self.filter_mode}",
@@ -439,6 +455,24 @@ class Base3DTracker:
                 resolved_ckpt_path = os.path.abspath(ckpt_path)
                 ckpt = torch.load(ckpt_path, map_location=self.device)
                 runtime_contract = ckpt.get("runtime_contract", None)
+                if mamba_cfg.get("REQUIRE_STATE_CONTRACT", False):
+                    if mamba_cfg.get("REQUIRE_SHORT_HISTORY_TRAINING", False) and not (runtime_contract or {}).get("include_short_histories", False):
+                        raise RuntimeError("Motion checkpoint lacks short-history training coverage; retrain with INCLUDE_SHORT_HISTORIES=true")
+                    if mamba_cfg.get("REQUIRE_SHORT_HISTORY_TRAINING", False) and (runtime_contract or {}).get("fusion_feature_schema_version") != 2:
+                        raise RuntimeError("Motion checkpoint uses old startup/rebirth fusion states; rebuild caches and retrain")
+                    expected_state_mode = "filter" if self.filter_state_output else "legacy_mctrack"
+                    if (runtime_contract or {}).get("state_output_mode") != expected_state_mode:
+                        raise RuntimeError("Motion checkpoint state output contract changed; rebuild fusion caches and retrain")
+                    if (runtime_contract or {}).get("orientation_covariance_mode") != "prior_ratio_v2":
+                        raise RuntimeError("Motion checkpoint orientation covariance contract changed; retrain motion model")
+                    if (runtime_contract or {}).get("history_class_windows") != (self.cfg.get("RESIDUAL_HISTORY", {}).get("CLASS_WINDOW", {}) or {}):
+                        # Only compare history dimensions, not training-only rollout lengths.
+                        trained_windows = (runtime_contract or {}).get("history_class_windows", {}) or {}
+                        runtime_windows = self.cfg.get("RESIDUAL_HISTORY", {}).get("CLASS_WINDOW", {}) or {}
+                        for name in set(trained_windows) | set(runtime_windows):
+                            for key in ("MIN_HISTORY_LEN", "MAX_HISTORY_LEN"):
+                                if trained_windows.get(name, {}).get(key) != runtime_windows.get(name, {}).get(key):
+                                    raise RuntimeError(f"Motion checkpoint history window mismatch for {name}.{key}")
                 if require_checkpoint and (
                     not isinstance(runtime_contract, dict)
                     or not bool(runtime_contract.get("motion_rollout_enabled", False))
@@ -497,7 +531,7 @@ class Base3DTracker:
                     expected_backbone_type = str(runtime_contract.get("backbone_type", "")).strip().lower()
                     if require_checkpoint and not expected_backbone_type:
                         raise RuntimeError("Motion checkpoint is missing backbone_type")
-                    if expected_backbone_type and expected_backbone_type != ("fallback_gru" if force_gru else "mamba_ssm"):
+                    if expected_backbone_type and expected_backbone_type != actual_backbone_type:
                         if require_checkpoint:
                             raise RuntimeError(
                                 f"Motion checkpoint backbone mismatch: expected {expected_backbone_type}"
@@ -505,7 +539,7 @@ class Base3DTracker:
                         print(
                             "[Base3DTracker] WARNING: checkpoint runtime_contract backbone_type="
                             f"{expected_backbone_type} but runtime backbone="
-                            f"{'fallback_gru' if force_gru else 'mamba_ssm'}"
+                            f"{actual_backbone_type}"
                         )
                 # strip stale _tril_rows/_tril_cols keys from old checkpoints
                 # (now lazily created in CholeskyHead.forward())
@@ -1273,6 +1307,9 @@ class Base3DTracker:
             ckpt = torch.load(ckpt_path, map_location=self.device)
             if not isinstance(ckpt, Mapping):
                 raise TypeError("checkpoint payload must be a mapping")
+            required_source = head_cfg.get("REQUIRE_TRAINING_SOURCE")
+            if required_source and (ckpt.get("runtime_contract") or {}).get("association_sample_source") != required_source:
+                raise ValueError("Production association requires tracker-replay training; run tools/finalize_association_replay.py")
             if head_cfg.get("REQUIRE_BACKBONE_BINDING", False):
                 motion_path = ((self.cfg.get("MAMBA", {}) or {}).get("CHECKPOINT_PATH"))
                 if not motion_path:
@@ -1611,7 +1648,8 @@ class Base3DTracker:
 
         for i, traj in enumerate(trajs):
             bboxes = traj.bboxes
-            n_frames = min(len(bboxes), T)
+            window = self._class_window_cfg(bboxes[-1].category)
+            n_frames = min(len(bboxes), T, window["MAX_HISTORY_LEN"])
 
             # take the last T frames (most recent at index T-1)
             recent = bboxes[-n_frames:]
@@ -1853,6 +1891,17 @@ class Base3DTracker:
         px = pos_x.squeeze().cpu().numpy()   # [6]
         sx = siz_x.squeeze().cpu().numpy()   # [3]
         ox = ori_x.squeeze().cpu().numpy()   # [2]
+        if self.filter_state_output:
+            # Preserve the historical posterior until a new frame is appended.
+            # Matching uses the prediction; the next history uses the actual
+            # posterior/coast, independently of the MCTrack lifecycle switch.
+            bbox.filter_state_output = True
+            sync_bbox_fields_from_state(
+                bbox, px[:3].tolist() + sx.tolist() + [float(ox[0])],
+                update_fusion=False, update_predict=True,
+            )
+            bbox.global_velocity_predict = [float(px[3]), float(px[4])]
+            return
         dt = getattr(self, "_cur_delta_t", 1.0 / self.frame_rate)
 
         def _safe_vec2(vec):
@@ -1973,6 +2022,16 @@ class Base3DTracker:
         px = pos_x.squeeze().cpu().numpy()   # [6]
         sx = siz_x.squeeze().cpu().numpy()   # [3]
         ox = ori_x.squeeze().cpu().numpy()   # [2]
+
+        if self.filter_state_output:
+            bbox.filter_state_output = True
+            sync_bbox_fields_from_state(
+                bbox, px[:3].tolist() + sx.tolist() + [float(ox[0])],
+                update_fusion=True, update_predict=False,
+            )
+            bbox.global_velocity_fusion = [float(px[3]), float(px[4])]
+            bbox.global_velocity = list(bbox.global_velocity_fusion)
+            return
 
         bbox.global_velocity_fusion = [px[3], px[4]]
         bbox.global_yaw_fusion = float(ox[0])
@@ -2922,7 +2981,7 @@ class Base3DTracker:
         if trajs_cnt > 0:
             cost_state_cfg = self.cfg["MATCHING"]["BEV"]["COST_STATE"]
             cal_flags = [
-                cost_state_cfg.get(t.category_num, "Predict") for t in trajs
+                resolve_bev_cost_state(self.cfg, t.category_num, cost_state_cfg.get(t.category_num, "Predict")) for t in trajs
             ]
         else:
             cal_flags = []

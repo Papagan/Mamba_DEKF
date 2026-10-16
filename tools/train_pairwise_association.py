@@ -97,15 +97,18 @@ def _build_encoder(args, cfg: Dict[str, Any]) -> nn.Module:
     if bool(args.dry_run):
         return MeanHistoryEncoder(embed_dim=int(args.embed_dim))
 
-    from kalmanfilter.mamba_adaptive_kf import Mamba, TemporalMamba
-
-    if Mamba is None:
-        raise RuntimeError(
-            "mamba_ssm is not available. Association training must use the real "
-            "Mamba backbone; use --dry-run only for smoke tests."
-        )
+    from kalmanfilter.mamba_adaptive_kf import Mamba1, Mamba2, TemporalMamba
 
     model_cfg = cfg.get("MODEL", {}) or {}
+    requested_backbone = str(model_cfg.get("BACKBONE", "mamba1")).strip().lower()
+    backbone_available = Mamba2 is not None if requested_backbone == "mamba2" else Mamba1 is not None
+    if not backbone_available:
+        raise RuntimeError(
+            f"The requested {requested_backbone} backbone is not available. "
+            "Association training must use the same real backbone as motion training; "
+            "use --dry-run only for smoke tests."
+        )
+
     return TemporalMamba(
         d_model=int(model_cfg.get("D_MODEL", 96)),
         d_state=int(model_cfg.get("D_STATE", 24)),
@@ -118,6 +121,9 @@ def _build_encoder(args, cfg: Dict[str, Any]) -> nn.Module:
         num_classes=int(model_cfg.get("NUM_CLASSES", 7)),
         min_diag_siz=float(model_cfg.get("MIN_DIAG_SIZ", 0.15)),
         min_kappa=float(model_cfg.get("MIN_KAPPA", 0.5)),
+        backbone_variant=requested_backbone,
+        mamba2_headdim=int(model_cfg.get("MAMBA2_HEADDIM", 64)),
+        mamba2_ngroups=int(model_cfg.get("MAMBA2_NGROUPS", 1)),
         base_noise_cfg=cfg.get("BASE_NOISE", None),
         force_gru=False,
     )
@@ -130,6 +136,18 @@ def _load_backbone_checkpoint(model: PairwiseAssociationModel, checkpoint_path: 
     if not path.exists():
         raise FileNotFoundError(f"Backbone checkpoint not found: {checkpoint_path}")
     ckpt = torch.load(path, map_location="cpu")
+    requested_backbone = str(
+        getattr(model.temporal_encoder, "backbone_type", "unknown")
+    ).strip().lower()
+    checkpoint_backbone = str(
+        (ckpt.get("runtime_contract", {}) or {}).get("backbone_type", "")
+    ).strip().lower()
+    if checkpoint_backbone and checkpoint_backbone != requested_backbone:
+        raise RuntimeError(
+            "Association backbone checkpoint mismatch: checkpoint uses "
+            f"{checkpoint_backbone!r}, requested encoder uses {requested_backbone!r}. "
+            "Mamba-1 and Mamba-2 checkpoints are not interchangeable."
+        )
     state = ckpt.get("model_state_dict", ckpt)
     encoder_state = model.temporal_encoder.state_dict()
     loadable = {}
@@ -138,6 +156,15 @@ def _load_backbone_checkpoint(model: PairwiseAssociationModel, checkpoint_path: 
         if stripped in encoder_state and tuple(encoder_state[stripped].shape) == tuple(value.shape):
             loadable[stripped] = value
     result = model.temporal_encoder.load_state_dict(loadable, strict=False)
+    missing_backbone = [
+        key for key in result.missing_keys
+        if str(key).startswith("mamba_layers.") or str(key).startswith("fallback_gru.")
+    ]
+    if missing_backbone:
+        raise RuntimeError(
+            "Backbone checkpoint did not provide all requested encoder weights: "
+            + ", ".join(missing_backbone[:10])
+        )
     return {
         "path": str(path),
         "loaded_keys": len(loadable),
@@ -397,6 +424,10 @@ def _run_epoch(
 
 
 def _pair_vectors_from_batch(model, batch, device) -> torch.Tensor:
+    if "pair_vector" in batch:
+        # Real inference embeddings already describe dirty/coasted histories.
+        # Re-encoding placeholder histories here would erase that information.
+        return batch["pair_vector"].to(device)
     anchor_history = batch["anchor_history"].to(device)
     candidate_history = batch["candidate_history"].to(device)
     pair_features = batch["pair_features"].to(device)
@@ -572,6 +603,8 @@ def _save_association_checkpoint(
         "settings": vars(args),
         "metrics": metrics,
         "runtime_contract": {
+            "state_output_mode": (cfg.get("DATA", {}) or {}).get("STATE_OUTPUT_MODE", "auto"),
+            "association_sample_source": getattr(args, "association_sample_source", "offline_cv_bootstrap"),
             "filter_mode": str(cfg.get("FILTER_MODE", "mamba_multihead_closure")),
             "history_source": str((cfg.get("DATA", {}) or {}).get("HISTORY_SOURCE", "det")).strip().lower(),
             "init_state_source": str((cfg.get("DATA", {}) or {}).get("INIT_STATE_SOURCE", "det")).strip().lower(),
@@ -582,6 +615,9 @@ def _save_association_checkpoint(
                 (cfg.get("DATA", {}) or {}).get("EXPECTED_BEV_COST_MODE", "geometric")
             ).strip().lower(),
             "backbone_checkpoint": args.backbone_checkpoint,
+            "backbone_type": str(
+                getattr(model.temporal_encoder, "backbone_type", "unknown")
+            ),
             "backbone_sha256": checkpoint_sha256(args.backbone_checkpoint),
             "freeze_backbone": bool(args.freeze_backbone),
             "precompute_embeddings": bool(use_precomputed),
@@ -1062,10 +1098,26 @@ def train_pairwise_association(args, cfg: Dict[str, Any] | None = None, logger_o
         args.train_pkl, history_len=int(args.history_len),
         required_feature_schema_version=required_schema,
     )
-    val_ds = PairwiseAssociationDataset(
+    val_ds = train_ds if Path(args.train_pkl).resolve() == Path(args.val_pkl).resolve() else PairwiseAssociationDataset(
         args.val_pkl, history_len=int(args.history_len),
         required_feature_schema_version=required_schema,
     )
+    if (train_ds.replay_manifest is None) != (val_ds.replay_manifest is None):
+        raise ValueError("Train/validation association sources must both be replay or both be bootstrap")
+    args.association_sample_source = "tracker_replay" if train_ds.replay_manifest is not None else "offline_cv_bootstrap"
+    if train_ds.replay_manifest is None:
+        log.warning("Offline CV geometry is bootstrap supervision only; finalize with tracker replay before production evaluation")
+    for dataset in (train_ds, val_ds):
+        if dataset.replay_manifest is None:
+            continue
+        if not (args.freeze_backbone and args.precompute_embeddings):
+            raise ValueError("Tracker replay vectors require frozen-backbone precomputed training")
+        expected_hash = checkpoint_sha256(args.backbone_checkpoint)
+        if not expected_hash or dataset.replay_manifest["mamba_checkpoint_sha256"] != expected_hash:
+            raise ValueError("Tracker replay cache was exported using a different motion backbone checkpoint")
+        expected_embed_dim = int((cfg.get("MODEL", {}) or {}).get("EMBED_DIM", args.embed_dim))
+        if int(dataset.replay_manifest["embedding_dim"]) != expected_embed_dim:
+            raise ValueError("Tracker replay embedding dimension does not match the association encoder")
     log.info(
         "Association Stage B data: train=%d val=%d epochs=%d batch_size=%d num_workers=%d history_len=%d",
         len(train_ds),
@@ -1140,7 +1192,7 @@ def train_pairwise_association(args, cfg: Dict[str, Any] | None = None, logger_o
         )
     if use_precomputed:
         train_samples = _precompute_pair_vectors(model, train_loader, device, logger_obj=log, label="train")
-        val_samples = _precompute_pair_vectors(model, val_loader, device, logger_obj=log, label="val")
+        val_samples = train_samples if val_ds is train_ds else _precompute_pair_vectors(model, val_loader, device, logger_obj=log, label="val")
         train_loader = _make_precomputed_loader(
             train_samples,
             batch_size=int(args.batch_size),

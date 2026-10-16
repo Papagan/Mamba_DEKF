@@ -119,17 +119,17 @@ class InferencePairCacheGroupTest(unittest.TestCase):
             [None, None],
         )
 
-    def test_unknown_candidate_prevents_unique_positive_inference(self):
+    def test_unknown_candidate_masks_only_its_own_supervision(self):
         payload = self._payload()
         payload["det_gt_tokens"] = [None, "gt-b"]
 
         group = self._build(payload)[0]
 
-        self.assertEqual(group["gt_target_status"], "unknown")
+        self.assertEqual(group["gt_target_status"], "partial")
         self.assertIsNone(group["gt_target_det_index"])
         self.assertEqual(
             [candidate["gt_label"] for candidate in group["candidates"]],
-            [None, None],
+            [None, 1],
         )
 
     def test_ranks_finite_candidates_and_retains_non_finite_costs(self):
@@ -2008,6 +2008,7 @@ class InferencePairCacheTask3Test(unittest.TestCase):
                     group["gt_target_status"] == "unknown"
                     for group in retained_groups
                 ),
+                "partial_groups": sum(group["gt_target_status"] == "partial" for group in retained_groups),
                 "candidate_count": len(candidates),
                 "finite_candidate_count": sum(
                     candidate["finite"] for candidate in candidates

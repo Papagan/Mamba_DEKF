@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import math
+import hashlib
 from collections import defaultdict
 from typing import Any, Dict, Iterable, List, Tuple
 
 import numpy as np
+
+from tracker.compat_utils import resolve_bev_cost_state
 
 
 TRACKING_CLASS_TO_ID = {
@@ -122,6 +125,141 @@ def _center_distance_xy(a: Dict[str, Any], b: Dict[str, Any]) -> float:
     return float(math.hypot(xyz_a[0] - xyz_b[0], xyz_a[1] - xyz_b[1]))
 
 
+def _lookup_class_value(mapping: Dict[Any, Any], class_id: int, default: Any) -> Any:
+    if class_id in mapping:
+        return mapping[class_id]
+    if str(class_id) in mapping:
+        return mapping[str(class_id)]
+    return default
+
+
+def _pose_xyz_lwh_yaw(frame: Dict[str, Any]) -> np.ndarray:
+    xyz = _det_xyz(frame)
+    if xyz is None:
+        raise ValueError("Cannot calculate geometric cost for a frame without xyz")
+    return np.asarray(xyz + _det_lwh(frame) + [_det_yaw(frame)], dtype=np.float64)
+
+
+def _bev_corners(pose: np.ndarray) -> np.ndarray:
+    x, y, _, length, width, _, yaw = pose.tolist()
+    local = np.asarray([
+        [length / 2.0, width / 2.0],
+        [length / 2.0, -width / 2.0],
+        [-length / 2.0, -width / 2.0],
+        [-length / 2.0, width / 2.0],
+    ], dtype=np.float64)
+    cos_yaw = math.cos(yaw)
+    sin_yaw = math.sin(yaw)
+    rotation = np.asarray([[cos_yaw, -sin_yaw], [sin_yaw, cos_yaw]], dtype=np.float64)
+    return local @ rotation.T + np.asarray([x, y], dtype=np.float64)
+
+
+def _runtime_geometric_cost(
+    anchor_frame: Dict[str, Any],
+    candidate_frame: Dict[str, Any],
+    category: str,
+    runtime_cfg: Dict[str, Any],
+) -> float:
+    """Reproduce runtime ``1 - Ro_GDIoU`` for offline candidate mining."""
+    try:
+        import cv2
+    except ImportError as exc:  # pragma: no cover - deployment dependency
+        raise RuntimeError(
+            "runtime_geometric inference-margin mining requires OpenCV (cv2)"
+        ) from exc
+
+    pose1 = _pose_xyz_lwh_yaw(anchor_frame)
+    pose2 = _pose_xyz_lwh_yaw(candidate_frame)
+    if np.any(~np.isfinite(pose1)) or np.any(~np.isfinite(pose2)):
+        return float("inf")
+    if np.any(pose1[3:6] <= 0.0) or np.any(pose2[3:6] <= 0.0):
+        return float("inf")
+
+    base_xy = pose1[:2].copy()
+    rect1 = (
+        tuple((pose1[:2] - base_xy).tolist()),
+        (float(pose1[3]), float(pose1[4])),
+        float(pose1[6] * 180.0 / math.pi),
+    )
+    rect2 = (
+        tuple((pose2[:2] - base_xy).tolist()),
+        (float(pose2[3]), float(pose2[4])),
+        float(pose2[6] * 180.0 / math.pi),
+    )
+    intersection = cv2.rotatedRectangleIntersection(rect1, rect2)[1]
+    if intersection is None:
+        intersection_area = 0.0
+    else:
+        hull = cv2.convexHull(intersection, returnPoints=True)
+        intersection_area = float(cv2.contourArea(hull))
+
+    area1 = float(pose1[3] * pose1[4])
+    area2 = float(pose2[3] * pose2[4])
+    union_area = area1 + area2 - intersection_area
+    iou = intersection_area / max(union_area, 1e-8)
+
+    union_points = np.concatenate([_bev_corners(pose1), _bev_corners(pose2)], axis=0)
+    union_points = (union_points - pose1[:2]).astype(np.float32)
+    enclosing_rect = cv2.minAreaRect(union_points)
+    universe_area = float(enclosing_rect[1][0] * enclosing_rect[1][1])
+    universe_distance = float(np.linalg.norm(np.asarray(enclosing_rect[1], dtype=np.float64)) ** 2)
+    extra_area = universe_area - union_area
+    center_distance_sq = float(np.sum((pose1[:2] - pose2[:2]) ** 2))
+
+    class_id = TRACKING_CLASS_TO_ID[category]
+    weights = runtime_cfg.get("THRESHOLD", {}).get("BEV", {}).get("WEIGHT_RO_GDIOU", {})
+    class_weights = _lookup_class_value(weights, class_id, {"w1": 1.0, "w2": 1.0})
+    ro_gdiou = (
+        iou
+        - float(class_weights.get("w1", 1.0)) * extra_area / max(universe_area, 1e-8)
+        - float(class_weights.get("w2", 1.0)) * center_distance_sq / max(universe_distance, 1e-8)
+    )
+    return float(1.0 - ro_gdiou)
+
+
+def _backpredict_candidate_frame(candidate_frame: Dict[str, Any]) -> Dict[str, Any]:
+    backpredicted = dict(candidate_frame)
+    xyz = _det_xyz(candidate_frame)
+    if xyz is None:
+        return backpredicted
+    velocity = _det_velocity_xy(candidate_frame)
+    # tracker.BBox.backward_prediction uses the fixed nuScenes 2 Hz interval.
+    backpredicted["det_global_xyz"] = [
+        float(xyz[0] - velocity[0] * 0.5),
+        float(xyz[1] - velocity[1] * 0.5),
+        float(xyz[2]),
+    ]
+    return backpredicted
+
+
+def _runtime_matching_cost(
+    current_frame: Dict[str, Any],
+    future_frame: Dict[str, Any],
+    candidate_frame: Dict[str, Any],
+    category: str,
+    history_source: str,
+    runtime_cfg: Dict[str, Any],
+) -> float:
+    class_id = TRACKING_CLASS_TO_ID[category]
+    cost_states = runtime_cfg.get("MATCHING", {}).get("BEV", {}).get("COST_STATE", {})
+    cost_state = resolve_bev_cost_state(runtime_cfg, class_id, _lookup_class_value(cost_states, class_id, "Predict")).lower()
+    predicted_anchor = _predict_anchor_frame(current_frame, future_frame, history_source)
+    pred_cost = _runtime_geometric_cost(predicted_anchor, candidate_frame, category, runtime_cfg)
+    if cost_state == "predict":
+        return pred_cost
+
+    back_anchor = _anchor_frame(current_frame, history_source)
+    back_candidate = _backpredict_candidate_frame(candidate_frame)
+    back_cost = _runtime_geometric_cost(back_anchor, back_candidate, category, runtime_cfg)
+    if cost_state == "backpredict":
+        return back_cost
+    if cost_state == "fusion":
+        ratios = runtime_cfg.get("THRESHOLD", {}).get("COST_STATE_PREDICT_RATION", {})
+        ratio = float(_lookup_class_value(ratios, class_id, 0.5))
+        return float(ratio * pred_cost + (1.0 - ratio) * back_cost)
+    raise ValueError(f"Unsupported runtime BEV COST_STATE={cost_state!r} for class {category}")
+
+
 def _wrap_to_pi(value: float) -> float:
     return float(value - 2.0 * math.pi * round(value / (2.0 * math.pi)))
 
@@ -143,6 +281,8 @@ def _selected_history_frames(frames: List[Dict[str, Any]], end_index: int,
         for index in range(len(selected) - 1, -1, -1):
             if not selected[index].get("fusion_valid", False):
                 return selected[index + 1:]
+            if selected[index].get("fusion_is_birth", False):
+                return selected[index:]
     return selected
 
 
@@ -181,6 +321,8 @@ def _history_feature(
             feature[0] -= ref_xy[0]
             feature[1] -= ref_xy[1]
         features.append(feature)
+    if features:
+        features[0][10] = 0.0 # no preceding yaw exists inside this window
     return pad + features
 
 
@@ -243,6 +385,7 @@ def _index_matched_frames(tracklets: Iterable[Dict[str, Any]]) -> Dict[Tuple[str
                     "instance_token": detection["candidate_id"],
                     "category": category,
                     "unmatched_gt": True,
+                    "possible_gt_tokens": list(detection.get("possible_gt_tokens", [])),
                 })
     return index
 
@@ -262,6 +405,10 @@ def _make_pair(
     negative_mining_mode: str = "legacy",
     candidate_rank: int | None = None,
     best_candidate_distance: float | None = None,
+    candidate_mining_cost: float | None = None,
+    best_candidate_cost: float | None = None,
+    inference_margin_metric: str = "center_distance",
+    class_window_cfg: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     candidate_frame = candidate["frame"]
     category = _tracking_category(anchor_tracklet.get("category", ""))
@@ -275,8 +422,13 @@ def _make_pair(
     candidate_lwh = _det_lwh(candidate_frame)
     center_distance = _center_distance_xy(geometry_anchor, candidate_frame)
     frames = anchor_tracklet.get("frames", [])
+    window_max = max(1, min(history_len, int(
+        (class_window_cfg or {}).get(category, {}).get("MAX_HISTORY_LEN", history_len)
+    )))
+    history_frames = frames[max(0, current_index - window_max + 1):current_index + 1]
+    history_end = len(history_frames) - 1
     anchor_history_mask, anchor_history_match_mask = _anchor_history_masks(
-        frames, current_index, history_len, history_source
+        history_frames, history_end, history_len, history_source
     )
     current_xyz = (
         (current_frame.get("fusion_global_xyz") or
@@ -288,7 +440,7 @@ def _make_pair(
     candidate_xyz = _det_xyz(candidate_frame)
     candidate_xyz = _as_float_list(candidate_xyz, 3)
     return {
-        "feature_schema_version": 2,
+        "feature_schema_version": 3,
         "category": category,
         "class_id": TRACKING_CLASS_TO_ID.get(category, -1),
         "state_bucket": _state_bucket_from_history(anchor_tracklet.get("frames", []), current_index),
@@ -309,9 +461,28 @@ def _make_pair(
             if best_candidate_distance is not None and math.isfinite(float(best_candidate_distance))
             else None
         ),
+        "inference_margin_metric": str(inference_margin_metric).strip().lower(),
+        "candidate_mining_cost": (
+            float(candidate_mining_cost)
+            if candidate_mining_cost is not None and math.isfinite(float(candidate_mining_cost))
+            else None
+        ),
+        "best_candidate_cost": (
+            float(best_candidate_cost)
+            if best_candidate_cost is not None and math.isfinite(float(best_candidate_cost))
+            else None
+        ),
+        "cost_margin_gap": (
+            float(candidate_mining_cost - best_candidate_cost)
+            if candidate_mining_cost is not None
+            and best_candidate_cost is not None
+            and math.isfinite(float(candidate_mining_cost))
+            and math.isfinite(float(best_candidate_cost))
+            else None
+        ),
         "anchor_history_12": _history_feature(
-            frames,
-            current_index,
+            history_frames,
+            history_end,
             history_len,
             history_source=history_source,
         ),
@@ -350,9 +521,13 @@ def build_pairwise_association_samples(
     max_easy_negatives: int = 2,
     negative_mining_mode: str = "legacy",
     cost_margin_eps: float = 0.05,
+    inference_margin_metric: str = "center_distance",
+    runtime_cost_config: Dict[str, Any] | None = None,
     max_pairs_per_class: Dict[str, int] | None = None,
     require_current_match: bool = True,
     require_future_match: bool = True,
+    sampling_seed: int = 0,
+    class_window_cfg: Dict[str, Any] | None = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Build same-frame same-class pairwise association samples.
 
@@ -375,6 +550,19 @@ def build_pairwise_association_samples(
             f"Unsupported negative_mining_mode={negative_mining_mode!r}; "
             "expected 'legacy' or 'inference_margin'"
         )
+    inference_margin_metric = str(inference_margin_metric).strip().lower()
+    if inference_margin_metric not in {"center_distance", "runtime_geometric"}:
+        raise ValueError(
+            f"Unsupported inference_margin_metric={inference_margin_metric!r}; "
+            "expected 'center_distance' or 'runtime_geometric'"
+        )
+    ranking_metric = (
+        inference_margin_metric if negative_mining_mode == "inference_margin" else "center_distance"
+    )
+    if ranking_metric == "runtime_geometric" and not runtime_cost_config:
+        raise ValueError(
+            "runtime_cost_config is required when inference_margin_metric='runtime_geometric'"
+        )
     frame_index = _index_matched_frames(tracklets)
     samples: List[Dict[str, Any]] = []
     hard_distance_by_class = {
@@ -387,77 +575,139 @@ def build_pairwise_association_samples(
         if int(value) > 0
     }
     pair_counts_by_class: Dict[str, int] = defaultdict(int)
+    pending_group = []
 
     def _append_sample(sample: Dict[str, Any]) -> bool:
-        category_name = str(sample.get("category", ""))
-        cap = pair_caps.get(category_name)
-        if cap is not None and pair_counts_by_class[category_name] >= cap:
-            return False
-        samples.append(sample)
-        pair_counts_by_class[category_name] += 1
+        pending_group.append(sample)
         return True
 
-    for trk in tracklets:
+    def _retain_group():
+        if not pending_group:
+            return
+        group = list(pending_group)
+        first = group[0]
+        category_name = str(first.get("category", ""))
+        cap = pair_caps.get(category_name)
+        if cap is None:
+            samples.extend(group)
+            return
+        if pair_counts_by_class[category_name] + len(group) <= cap:
+            samples.extend(group)
+            pair_counts_by_class[category_name] += len(group)
+
+    # Randomize ANCHORS before applying caps, not individual pairs afterwards.
+    # Only store small (tracklet,index) references for ordering, not all vectors.
+    anchor_windows = [
+        (trk, index) for trk in tracklets if not trk.get("association_only", False)
+        for index in range(max(0, len(trk.get("frames", [])) - future_step))
+    ]
+    if pair_caps:
+        def priority(window):
+            trk, index = window
+            frame = trk["frames"][index]
+            identity = repr((sampling_seed, trk.get("scene_id", frame.get("scene_id")),
+                             trk.get("instance_token"), frame.get("sample_token")))
+            return hashlib.sha256(identity.encode("utf-8")).digest()
+        anchor_windows.sort(key=priority)
+
+    for trk, selected_index in anchor_windows:
         category = _tracking_category(trk.get("category", ""))
         frames = trk.get("frames", [])
         if len(frames) <= future_step:
             continue
-        for current_index in range(0, len(frames) - future_step):
-            current_frame = frames[current_index]
-            future_frame = frames[current_index + future_step]
-            if history_source == "fusion" and not all(
-                bool(frame.get("fusion_valid", False))
-                for frame in frames[current_index:current_index + future_step]
-            ):
-                # A dead pseudo-track cannot be associated to a later
-                # detection even when both ends share a GT instance token.
-                continue
-            if require_current_match and not bool(current_frame.get("is_matched", False)):
-                continue
-            if require_future_match and not bool(future_frame.get("is_matched", False)):
-                continue
+        current_index = selected_index
+        pending_group.clear()
+        current_frame = frames[current_index]
+        future_frame = frames[current_index + future_step]
+        if history_source == "fusion" and not all(
+            bool(frame.get("fusion_valid", False))
+            for frame in frames[current_index:current_index + future_step]
+        ):
+            # A dead pseudo-track cannot be associated to a later
+            # detection even when both ends share a GT instance token.
+            continue
+        if history_source != "fusion" and not bool(current_frame.get("is_matched", False)):
+            # Raw misses have no state to encode; only live fusion states
+            # can represent coasted track anchors.
+            continue
+        lifecycle_id = current_frame.get("fusion_lifecycle_id")
+        if history_source == "fusion" and lifecycle_id is not None and any(
+            fr.get("fusion_lifecycle_id") != lifecycle_id
+            for fr in frames[current_index:current_index + future_step + 1]
+        ):
+            continue
+        if require_current_match and not bool(current_frame.get("is_matched", False)):
+            continue
+        if require_future_match and not bool(future_frame.get("is_matched", False)):
+            continue
 
-            key = (
-                str(future_frame.get("scene_id", "")),
-                str(future_frame.get("sample_token", "")),
-                category,
-            )
-            candidates = frame_index.get(key, [])
-            positive_candidates = [
-                candidate for candidate in candidates
-                if candidate.get("instance_token") == trk.get("instance_token")
-            ]
-            if not positive_candidates:
-                continue
+        key = (
+            str(future_frame.get("scene_id", "")),
+            str(future_frame.get("sample_token", "")),
+            category,
+        )
+        candidates = frame_index.get(key, [])
+        positive_candidates = [
+            candidate for candidate in candidates
+            if candidate.get("instance_token") == trk.get("instance_token")
+        ]
+        if not positive_candidates and require_future_match:
+            continue
 
-            if pair_geometry_source == "predicted_track_candidate":
-                geometry_anchor = _predict_anchor_frame(current_frame, future_frame, history_source)
-            elif pair_geometry_source == "track_candidate":
-                geometry_anchor = _anchor_frame(current_frame, history_source)
-            else:
-                geometry_anchor = future_frame
-            ranked_candidates = sorted(
-                [
-                    (rank_candidate, _center_distance_xy(geometry_anchor, rank_candidate["frame"]))
-                    for rank_candidate in candidates
-                ],
-                key=lambda item: item[1],
+        if pair_geometry_source == "predicted_track_candidate":
+            geometry_anchor = _predict_anchor_frame(current_frame, future_frame, history_source)
+        elif pair_geometry_source == "track_candidate":
+            geometry_anchor = _anchor_frame(current_frame, history_source)
+        else:
+            geometry_anchor = future_frame
+        ranked_candidates = sorted(
+            [
+                (
+                    rank_candidate,
+                    (
+                        _runtime_matching_cost(
+                            current_frame,
+                            future_frame,
+                            rank_candidate["frame"],
+                            category,
+                            history_source,
+                            runtime_cost_config,
+                        )
+                        if ranking_metric == "runtime_geometric"
+                        else _center_distance_xy(geometry_anchor, rank_candidate["frame"])
+                    ),
+                )
+                for rank_candidate in candidates
+            ],
+            key=lambda item: item[1],
+        )
+        candidate_rank = {
+            candidate.get("instance_token"): rank
+            for rank, (candidate, _) in enumerate(ranked_candidates, start=1)
+        }
+        candidate_cost = {
+            candidate.get("instance_token"): cost
+            for candidate, cost in ranked_candidates
+        }
+        candidate_center_distance = {
+            candidate.get("instance_token"): _center_distance_xy(
+                geometry_anchor, candidate["frame"]
             )
-            candidate_rank = {
-                candidate.get("instance_token"): rank
-                for rank, (candidate, _) in enumerate(ranked_candidates, start=1)
-            }
-            candidate_distance = {
-                candidate.get("instance_token"): distance
-                for candidate, distance in ranked_candidates
-            }
-            best_candidate_distance = (
-                float(ranked_candidates[0][1])
-                if ranked_candidates and math.isfinite(float(ranked_candidates[0][1]))
-                else None
-            )
+            for candidate, _ in ranked_candidates
+        }
+        best_candidate_cost = (
+            float(ranked_candidates[0][1])
+            if ranked_candidates and math.isfinite(float(ranked_candidates[0][1]))
+            else None
+        )
+        best_candidate_center_distance = (
+            min(candidate_center_distance.values())
+            if candidate_center_distance
+            else None
+        )
 
-            appended_positive = _append_sample(_make_pair(
+        if positive_candidates:
+            _append_sample(_make_pair(
                 anchor_tracklet=trk,
                 current_frame=current_frame,
                 future_frame=future_frame,
@@ -469,88 +719,102 @@ def build_pairwise_association_samples(
                 label=1,
                 negative_type="positive",
                 negative_mining_mode=negative_mining_mode,
+                inference_margin_metric=ranking_metric,
+                class_window_cfg=class_window_cfg,
                 candidate_rank=candidate_rank.get(positive_candidates[0].get("instance_token")),
-                best_candidate_distance=best_candidate_distance,
+                best_candidate_distance=best_candidate_center_distance,
+                candidate_mining_cost=candidate_cost.get(positive_candidates[0].get("instance_token")),
+                best_candidate_cost=best_candidate_cost,
             ))
-            if not appended_positive:
-                continue
 
-            negatives = [
-                candidate for candidate in candidates
-                if candidate.get("instance_token") != trk.get("instance_token")
-            ]
-            if negative_mining_mode == "inference_margin":
-                negatives.sort(key=lambda candidate: candidate_distance.get(candidate.get("instance_token"), float("inf")))
-                if best_candidate_distance is None:
-                    hard = []
-                else:
-                    hard = [
-                        candidate for candidate in negatives
-                        if candidate_distance.get(candidate.get("instance_token"), float("inf"))
-                        <= best_candidate_distance + float(cost_margin_eps)
-                    ][: max(0, int(max_hard_negatives))]
-                hard_ids = {candidate.get("instance_token") for candidate in hard}
-                inference_topk_ids = set()
-                if len(hard) < int(min_hard_negatives):
-                    fallback = [
-                        candidate for candidate in negatives
-                        if candidate.get("instance_token") not in hard_ids
-                    ][: max(0, min(int(min_hard_negatives) - len(hard), int(max_hard_negatives) - len(hard)))]
-                    inference_topk_ids = {candidate.get("instance_token") for candidate in fallback}
-                    hard.extend(fallback)
-                easy = []
+        negatives = [
+            candidate for candidate in candidates
+            if candidate.get("instance_token") != trk.get("instance_token")
+            and trk.get("instance_token") not in candidate.get("possible_gt_tokens", [])
+        ]
+        if negative_mining_mode == "inference_margin":
+            negatives.sort(key=lambda candidate: candidate_cost.get(candidate.get("instance_token"), float("inf")))
+            if best_candidate_cost is None:
+                hard = []
             else:
-                negatives.sort(key=lambda candidate: _center_distance_xy(future_frame, candidate["frame"]))
-                hard_distance = float(hard_distance_by_class.get(category, hard_negative_distance))
-
                 hard = [
                     candidate for candidate in negatives
-                    if _center_distance_xy(future_frame, candidate["frame"]) <= hard_distance
+                    if candidate_cost.get(candidate.get("instance_token"), float("inf"))
+                    <= best_candidate_cost + float(cost_margin_eps)
                 ][: max(0, int(max_hard_negatives))]
-                hard_ids = {candidate.get("instance_token") for candidate in hard}
-                inference_topk_ids = set()
-                easy = [
+            hard_ids = {candidate.get("instance_token") for candidate in hard}
+            inference_topk_ids = set()
+            if len(hard) < int(min_hard_negatives):
+                fallback = [
                     candidate for candidate in negatives
                     if candidate.get("instance_token") not in hard_ids
-                ][: max(0, int(max_easy_negatives))]
+                ][: max(0, min(int(min_hard_negatives) - len(hard), int(max_hard_negatives) - len(hard)))]
+                inference_topk_ids = {candidate.get("instance_token") for candidate in fallback}
+                hard.extend(fallback)
+            easy = []
+        else:
+            negative_anchor = future_frame if future_frame.get("is_matched", False) else geometry_anchor
+            negatives.sort(key=lambda candidate: _center_distance_xy(negative_anchor, candidate["frame"]))
+            hard_distance = float(hard_distance_by_class.get(category, hard_negative_distance))
 
-            for candidate in hard:
-                _append_sample(_make_pair(
-                    anchor_tracklet=trk,
-                    current_frame=current_frame,
-                    future_frame=future_frame,
-                    candidate=candidate,
-                    history_len=history_len,
-                    current_index=current_index,
-                    history_source=history_source,
-                    pair_geometry_source=pair_geometry_source,
-                    label=0,
-                    negative_type=(
-                        "inference_topk"
-                        if negative_mining_mode == "inference_margin"
-                        and candidate.get("instance_token") in inference_topk_ids
-                        else ("inference_margin" if negative_mining_mode == "inference_margin" else "hard")
-                    ),
-                    negative_mining_mode=negative_mining_mode,
-                    candidate_rank=candidate_rank.get(candidate.get("instance_token")),
-                    best_candidate_distance=best_candidate_distance,
-                ))
-            for candidate in easy:
-                _append_sample(_make_pair(
-                    anchor_tracklet=trk,
-                    current_frame=current_frame,
-                    future_frame=future_frame,
-                    candidate=candidate,
-                    history_len=history_len,
-                    current_index=current_index,
-                    history_source=history_source,
-                    pair_geometry_source=pair_geometry_source,
-                    label=0,
-                    negative_type="easy",
-                    negative_mining_mode=negative_mining_mode,
-                    candidate_rank=candidate_rank.get(candidate.get("instance_token")),
-                    best_candidate_distance=best_candidate_distance,
-                ))
+            hard = [
+                candidate for candidate in negatives
+                if _center_distance_xy(negative_anchor, candidate["frame"]) <= hard_distance
+            ][: max(0, int(max_hard_negatives))]
+            hard_ids = {candidate.get("instance_token") for candidate in hard}
+            inference_topk_ids = set()
+            easy = [
+                candidate for candidate in negatives
+                if candidate.get("instance_token") not in hard_ids
+            ][: max(0, int(max_easy_negatives))]
+
+        for candidate in hard:
+            _append_sample(_make_pair(
+                anchor_tracklet=trk,
+                current_frame=current_frame,
+                future_frame=future_frame,
+                candidate=candidate,
+                history_len=history_len,
+                current_index=current_index,
+                history_source=history_source,
+                pair_geometry_source=pair_geometry_source,
+                label=0,
+                negative_type=(
+                    "inference_topk"
+                    if negative_mining_mode == "inference_margin"
+                    and candidate.get("instance_token") in inference_topk_ids
+                    else ("inference_margin" if negative_mining_mode == "inference_margin" else "hard")
+                ),
+                negative_mining_mode=negative_mining_mode,
+                inference_margin_metric=ranking_metric,
+                class_window_cfg=class_window_cfg,
+                candidate_rank=candidate_rank.get(candidate.get("instance_token")),
+                best_candidate_distance=best_candidate_center_distance,
+                candidate_mining_cost=candidate_cost.get(candidate.get("instance_token")),
+                best_candidate_cost=best_candidate_cost,
+            ))
+        for candidate in easy:
+            _append_sample(_make_pair(
+                anchor_tracklet=trk,
+                current_frame=current_frame,
+                future_frame=future_frame,
+                candidate=candidate,
+                history_len=history_len,
+                current_index=current_index,
+                history_source=history_source,
+                pair_geometry_source=pair_geometry_source,
+                label=0,
+                negative_type="easy",
+                negative_mining_mode=negative_mining_mode,
+                inference_margin_metric=ranking_metric,
+                class_window_cfg=class_window_cfg,
+                candidate_rank=candidate_rank.get(candidate.get("instance_token")),
+                best_candidate_distance=best_candidate_center_distance,
+                candidate_mining_cost=candidate_cost.get(candidate.get("instance_token")),
+                best_candidate_cost=best_candidate_cost,
+            ))
+
+        _retain_group()
 
     return samples, summarize_pairwise_association_samples(samples)
 
@@ -566,6 +830,10 @@ def summarize_pairwise_association_samples(samples: List[Dict[str, Any]]) -> Dic
         "anchors": set(),
         "candidate_scores": [],
         "center_distances": [],
+        "cost_margin_gaps": [],
+        "state_buckets": defaultdict(int),
+        "negative_types": defaultdict(int),
+        "inference_margin_metrics": defaultdict(int),
     })
     overall = {
         "pairs": 0,
@@ -575,16 +843,27 @@ def summarize_pairwise_association_samples(samples: List[Dict[str, Any]]) -> Dic
         "unmatched_detection_negative_pairs": 0,
         "hard_negative_pairs": 0,
         "easy_negative_pairs": 0,
+        "state_buckets": defaultdict(int),
+        "negative_types": defaultdict(int),
+        "inference_margin_metrics": defaultdict(int),
     }
     for sample in samples:
         cls = str(sample.get("category", "unknown"))
         stat = per_class[cls]
         label = int(sample.get("label", 0))
         negative_type = str(sample.get("negative_type", ""))
+        state_bucket = str(sample.get("state_bucket", "unknown"))
+        margin_metric = str(sample.get("inference_margin_metric", "unknown"))
         stat["pairs"] += 1
         overall["pairs"] += 1
         overall["candidate_pairs"] += 1
         stat["anchors"].add((sample.get("anchor_instance_token"), sample.get("current_sample_token")))
+        stat["state_buckets"][state_bucket] += 1
+        overall["state_buckets"][state_bucket] += 1
+        stat["negative_types"][negative_type] += 1
+        overall["negative_types"][negative_type] += 1
+        stat["inference_margin_metrics"][margin_metric] += 1
+        overall["inference_margin_metrics"][margin_metric] += 1
         if label == 1:
             stat["positive_pairs"] += 1
             overall["positive_pairs"] += 1
@@ -606,11 +885,15 @@ def summarize_pairwise_association_samples(samples: List[Dict[str, Any]]) -> Dic
         dist = sample.get("center_distance")
         if isinstance(dist, (int, float)) and math.isfinite(float(dist)):
             stat["center_distances"].append(float(dist))
+        cost_gap = sample.get("cost_margin_gap")
+        if isinstance(cost_gap, (int, float)) and math.isfinite(float(cost_gap)):
+            stat["cost_margin_gaps"].append(float(cost_gap))
 
     out_per_class = {}
     for cls, stat in sorted(per_class.items()):
         scores = stat["candidate_scores"]
         distances = stat["center_distances"]
+        cost_gaps = stat["cost_margin_gaps"]
         out_per_class[cls] = {
             "pairs": stat["pairs"],
             "candidate_pairs": stat["pairs"],
@@ -638,6 +921,10 @@ def summarize_pairwise_association_samples(samples: List[Dict[str, Any]]) -> Dic
             ),
             "candidate_score_mean": float(np.mean(scores)) if scores else 0.0,
             "center_distance_mean": float(np.mean(distances)) if distances else 0.0,
+            "cost_margin_gap_mean": float(np.mean(cost_gaps)) if cost_gaps else 0.0,
+            "state_buckets": dict(sorted(stat["state_buckets"].items())),
+            "negative_types": dict(sorted(stat["negative_types"].items())),
+            "inference_margin_metrics": dict(sorted(stat["inference_margin_metrics"].items())),
         }
     overall["classes"] = len(out_per_class)
     overall["positive_ratio"] = (
@@ -656,4 +943,7 @@ def summarize_pairwise_association_samples(samples: List[Dict[str, Any]]) -> Dic
         float(overall["negative_pairs"] / overall["positive_pairs"])
         if overall["positive_pairs"] else 0.0
     )
+    overall["state_buckets"] = dict(sorted(overall["state_buckets"].items()))
+    overall["negative_types"] = dict(sorted(overall["negative_types"].items()))
+    overall["inference_margin_metrics"] = dict(sorted(overall["inference_margin_metrics"].items()))
     return {"overall": overall, "per_class": out_per_class}

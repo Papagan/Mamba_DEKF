@@ -73,6 +73,8 @@ def _annotation(token, instance_token, category_name, xy):
         "instance_token": instance_token,
         "category_name": category_name,
         "translation": [xy[0], xy[1], 0.0],
+        "num_lidar_pts": 1,
+        "num_radar_pts": 0,
     }
 
 
@@ -131,10 +133,21 @@ class NuScenesAuditGtEnrichmentTest(unittest.TestCase):
             annotations,
             detections,
             distance_by_class={"car": 1.0},
+            min_identity_margin=None, # exercise assignment alone, without ambiguity quarantine
         )
 
         self.assertEqual(tokens, ["instance-b", "instance-a"])
         self.assertEqual(cleaned, detections)
+
+    def test_zero_point_gt_and_ambiguous_identities_are_not_labels(self):
+        invisible = _annotation("invisible", "hidden", "vehicle.car", (0.0, 0.0))
+        invisible["num_lidar_pts"] = 0
+        _, tokens = self._enrich([invisible], [_detection("car", (0.0, 0.0))])
+        self.assertEqual(tokens, [None])
+        annotations = [_annotation("a", "one", "vehicle.car", (0.0, 0.0)),
+                       _annotation("b", "two", "vehicle.car", (0.2, 0.0))]
+        _, tokens = self._enrich(annotations, [_detection("car", (0.09, 0.0))])
+        self.assertEqual(tokens, [None])
 
     def test_matches_only_same_class_and_preserves_detection_order(self):
         annotations = [
@@ -226,6 +239,8 @@ class NuScenesAuditGtEnrichmentTest(unittest.TestCase):
             "output",
             "val",
             audit_gt_enrichment=True,
+            audit_min_gt_sensor_points=1,
+            audit_min_identity_margin=0.15,
         )
 
 
@@ -311,6 +326,7 @@ class ConverterMainIntegrationTest(unittest.TestCase):
         disabled = self._run(False)
 
         self.assertEqual(enabled["audit_gt_tokens"], ["instance-car"])
+        self.assertEqual(enabled["audit_gt_policy"]["version"], 2)
         self.assertNotIn("audit_gt_tokens", disabled)
         for frame in (enabled, disabled):
             self.assertTrue(
@@ -319,6 +335,15 @@ class ConverterMainIntegrationTest(unittest.TestCase):
 
 
 class DatasetAuditSidecarTest(unittest.TestCase):
+    def test_replay_rejects_old_identity_sidecars_before_loading_boxes(self):
+        module = self._load_dataset_module(lambda boxes, _: boxes)
+        dataset = module.BaseVersionTrackingDataset(
+            "scene", [{"audit_gt_tokens": ["stale"]}],
+            {"INFERENCE_PAIR_CACHE": {"REQUIRE_GT_POLICY_VERSION": 2}},
+        )
+        with self.assertRaisesRegex(ValueError, "regenerate BaseVersion JSON"):
+            dataset[0]
+
     def _load_dataset_module(self, nms):
         nusc_utils = types.ModuleType("utils.nusc_utils")
         nusc_utils.obtain_box_bottom_corners = lambda *args, **kwargs: None
@@ -388,6 +413,8 @@ class DatasetAuditSidecarTest(unittest.TestCase):
         frame = dataset[0]
 
         self.assertEqual(frame.audit_gt_tokens, ["keep-b", "keep-a"])
+        self.assertTrue(all(bbox.timestamp == frame.timestamp for bbox in frame.bboxes))
+        self.assertTrue(all(bbox.frame_id == 3 for bbox in frame.bboxes))
         self.assertEqual(
             [bbox.global_xyz[0] for bbox in frame.bboxes],
             [4.0, 2.0],

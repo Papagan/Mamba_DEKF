@@ -24,7 +24,7 @@ import os
 import pickle
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Tuple, TYPE_CHECKING
 
 import yaml
 
@@ -79,7 +79,9 @@ def init_kf_from_detection(frame: dict, device) -> DecoupledAdaptiveKF:
     pos_P0[:, 4, 4] = 10.0
     siz_x0 = torch.tensor(frame["det_lwh"], dtype=torch.float32, device=device).view(1, 3, 1)
     siz_P0 = torch.eye(3, dtype=torch.float32, device=device).unsqueeze(0) * 0.1
-    ori_x0 = torch.tensor([frame["det_yaw"], frame["obs_feature_12"][10]], dtype=torch.float32, device=device).view(1, 2, 1)
+    # A new/reborn online track has no previous yaw observation. Never import
+    # an angular velocity computed before this lifecycle from the oracle cache.
+    ori_x0 = torch.tensor([frame["det_yaw"], 0.0], dtype=torch.float32, device=device).view(1, 2, 1)
     ori_P0 = torch.eye(2, dtype=torch.float32, device=device).unsqueeze(0) * 0.1
     kf.init_states(pos_x0, pos_P0, siz_x0, siz_P0, ori_x0, ori_P0)
     return kf
@@ -110,6 +112,9 @@ def finalize_fusion_omegas(tracklet: dict) -> None:
             prev_yaw = None
             prev_ts = None
             continue
+        if frame.get("fusion_is_birth", False):
+            prev_yaw = None
+            prev_ts = None
         if prev_yaw is not None and prev_ts is not None:
             dt = float(frame["timestamp"] - prev_ts)
             if dt > 0:
@@ -119,12 +124,25 @@ def finalize_fusion_omegas(tracklet: dict) -> None:
         prev_ts = float(frame["timestamp"])
 
 
+def _lookup_class_limit(value: Any, category: str, class_id: int, fallback: int) -> int:
+    if isinstance(value, dict):
+        resolved = value.get(category, value.get(class_id, value.get(str(class_id), fallback)))
+    else:
+        resolved = value
+    resolved = int(resolved)
+    if resolved < 0:
+        raise ValueError(f"PREDICT_BBOX_LENGTH must be non-negative, got {resolved} for {category}")
+    return resolved
+
+
 def augment_tracklet(tracklet: dict, base_noise_cfg: dict, device) -> Tuple[dict, Dict[str, int]]:
     import torch
     from kalmanfilter.mctrack_exact_update import restore_exact_matched_components
     from kalmanfilter.noise_priors import TRACKING_CAT_ID_MAP
 
     trk = copy.deepcopy(tracklet)
+    if trk.get("association_only", False):
+        return trk, {}
     frames = sorted(trk["frames"], key=lambda x: (x["timestamp"], x["frame_id"]))
     stats = {
         "fusion_valid_frames": 0,
@@ -141,6 +159,8 @@ def augment_tracklet(tracklet: dict, base_noise_cfg: dict, device) -> Tuple[dict
         frame["fusion_yaw"] = None
         frame["fusion_velocity"] = None
         frame["fusion_feature_12"] = [0.0] * 12
+        frame["fusion_is_birth"] = False
+        frame["fusion_lifecycle_id"] = None
 
     if not frames:
         trk["frames"] = frames
@@ -153,9 +173,18 @@ def augment_tracklet(tracklet: dict, base_noise_cfg: dict, device) -> Tuple[dict
     R_pos = cov["R_pos_base"]
     R_siz = cov["R_siz_base"]
     R_ori = cov["R_ori_base"]
-    max_predict_len = int(base_noise_cfg.get("TRACKER_LIMITS", {}).get("PREDICT_BBOX_LENGTH", 3))
     exact_cfg = base_noise_cfg.get("MCTRACK_EXACT_UPDATE", {}) or {}
     class_id = TRACKING_CAT_ID_MAP.get(str(trk["category"]), -1)
+    filter_output = base_noise_cfg.get("STATE_OUTPUT_MODE", "filter") == "filter"
+    trk["fusion_state_output_mode"] = "filter" if filter_output else "legacy_mctrack"
+    trk["fusion_feature_schema_version"] = 2
+    max_predict_len = _lookup_class_limit(
+        base_noise_cfg.get("TRACKER_LIMITS", {}).get("PREDICT_BBOX_LENGTH", 3),
+        str(trk["category"]),
+        class_id,
+        3,
+    )
+    trk["fusion_max_predict_len"] = max_predict_len
     exact_matched = class_id in {int(v) for v in exact_cfg.get("MATCHED_CLASSES", [])}
     exact_unmatched = class_id in {int(v) for v in exact_cfg.get("UNMATCHED_CLASSES", [])}
 
@@ -166,8 +195,17 @@ def augment_tracklet(tracklet: dict, base_noise_cfg: dict, device) -> Tuple[dict
     last_fused_lwh = None
     last_fused_yaw = None
     consecutive_miss = 0
+    previous_frame_id = None
+    lifecycle_id = 0
 
     for frame in frames:
+        frame_id = int(frame["frame_id"])
+        # Filtered/missing annotations are not consecutive tracker frames. A
+        # pseudo-history cannot silently bridge a gap after a GT was removed.
+        if previous_frame_id is not None and frame_id != previous_frame_id + 1:
+            active = False
+            kf = None
+        previous_frame_id = frame_id
         is_matched = bool(frame["is_matched"]) and frame["det_global_xyz"] is not None
 
         if not active:
@@ -180,6 +218,9 @@ def augment_tracklet(tracklet: dict, base_noise_cfg: dict, device) -> Tuple[dict
             active = True
             consecutive_miss = 0
             stats["rebirths"] += 1
+            lifecycle_id += 1
+            frame["fusion_is_birth"] = True
+            frame["fusion_lifecycle_id"] = lifecycle_id
 
             fused_xyz = [float(v) for v in frame["det_global_xyz"]]
             fused_lwh = [float(v) for v in frame["det_lwh"]]
@@ -230,10 +271,10 @@ def augment_tracklet(tracklet: dict, base_noise_cfg: dict, device) -> Tuple[dict
             fused_xyz = [
                 float(pos_x_upd[0, 0, 0].item()),
                 float(pos_x_upd[0, 1, 0].item()),
-                float(frame["det_global_xyz"][2]),
+                float(pos_x_upd[0, 2, 0].item()) if filter_output else float(frame["det_global_xyz"][2]),
             ]
-            fused_lwh = [float(v) for v in siz_x_upd[0, :, 0].tolist()]
-            fused_yaw = float(ori_x_upd[0, 0, 0].item())
+            fused_lwh = [float(v) for v in (siz_x_upd[0, :, 0].tolist() if filter_output else frame["det_lwh"])]
+            fused_yaw = float(ori_x_upd[0, 0, 0].item()) if filter_output else float(frame["det_yaw"])
             fused_vel = [
                 float(pos_x_upd[0, 3, 0].item()),
                 float(pos_x_upd[0, 4, 0].item()),
@@ -250,10 +291,10 @@ def augment_tracklet(tracklet: dict, base_noise_cfg: dict, device) -> Tuple[dict
             fused_xyz = [
                 float(pos_x_pred[0, 0, 0].item()),
                 float(pos_x_pred[0, 1, 0].item()),
-                float(last_fused_xyz[2]),
+                float(pos_x_pred[0, 2, 0].item()) if filter_output else float(last_fused_xyz[2]),
             ]
-            fused_lwh = list(last_fused_lwh)
-            fused_yaw = float(last_fused_yaw)
+            fused_lwh = [float(v) for v in siz_x_pred[0, :, 0].tolist()] if filter_output else list(last_fused_lwh)
+            fused_yaw = float(ori_x_pred[0, 0, 0].item()) if filter_output else float(last_fused_yaw)
             fused_vel = [
                 float(pos_x_pred[0, 3, 0].item()),
                 float(pos_x_pred[0, 4, 0].item()),
@@ -265,6 +306,7 @@ def augment_tracklet(tracklet: dict, base_noise_cfg: dict, device) -> Tuple[dict
                 active = False
 
         if active or is_matched:
+            frame["fusion_lifecycle_id"] = lifecycle_id
             frame["fusion_valid"] = True
             frame["fusion_is_fake"] = frame_fake
             frame["fusion_global_xyz"] = fused_xyz
@@ -294,10 +336,33 @@ def augment_tracklet(tracklet: dict, base_noise_cfg: dict, device) -> Tuple[dict
     return trk, stats
 
 
-def build_tracker_limits(train_cfg: dict) -> Dict[str, int]:
+def build_tracker_limits(train_cfg: dict) -> Dict[str, Any]:
     data_cfg = train_cfg.get("DATA", {})
+    explicit = data_cfg.get("FUSION_MAX_PREDICT_LEN_BY_CLASS")
+    if explicit:
+        return {
+            "PREDICT_BBOX_LENGTH": dict(explicit),
+            "SOURCE": "DATA.FUSION_MAX_PREDICT_LEN_BY_CLASS",
+        }
+
+    inference_config_path = (train_cfg.get("TRAINING", {}) or {}).get("INFERENCE_CONFIG")
+    if inference_config_path:
+        with open(inference_config_path, "r", encoding="utf-8") as f:
+            inference_cfg = yaml.safe_load(f) or {}
+        runtime_limits = (
+            inference_cfg.get("THRESHOLD", {})
+            .get("TRAJECTORY_THRE", {})
+            .get("PREDICT_BBOX_LENGTH")
+        )
+        if isinstance(runtime_limits, dict) and runtime_limits:
+            return {
+                "PREDICT_BBOX_LENGTH": dict(runtime_limits),
+                "SOURCE": str(inference_config_path),
+            }
+
     return {
-        "PREDICT_BBOX_LENGTH": int(data_cfg.get("FUSION_MAX_PREDICT_LEN", 3))
+        "PREDICT_BBOX_LENGTH": int(data_cfg.get("FUSION_MAX_PREDICT_LEN", 3)),
+        "SOURCE": "DATA.FUSION_MAX_PREDICT_LEN",
     }
 
 
@@ -316,6 +381,12 @@ def main() -> None:
     tracklets = load_pickle(args.input)
     device = torch.device("cpu")
     base_noise_cfg = copy.deepcopy(train_cfg.get("BASE_NOISE", {}))
+    from tracker.compat_utils import uses_filter_state_output
+    base_noise_cfg["STATE_OUTPUT_MODE"] = "filter" if uses_filter_state_output({
+        "FILTER_MODE": train_cfg.get("FILTER_MODE", "mamba"),
+        "BASE_NOISE": base_noise_cfg,
+        "STATE_OUTPUT_MODE": train_cfg.get("DATA", {}).get("STATE_OUTPUT_MODE", "auto"),
+    }) else "legacy_mctrack"
     base_noise_cfg["TRACKER_LIMITS"] = build_tracker_limits(train_cfg)
 
     out_tracklets = []
@@ -341,7 +412,9 @@ def main() -> None:
         "input": args.input,
         "output": str(output_path),
         "train_config": args.train_config,
-        "history_semantics": "mctrack_compat_pure_dekf_local_rollout",
+        "tracker_limits": base_noise_cfg["TRACKER_LIMITS"],
+        "history_semantics": "pure_dekf_bootstrap_local_rollout",
+        "state_output_mode": base_noise_cfg["STATE_OUTPUT_MODE"],
     }
     summary_path = output_path.with_name(output_path.stem + "_summary.json")
     with summary_path.open("w", encoding="utf-8") as f:

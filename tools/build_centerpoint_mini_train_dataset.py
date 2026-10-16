@@ -28,9 +28,12 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import yaml
-from scipy.optimize import linear_sum_assignment
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from preprocess.identity_alignment import (
+    center_distance_2d, match_classwise, match_ambiguity_diagnostics,
+)
 
 
 TRACKING_CLASSES = [
@@ -83,10 +86,6 @@ def map_nuscenes_category(category_name: str) -> Optional[str]:
     if category_name.startswith("human.pedestrian"):
         return "pedestrian"
     return None
-
-
-def center_distance_2d(a_xyz: List[float], b_xyz: List[float]) -> float:
-    return float(np.linalg.norm(np.asarray(a_xyz[:2], dtype=np.float32) - np.asarray(b_xyz[:2], dtype=np.float32)))
 
 
 def load_baseversion_json(path: str) -> Dict:
@@ -144,37 +143,6 @@ def build_det_feature(det: dict) -> Tuple[List[float], Dict]:
     return feature, meta
 
 
-def match_classwise(gt_items: List[dict], det_items: List[dict], dist_th: float) -> Tuple[List[Tuple[int, int, float]], List[int], List[int]]:
-    if not gt_items or not det_items:
-        return [], list(range(len(gt_items))), list(range(len(det_items)))
-
-    distances = np.empty((len(gt_items), len(det_items)), dtype=np.float64)
-    for i, gt in enumerate(gt_items):
-        for j, det in enumerate(det_items):
-            distances[i, j] = center_distance_2d(gt["global_xyz"], det["global_xyz"])
-
-    # Dummy columns allow a GT to remain unmatched. Make one extra valid match
-    # preferable to any possible saving in the total matched distance.
-    unmatched_cost = (min(len(gt_items), len(det_items)) + 1) * dist_th + 1.0
-    cost = np.full((len(gt_items), len(det_items) + len(gt_items)), unmatched_cost, dtype=np.float64)
-    cost[:, :len(det_items)] = np.where(distances <= dist_th, distances, 2.0 * unmatched_cost)
-    row_ind, col_ind = linear_sum_assignment(cost)
-
-    matches = []
-    matched_gt = set()
-    matched_det = set()
-    for r, c in zip(row_ind, col_ind):
-        if c < len(det_items) and distances[r, c] <= dist_th:
-            dist = float(distances[r, c])
-            matches.append((r, c, dist))
-            matched_gt.add(r)
-            matched_det.add(c)
-
-    unmatched_gt = [i for i in range(len(gt_items)) if i not in matched_gt]
-    unmatched_det = [j for j in range(len(det_items)) if j not in matched_det]
-    return matches, unmatched_gt, unmatched_det
-
-
 def normalize_timestamp_seconds(raw_timestamp: float, reference_seconds: float) -> float:
     """Accept BaseVersion microseconds and already-converted seconds."""
     raw = float(raw_timestamp)
@@ -212,9 +180,22 @@ def attach_unmatched_candidates(tracklets: List[dict], candidates_by_frame: Dict
     attached = 0
     for key, candidates in candidates_by_frame.items():
         frame = available_frames.get(key)
-        if frame is not None:
-            frame["unmatched_detections"] = candidates
-            attached += len(candidates)
+        if frame is None:
+            # Preserve detector-only frames as candidate storage, not fabricated
+            # GT motion tracks. Downstream motion/fusion loaders skip carriers.
+            scene_id, sample_token, category = key
+            frame = {
+                "scene_id": scene_id, "sample_token": sample_token,
+                "timestamp": candidates[0]["timestamp"],
+                "frame_id": candidates[0]["frame_id"], "is_matched": False,
+            }
+            tracklets.append({
+                "association_only": True, "candidate_only": True,
+                "instance_token": f"__candidates__:{scene_id}:{sample_token}:{category}",
+                "category": category, "scene_id": scene_id, "frames": [frame],
+            })
+        frame["unmatched_detections"] = candidates
+        attached += len(candidates)
     return attached
 
 
@@ -305,6 +286,8 @@ def estimate_training_samples(tracklets: List[dict], history_len: int, rollout_s
     total = 0
     min_len = history_len + rollout_steps
     for trk in tracklets:
+        if trk.get("association_only", False):
+            continue
         n = len(trk["frames"])
         if n < min_len:
             continue
@@ -326,11 +309,14 @@ def resolve_class_min_window(
     min_history_len: int,
     min_rollout_steps: int,
     class_window_cfg: Dict,
+    include_short_histories: bool = False,
 ) -> Tuple[int, int]:
     cfg = (class_window_cfg or {}).get(category, {})
     hist_min = int(cfg.get("MIN_HISTORY_LEN", min_history_len))
     roll_min = int(cfg.get("MIN_ROLLOUT_STEPS", min_rollout_steps))
     hist_min = max(1, min(hist_min, history_len))
+    if include_short_histories:
+        hist_min = 1
     roll_min = max(1, min(roll_min, rollout_steps))
     return hist_min, roll_min
 
@@ -342,9 +328,12 @@ def estimate_training_samples_adaptive(
     min_history_len: int,
     min_rollout_steps: int,
     class_window_cfg: Dict,
+    include_short_histories: bool = False,
 ) -> int:
     total = 0
     for trk in tracklets:
+        if trk.get("association_only", False):
+            continue
         hist_min, roll_min = resolve_class_min_window(
             category=trk.get("category", "car"),
             history_len=history_len,
@@ -352,6 +341,7 @@ def estimate_training_samples_adaptive(
             min_history_len=min_history_len,
             min_rollout_steps=min_rollout_steps,
             class_window_cfg=class_window_cfg,
+            include_short_histories=include_short_histories,
         )
         total += estimate_training_samples_for_length(len(trk["frames"]), hist_min, roll_min)
     return total
@@ -372,6 +362,8 @@ def build_mini_dataset(
     class_dist_th: Optional[str],
     use_default_class_dist_th: bool,
     inference_config_path: Optional[str] = None,
+    min_gt_sensor_points: int = 0,
+    min_identity_margin: float = 0.15,
 ) -> Dict[str, int]:
     from nuscenes.nuscenes import NuScenes
 
@@ -416,6 +408,7 @@ def build_mini_dataset(
         "scenes": len(selected_scene_ids),
         "frames": 0,
         "gt_boxes": 0,
+        "gt_boxes_filtered_zero_points": 0,
         "det_boxes": 0,
         "det_boxes_raw": 0,
         "filtered_dets": 0,
@@ -423,6 +416,7 @@ def build_mini_dataset(
         "misses": 0,
         "ignored_dets": 0,
         "ambiguous_unmatched_dets": 0,
+        "ambiguous_matches_quarantined": 0,
         "timestamp_diff_max": 0.0,
         "timestamp_diff_mean_abs_accum": 0.0,
     }
@@ -443,10 +437,16 @@ def build_mini_dataset(
             stats["timestamp_diff_mean_abs_accum"] += ts_diff
 
             gt_by_cls = defaultdict(list)
+            ignored_gt_by_cls = defaultdict(list)
             for ann_token in sample["anns"]:
                 ann = nusc.get("sample_annotation", ann_token)
                 category = map_nuscenes_category(ann["category_name"])
                 if category not in TRACKING_CLASSES:
+                    continue
+                sensor_points = int(ann.get("num_lidar_pts", 0)) + int(ann.get("num_radar_pts", 0))
+                if sensor_points < int(min_gt_sensor_points):
+                    stats["gt_boxes_filtered_zero_points"] += 1
+                    ignored_gt_by_cls[category].append(ann)
                     continue
                 gt_feature, gt_meta = build_gt_feature(ann, nusc)
                 gt_item = {
@@ -455,6 +455,7 @@ def build_mini_dataset(
                     "category": category,
                     "global_xyz": gt_meta["global_xyz"],
                     "gt_feature_12": gt_feature,
+                    "num_sensor_points": sensor_points,
                     **gt_meta,
                 }
                 gt_by_cls[category].append(gt_item)
@@ -486,6 +487,21 @@ def build_mini_dataset(
                     det_items,
                     class_dist_thresholds.get(category, dist_th),
                 )
+                diagnostics = {}
+                trusted_matches = []
+                for gt_idx, det_idx, distance in matches:
+                    diagnosis = match_ambiguity_diagnostics(
+                        gt_items, det_items, gt_idx, det_idx, distance
+                    )
+                    margin = diagnosis["match_identity_margin"]
+                    if margin is not None and margin < float(min_identity_margin):
+                        unmatched_gt.append(gt_idx)
+                        unmatched_det.append(det_idx)
+                        stats["ambiguous_matches_quarantined"] += 1
+                    else:
+                        trusted_matches.append((gt_idx, det_idx, distance))
+                        diagnostics[(gt_idx, det_idx)] = diagnosis
+                matches = trusted_matches
 
                 for gt_idx, det_idx, match_dist in matches:
                     gt = gt_items[gt_idx]
@@ -507,6 +523,7 @@ def build_mini_dataset(
                         "scene_id": scene_id,
                         "is_matched": True,
                         "match_distance": float(match_dist),
+                        **diagnostics[(gt_idx, det_idx)],
                         "det_score": det["score"],
                         "gt_feature_12": list(gt["gt_feature_12"]),
                         "obs_feature_12": list(det["obs_feature_12"]),
@@ -514,6 +531,7 @@ def build_mini_dataset(
                         "gt_lwh": list(gt["lwh"]),
                         "gt_yaw": float(gt["yaw"]),
                         "gt_velocity": list(gt["velocity"]),
+                        "gt_num_sensor_points": int(gt["num_sensor_points"]),
                         "det_global_xyz": list(det["global_xyz"]),
                         "det_lwh": list(det["lwh"]),
                         "det_yaw": float(det["yaw"]),
@@ -548,6 +566,7 @@ def build_mini_dataset(
                             "gt_lwh": list(gt["lwh"]),
                             "gt_yaw": float(gt["yaw"]),
                             "gt_velocity": list(gt["velocity"]),
+                            "gt_num_sensor_points": int(gt["num_sensor_points"]),
                             "det_global_xyz": None,
                             "det_lwh": None,
                             "det_yaw": None,
@@ -557,12 +576,20 @@ def build_mini_dataset(
 
                 for det_idx in unmatched_det:
                     det = det_items[det_idx]
-                    # A second detection near a GT may be a duplicate or a
-                    # localization error. Its identity is not a safe negative.
-                    if any(center_distance_2d(det["global_xyz"], gt["global_xyz"]) <= 2.0 * class_dist_thresholds[category]
-                           for gt in gt_items):
+                    # Keep ambiguous boxes in the candidate pool, but do not
+                    # force a binary negative label for any plausible identity.
+                    possible_gt_tokens = [
+                        gt["instance_token"] for gt in gt_items
+                        if center_distance_2d(det["global_xyz"], gt["global_xyz"])
+                        <= 2.0 * class_dist_thresholds[category]
+                    ]
+                    possible_gt_tokens.extend(
+                        ann["instance_token"] for ann in ignored_gt_by_cls[category]
+                        if center_distance_2d(det["global_xyz"], ann["translation"])
+                        <= 2.0 * class_dist_thresholds[category]
+                    )
+                    if possible_gt_tokens:
                         stats["ambiguous_unmatched_dets"] += 1
-                        continue
                     candidate_id = f"__unmatched_det__:{scene_id}:{sample_token}:{category}:{det_idx}"
                     unmatched_candidates[(str(scene_id), str(sample_token), category)].append({
                         "candidate_id": candidate_id,
@@ -576,6 +603,8 @@ def build_mini_dataset(
                         "det_lwh": list(det["lwh"]),
                         "det_yaw": float(det["yaw"]),
                         "det_velocity": list(det["velocity"]),
+                        "possible_gt_tokens": sorted(set(possible_gt_tokens)),
+                        "identity_ambiguous": bool(possible_gt_tokens),
                     })
                 stats["ignored_dets"] += len(unmatched_det)
 
@@ -585,7 +614,9 @@ def build_mini_dataset(
         n_frames = len(tracklet["frames"])
         n_matched = sum(1 for fr in tracklet["frames"] if fr["is_matched"])
         if n_frames < min_frames or n_matched < min_matched_frames:
-            continue
+            # These detections still compete with valid tracks at inference.
+            # Retain them for the candidate index while excluding motion anchors.
+            tracklet["association_only"] = True
         result.append(tracklet)
 
     result.sort(key=lambda x: (x["category"], x["instance_token"]))
@@ -614,6 +645,7 @@ def build_mini_dataset(
         min_history_len=min_history_len,
         min_rollout_steps=min_rollout_steps,
         class_window_cfg=class_window_cfg,
+        include_short_histories=bool(data_cfg.get("INCLUDE_SHORT_HISTORIES", False)),
     )
     estimated_batches = int(math.ceil(estimated_samples / float(batch_size))) if batch_size > 0 else 0
     estimated_batches_adaptive = int(math.ceil(estimated_samples_adaptive / float(batch_size))) if batch_size > 0 else 0
@@ -629,6 +661,7 @@ def build_mini_dataset(
         **stats,
         "output_path": output_path,
         "tracklets": len(result),
+        "motion_tracklets": sum(not trk.get("association_only", False) for trk in result),
         "estimated_samples": estimated_samples,
         "estimated_samples_adaptive": estimated_samples_adaptive,
         "training_batch_size": batch_size,
@@ -639,6 +672,7 @@ def build_mini_dataset(
         "min_history_len": min_history_len,
         "min_rollout_steps": min_rollout_steps,
         "adaptive_windows": adaptive_windows,
+        "include_short_histories": bool(data_cfg.get("INCLUDE_SHORT_HISTORIES", False)),
         "category_tracklets": dict(sorted(category_counts.items())),
         "category_matched_frames": dict(sorted(category_matched.items())),
         "config": {
@@ -656,6 +690,8 @@ def build_mini_dataset(
             "use_default_class_dist_th": use_default_class_dist_th,
             "resolved_class_dist_thresholds": class_dist_thresholds,
             "inference_config_path": inference_config_path,
+            "min_gt_sensor_points": int(min_gt_sensor_points),
+            "min_identity_margin": float(min_identity_margin),
         },
     }
     if stats["frames"] > 0:
@@ -760,6 +796,17 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Runtime filtering config; defaults to TRAINING.INFERENCE_CONFIG in --train-config.",
     )
+    parser.add_argument(
+        "--min-gt-sensor-points",
+        type=int,
+        default=1,
+        help=(
+            "Drop GT annotations with fewer lidar+radar points. Default 1 matches "
+            "the nuScenes evaluation visibility filter."
+        ),
+    )
+    parser.add_argument("--min-identity-margin", type=float, default=0.15,
+                        help="Quarantine identity matches whose row/column distance gap is below this many meters.")
     return parser.parse_args()
 
 
@@ -780,6 +827,8 @@ def main() -> None:
         class_dist_th=args.class_dist_th,
         use_default_class_dist_th=args.use_default_class_dist_th,
         inference_config_path=args.inference_config,
+        min_gt_sensor_points=args.min_gt_sensor_points,
+        min_identity_margin=args.min_identity_margin,
     )
 
 

@@ -40,9 +40,14 @@ from kalmanfilter.prior_conditioned_heads import (
 from kalmanfilter.bounded_residual import apply_bounded_residuals
 
 try:
-    from mamba_ssm.modules.mamba_simple import Mamba
+    from mamba_ssm.modules.mamba_simple import Mamba as Mamba1
 except ImportError:
-    Mamba = None  # graceful fallback for environments without mamba-ssm
+    Mamba1 = None
+
+try:
+    from mamba_ssm import Mamba2
+except ImportError:
+    Mamba2 = None
 
 
 # ============================================================
@@ -974,6 +979,9 @@ class TemporalMamba(nn.Module):
         min_diag_siz: float = 0.05,
         min_kappa: float = 0.1,
         force_gru: bool = False,
+        backbone_variant: str = "mamba1",
+        mamba2_headdim: int = 64,
+        mamba2_ngroups: int = 1,
         base_noise_cfg: dict = None,
     ) -> None:
         """
@@ -997,6 +1005,11 @@ class TemporalMamba(nn.Module):
         self.min_kappa = min_kappa
         self.num_classes = num_classes
         self.base_noise_cfg = base_noise_cfg
+        self.backbone_variant = str(backbone_variant).strip().lower()
+        if self.backbone_variant not in {"mamba1", "mamba2"}:
+            raise ValueError(
+                f"Unsupported backbone_variant={backbone_variant!r}; expected 'mamba1' or 'mamba2'"
+            )
 
         # input projection: 13 → d_model
         self.input_proj = nn.Linear(self.INPUT_DIM, d_model)
@@ -1005,18 +1018,37 @@ class TemporalMamba(nn.Module):
         # before Mamba blocks to prevent gradient saturation from disparate input scales
         self.input_norm = nn.LayerNorm(d_model)
 
-        # stacked Mamba layers (or GRU fallback when mamba-ssm is not installed,
-        # or when loading a GRU-trained checkpoint on a machine with mamba-ssm)
-        if Mamba is not None and not force_gru:
+        # Stacked Mamba layers. Mamba-2 requires expand*d_model to be divisible
+        # by headdim; validate it here so remote training fails before allocating
+        # a partially constructed model.
+        backbone_cls = Mamba2 if self.backbone_variant == "mamba2" else Mamba1
+        if backbone_cls is not None and not force_gru:
+            if self.backbone_variant == "mamba2":
+                if int(mamba2_headdim) <= 0 or (int(expand) * int(d_model)) % int(mamba2_headdim) != 0:
+                    raise ValueError(
+                        "Mamba2 requires EXPAND * D_MODEL to be divisible by "
+                        f"MAMBA2_HEADDIM; got {expand} * {d_model} and {mamba2_headdim}"
+                    )
+                layer_kwargs = {
+                    "d_model": d_model,
+                    "d_state": d_state,
+                    "d_conv": d_conv,
+                    "expand": expand,
+                    "headdim": int(mamba2_headdim),
+                    "ngroups": int(mamba2_ngroups),
+                }
+            else:
+                layer_kwargs = {
+                    "d_model": d_model,
+                    "d_state": d_state,
+                    "d_conv": d_conv,
+                    "expand": expand,
+                }
             self.mamba_layers = nn.ModuleList([
-                Mamba(
-                    d_model=d_model,
-                    d_state=d_state,
-                    d_conv=d_conv,
-                    expand=expand,
-                )
+                backbone_cls(**layer_kwargs)
                 for _ in range(n_mamba_layers)
             ])
+            self.backbone_type = self.backbone_variant
         else:
             # fallback: simple GRU for testing without mamba-ssm installed
             self.mamba_layers = None
@@ -1024,6 +1056,7 @@ class TemporalMamba(nn.Module):
                 input_size=d_model, hidden_size=d_model,
                 num_layers=n_mamba_layers, batch_first=True,
             )
+            self.backbone_type = "fallback_gru"
 
         self.layer_norms = nn.ModuleList([
             nn.LayerNorm(d_model) for _ in range(n_mamba_layers)
@@ -1224,20 +1257,11 @@ class TemporalMamba(nn.Module):
             Q_ori = prior_cov["Q_ori_base"]
             raw_R_ori = apply_factorized_ratio_to_r_ori(prior_cov["R_ori_base"], ratios)
             kappa_ori_unc = torch.reciprocal(torch.clamp(raw_R_ori.squeeze(-1), min=1e-8))
-            kappa_ori = torch.clamp(kappa_ori_unc, max=5.0)
-            R_ori = (1.0 / kappa_ori).unsqueeze(-1)
-            if apply_force_prior:
-                force_prior_mask = build_force_prior_mask(
-                    class_ids=class_ids,
-                    state_buckets=state_buckets,
-                    closure_cfg=closure_cfg,
-                    device=dev,
-                )
-                if force_prior_mask is not None and bool(force_prior_mask.any().item()):
-                    R_ori = R_ori.clone()
-                    kappa_ori = kappa_ori.clone()
-                    R_ori[force_prior_mask] = raw_R_ori[force_prior_mask]
-                    kappa_ori[force_prior_mask] = kappa_ori_unc[force_prior_mask]
+            # The bounded prior ratio already supplies a positive covariance.
+            # Capping kappa here floored R at .2, killed the R->KF gradient,
+            # and disagreed with the forced-prior inference branch.
+            kappa_ori = kappa_ori_unc
+            R_ori = raw_R_ori
             return {
                 "Q_pos": Q_pos, "Q_siz": Q_siz, "Q_ori": Q_ori,
                 "R_pos": R_pos, "R_siz": R_siz, "R_ori": R_ori,
@@ -1354,6 +1378,9 @@ class MambaDecoupledEKF(nn.Module):
         device: torch.device = torch.device("cpu"),
         base_noise_cfg: dict = None,
         force_gru: bool = False,
+        backbone_variant: str = "mamba1",
+        mamba2_headdim: int = 64,
+        mamba2_ngroups: int = 1,
     ) -> None:
         super().__init__()
         self.mamba = TemporalMamba(
@@ -1369,6 +1396,9 @@ class MambaDecoupledEKF(nn.Module):
             min_diag_siz=min_diag_siz,
             min_kappa=min_kappa,
             force_gru=force_gru,
+            backbone_variant=backbone_variant,
+            mamba2_headdim=mamba2_headdim,
+            mamba2_ngroups=mamba2_ngroups,
             base_noise_cfg=base_noise_cfg,
         )
         self.kf = DecoupledAdaptiveKF(batch_size, device)

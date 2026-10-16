@@ -57,6 +57,10 @@ class PairwiseAssociationDataset(Dataset):
                 samples = pickle.load(f)
         else:
             samples = samples_or_path
+        self.replay_manifest = None
+        if isinstance(samples, dict) and "groups" in samples:
+            from training.replay_association_samples import replay_groups_to_samples
+            samples, self.replay_manifest = replay_groups_to_samples(samples)
         if not isinstance(samples, list):
             raise TypeError("PairwiseAssociationDataset expects a list of sample dictionaries")
         if required_feature_schema_version is not None:
@@ -82,11 +86,23 @@ class PairwiseAssociationDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         sample = self.samples[idx]
         class_id = int(sample.get("class_id", -1))
+        if self.replay_manifest is not None:
+            # Replay already owns exact encoder outputs; do not allocate fake
+            # T x 12 histories/masks just to discard them in precomputation.
+            return {
+                "pair_vector": torch.tensor(sample["pair_vector"], dtype=torch.float32),
+                "class_id": torch.tensor(class_id, dtype=torch.long),
+                "label": torch.tensor(float(sample["label"]), dtype=torch.float32),
+                "anchor_key": self.anchor_keys[idx],
+                "negative_type": str(sample.get("negative_type", "")),
+                "state_bucket": str(sample.get("state_bucket", "matched")),
+                "category": str(sample.get("category", "")),
+            }
         anchor_history = _float_array(sample.get("anchor_history_12"), (self.history_len, 12))
         candidate_history = _candidate_history(sample, self.history_len)
         inferred_anchor_mask = anchor_history.any(axis=-1)
         inferred_candidate_mask = candidate_history.any(axis=-1)
-        return {
+        result = {
             "anchor_history": torch.from_numpy(anchor_history),
             "candidate_history": torch.from_numpy(candidate_history),
             "anchor_history_mask": torch.from_numpy(_float_array(
@@ -107,6 +123,9 @@ class PairwiseAssociationDataset(Dataset):
             "state_bucket": str(sample.get("state_bucket", "matched")),
             "category": str(sample.get("category", "")),
         }
+        if self.replay_manifest is not None:
+            result["pair_vector"] = torch.tensor(sample["pair_vector"], dtype=torch.float32)
+        return result
 
 
 def pairwise_association_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -115,7 +134,9 @@ def pairwise_association_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, An
         "anchor_history_mask", "anchor_history_match_mask", "candidate_history_mask",
         "anchor_current_range", "candidate_current_range", "anchor_detection_driven",
     ]
-    out = {key: torch.stack([item[key] for item in batch], dim=0) for key in tensor_keys}
+    out = {key: torch.stack([item[key] for item in batch], dim=0) for key in tensor_keys if key in batch[0]}
+    if "pair_vector" in batch[0]:
+        out["pair_vector"] = torch.stack([item["pair_vector"] for item in batch], dim=0)
     out["anchor_keys"] = [item["anchor_key"] for item in batch]
     out["negative_types"] = [item["negative_type"] for item in batch]
     out["state_buckets"] = [item["state_bucket"] for item in batch]

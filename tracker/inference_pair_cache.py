@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 
 
-INFERENCE_PAIR_CACHE_SCHEMA_VERSION = 1
+INFERENCE_PAIR_CACHE_SCHEMA_VERSION = 2 # per-candidate masks and partial-label groups
 TRACK_STATES = {"matched", "unmatched"}
 
 _REQUIRED_PAYLOAD_FIELDS = (
@@ -293,20 +293,48 @@ def _thresholds_by_class(thresholds, class_ids):
 
 
 def _candidate_target(track_gt_token, pair_entries, det_gt_tokens):
-    if track_gt_token is None:
-        return "unknown", None
-    if any(det_gt_tokens[det_index] is None for det_index, _ in pair_entries):
-        return "unknown", None
-    matching_det_indices = [
-        det_index
+    status, target, _ = _derived_gt_target(track_gt_token, [
+        {"det_index": det_index, "det_gt_token": det_gt_tokens[det_index]}
         for det_index, _ in pair_entries
-        if det_gt_tokens[det_index] == track_gt_token
-    ]
-    if not matching_det_indices:
-        return "no_match", None
-    if len(matching_det_indices) > 1:
-        return "unknown", None
-    return "matched", matching_det_indices[0]
+    ])
+    return status, target
+
+
+def _select_replay_pair_entries(pair_entries, costs, track_index, track_token,
+                                det_tokens, selected_det, max_candidates, cost_margin):
+    """Bound exported supervision only; never change production candidates.
+
+    Preserve the best pair, actual assignment, all possible positive identities
+    (including duplicates), and one unknown marker. This prevents pruning from
+    fabricating a unique positive or a fully-known no-match group.
+    """
+    if not max_candidates and cost_margin is None:
+        return pair_entries
+    ranked = sorted(
+        (float(costs[track_index, det_index]), det_index, position)
+        for det_index, position in pair_entries if np.isfinite(costs[track_index, det_index])
+    )
+    mandatory = set()
+    if ranked:
+        mandatory.add(ranked[0][1])
+    if selected_det is not None:
+        mandatory.add(selected_det)
+    if track_token is not None:
+        mandatory.update(det for det, _ in pair_entries if det_tokens[det] == track_token)
+    unknown = next((det for det, _ in pair_entries if det_tokens[det] is None), None)
+    if unknown is not None:
+        mandatory.add(unknown)
+    if max_candidates and len(mandatory) > max_candidates:
+        return None # omit an over-ambiguous group, never silently relabel it
+    kept = set(mandatory)
+    best = ranked[0][0] if ranked else None
+    for cost, det, _ in ranked:
+        if cost_margin is not None and cost > best + cost_margin:
+            break
+        if max_candidates and len(kept) >= max_candidates:
+            break
+        kept.add(det)
+    return [(det, position) for det, position in pair_entries if det in kept]
 
 
 def build_candidate_groups(
@@ -318,10 +346,17 @@ def build_candidate_groups(
     thresholds,
     include_embeddings=True,
     include_pair_vectors=True,
+    max_candidates_per_group=0,
+    candidate_cost_margin=None,
 ):
     """Build JSON/pickle-safe candidate groups without mutating inputs."""
     if not isinstance(payload, Mapping):
         raise TypeError("payload must be a mapping")
+    max_candidates_per_group = _strict_nonnegative_integer("max_candidates_per_group", max_candidates_per_group)
+    if candidate_cost_margin is not None:
+        candidate_cost_margin = _finite_number("candidate_cost_margin", candidate_cost_margin)
+        if candidate_cost_margin < 0:
+            raise ValueError("candidate_cost_margin must be non-negative")
     missing_fields = [name for name in _REQUIRED_PAYLOAD_FIELDS if name not in payload]
     if missing_fields:
         raise ValueError(f"payload is missing required field {missing_fields[0]}")
@@ -406,6 +441,14 @@ def build_candidate_groups(
     groups = []
     for track_index in range(track_count):
         pair_entries = sorted(pairs_by_track[track_index])
+        assignment = assignments.get(track_index)
+        selected_det_index = None if assignment is None else assignment[0]
+        pair_entries = _select_replay_pair_entries(
+            pair_entries, base_costs, track_index, track_gt_tokens[track_index],
+            det_gt_tokens, selected_det_index, max_candidates_per_group, candidate_cost_margin,
+        )
+        if pair_entries is None:
+            continue
         finite_entries = _ranked_finite_entries(
             base_costs, original_base_costs, track_index, pair_entries
         )
@@ -417,12 +460,16 @@ def build_candidate_groups(
         target_status, target_det_index = _candidate_target(
             track_gt_tokens[track_index], pair_entries, det_gt_tokens
         )
+        _, _, pair_labels = _derived_gt_target(track_gt_tokens[track_index], [
+            {"det_index": det_index, "det_gt_token": det_gt_tokens[det_index]}
+            for det_index, _ in pair_entries
+        ])
 
         assignment = assignments.get(track_index)
         selected_det_index = None if assignment is None else assignment[0]
         threshold = threshold_by_class[class_ids[track_index]]
         candidates = []
-        for det_index, pair_position in pair_entries:
+        for label_position, (det_index, pair_position) in enumerate(pair_entries):
             base_cost = base_costs[track_index, det_index]
             finite = bool(np.isfinite(base_cost))
             raw_cost = base_cost.item() if finite else None
@@ -444,13 +491,7 @@ def build_candidate_groups(
                 "association_score": association_score,
                 "production_selected": det_index == selected_det_index,
                 "det_gt_token": det_gt_tokens[det_index],
-                "gt_label": (
-                    1
-                    if target_status == "matched" and det_index == target_det_index
-                    else 0
-                    if target_status in {"matched", "no_match"}
-                    else None
-                ),
+                "gt_label": pair_labels[label_position],
             }
             if include_embeddings:
                 candidate["det_embedding"] = det_embeddings[det_index].tolist()
@@ -548,7 +589,7 @@ _OBSERVED_METADATA_FIELDS = {
     "state_bucket",
     "gt_target_status",
 }
-_GROUP_STATUSES = {"matched", "no_match", "unknown"}
+_GROUP_STATUSES = {"matched", "no_match", "partial", "unknown"}
 _PICKLE_PROTOCOL = 4
 
 
@@ -635,6 +676,18 @@ def _group_key(group):
     )
 
 
+def _retention_key(key, sampling_seed):
+    if sampling_seed is None:
+        return key # preserve the original audit-only retention policy
+    digest = hashlib.sha256(canonical_json([sampling_seed, list(key)]).encode("utf-8")).hexdigest()
+    return digest, key
+
+
+def _manifest_sampling_seed(manifest):
+    value = (manifest.get("export_options") or {}).get("sampling_seed")
+    return None if value is None else _strict_nonnegative_integer("sampling_seed", value)
+
+
 def _group_fingerprint(group, canonical_group=None):
     if canonical_group is None:
         canonical_group = canonical_json(group)
@@ -659,9 +712,7 @@ def _derived_gt_target(track_gt_token, candidates):
     if not candidates:
         status = "no_match" if track_gt_token is not None else "unknown"
         return status, None, []
-    if track_gt_token is None or any(
-        candidate["det_gt_token"] is None for candidate in candidates
-    ):
+    if track_gt_token is None:
         return "unknown", None, [None] * len(candidates)
 
     matching_positions = [
@@ -669,12 +720,23 @@ def _derived_gt_target(track_gt_token, candidates):
         for position, candidate in enumerate(candidates)
         if candidate["det_gt_token"] == track_gt_token
     ]
+    labels = [
+        None if candidate["det_gt_token"] is None
+        or (candidate["det_gt_token"] == track_gt_token and len(matching_positions) > 1)
+        else int(candidate["det_gt_token"] == track_gt_token)
+        for candidate in candidates
+    ]
+    if any(label is None for label in labels):
+        # Missing/ambiguous identities mask only those candidates.  A partial
+        # group is usable for BCE but is not a resolved assignment oracle.
+        status = "partial" if any(label is not None for label in labels) else "unknown"
+        return status, None, labels
     if len(matching_positions) == 1:
         target_position = matching_positions[0]
         return (
             "matched",
             candidates[target_position]["det_index"],
-            [int(position == target_position) for position in range(len(candidates))],
+            labels,
         )
     if not matching_positions:
         return "no_match", None, [0] * len(candidates)
@@ -724,7 +786,7 @@ def validate_candidate_group(group):
     if normalized["state_bucket"] not in TRACK_STATES:
         raise ValueError("state_bucket must be matched or unmatched")
     if normalized["gt_target_status"] not in _GROUP_STATUSES:
-        raise ValueError("gt_target_status must be matched, no_match, or unknown")
+        raise ValueError("gt_target_status must be matched, no_match, partial, or unknown")
 
     if "track_embedding" in group:
         normalized["track_embedding"] = _finite_vector(
@@ -1117,7 +1179,7 @@ def _validate_observed_metadata(metadata):
     if normalized["state_bucket"] not in TRACK_STATES:
         raise ValueError("state_bucket must be matched or unmatched")
     if normalized["gt_target_status"] not in _GROUP_STATUSES:
-        raise ValueError("gt_target_status must be matched, no_match, or unknown")
+        raise ValueError("gt_target_status must be matched, no_match, partial, or unknown")
     return normalized
 
 
@@ -1277,7 +1339,7 @@ def validate_accumulator_state(state, max_error_samples=None):
         expected_keys = {
             key
             for bucket_keys in eligible_buckets.values()
-            for key in sorted(bucket_keys)[:max_groups]
+            for key in sorted(bucket_keys, key=lambda key: _retention_key(key, _manifest_sampling_seed(runtime_manifest)))[:max_groups]
         }
     else:
         expected_keys = {
@@ -1326,6 +1388,7 @@ def _empty_counts():
         "matched_groups": 0,
         "no_match_groups": 0,
         "unknown_groups": 0,
+        "partial_groups": 0,
         "candidate_count": 0,
         "finite_candidate_count": 0,
         "gated_candidate_count": 0,
@@ -1492,6 +1555,7 @@ class InferencePairCacheAccumulator:
         if not isinstance(runtime_manifest, Mapping):
             raise TypeError("runtime_manifest must be a mapping")
         self.runtime_manifest = _json_output_copy(runtime_manifest)
+        self.sampling_seed = _manifest_sampling_seed(self.runtime_manifest)
         self._runtime_manifest_canonical = canonical_json(
             self.runtime_manifest
         )
@@ -1506,6 +1570,7 @@ class InferencePairCacheAccumulator:
                 "accumulator require_audit_gt does not match runtime manifest"
             )
         self._observed_metadata = {}
+        self._bucket_priorities = {}
         self._groups = {}
         self._error_count = 0
         self._error_samples = {}
@@ -1534,22 +1599,18 @@ class InferencePairCacheAccumulator:
             return
 
         bucket = (group["class_id"], group["state_bucket"])
-        bucket_keys = [
-            retained_key
-            for retained_key, retained_group in self._groups.items()
-            if (
-                retained_group["class_id"],
-                retained_group["state_bucket"],
-            )
-            == bucket
-        ]
-        if len(bucket_keys) < self.max_groups_per_class_state:
-            self._groups[key] = group
+        priorities = self._bucket_priorities.setdefault(bucket, [])
+        priority = (_retention_key(key, self.sampling_seed), key)
+        if len(priorities) >= self.max_groups_per_class_state and priority >= priorities[-1]:
             return
-        largest_key = max(bucket_keys)
-        if key < largest_key:
-            del self._groups[largest_key]
-            self._groups[key] = group
+        # Cache bounded bucket priorities. Do not scan/re-hash every retained
+        # vector group for each new observation in a full-dataset replay.
+        from bisect import insort
+        insort(priorities, priority)
+        self._groups[key] = group
+        if len(priorities) > self.max_groups_per_class_state:
+            _, dropped = priorities.pop()
+            del self._groups[dropped]
 
     def add_group(self, group):
         normalized = validate_candidate_group(group)
@@ -1918,6 +1979,11 @@ def build_inference_pair_cache_manifest(
         export_options[key.lower()] = _strict_bool(
             f"INFERENCE_PAIR_CACHE.{key}", cache_cfg.get(key, default)
         )
+    if "SAMPLING_SEED" in cache_cfg:
+        export_options["sampling_seed"] = _strict_nonnegative_integer("SAMPLING_SEED", cache_cfg["SAMPLING_SEED"])
+    for key in ("MAX_CANDIDATES_PER_GROUP", "MAX_GROUPS_PER_CLASS_STATE", "CANDIDATE_COST_MARGIN"):
+        if key in cache_cfg:
+            export_options[key.lower()] = cache_cfg[key]
     threshold_bev = _config_section(_config_section(cfg, "THRESHOLD"), "BEV")
     matching_bev = _config_section(_config_section(cfg, "MATCHING"), "BEV")
     bev_cost_mode = threshold_bev.get(

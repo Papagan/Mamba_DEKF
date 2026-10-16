@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import torch
+import yaml
 
 from tools import train_pairwise_association
 from training.association_features import compose_pair_vectors
@@ -33,6 +34,61 @@ def _sample(anchor_id, class_id, label, value, negative_type="positive"):
 
 
 class TrainPairwiseAssociationCliTest(unittest.TestCase):
+    def test_replay_cache_trains_directly_on_exported_vectors(self):
+        from tests.test_replay_association_samples import ReplayAssociationSamplesTest
+        from kalmanfilter.checkpoint_compat import checkpoint_sha256
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            backbone_path = tmp_path / "backbone.pt"
+            encoder = train_pairwise_association.MeanHistoryEncoder(embed_dim=2)
+            torch.save({"model_state_dict": encoder.state_dict()}, backbone_path)
+            payload = ReplayAssociationSamplesTest()._payload()
+            payload["runtime_manifest"]["mamba_checkpoint_sha256"] = checkpoint_sha256(backbone_path)
+            replay_path = tmp_path / "replay.pkl"
+            with replay_path.open("wb") as stream:
+                pickle.dump(payload, stream)
+            config_path = tmp_path / "train.yaml"
+            config_path.write_text(yaml.safe_dump({
+                "MODEL": {"EMBED_DIM": 2, "NUM_CLASSES": 7},
+                "ASSOCIATION_HEAD_TRAINING": {"REQUIRE_ALL_CLASSES": False},
+            }), encoding="utf-8")
+            output_path = tmp_path / "assoc.pt"
+            result = subprocess.run([
+                sys.executable, "tools/train_pairwise_association.py",
+                "--train-config", str(config_path), "--train-pkl", str(replay_path),
+                "--val-pkl", str(replay_path), "--backbone-checkpoint", str(backbone_path),
+                "--output", str(output_path), "--metrics-output", str(tmp_path / "metrics.json"),
+                "--epochs", "1", "--batch-size", "2", "--embed-dim", "2",
+                "--freeze-backbone", "--precompute-embeddings", "--train-mode", "per_class",
+                "--class-ids", "0", "--dry-run",
+            ], cwd=root, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(output_path.exists())
+            checkpoint = torch.load(output_path, map_location="cpu")
+            self.assertEqual(checkpoint["runtime_contract"]["backbone_sha256"], checkpoint_sha256(backbone_path))
+            self.assertEqual(checkpoint["runtime_contract"]["association_sample_source"], "tracker_replay")
+
+    def test_replay_dataset_does_not_allocate_placeholder_histories(self):
+        from tests.test_replay_association_samples import ReplayAssociationSamplesTest
+        from training.association_dataset import PairwiseAssociationDataset, pairwise_association_collate_fn
+        dataset = PairwiseAssociationDataset(ReplayAssociationSamplesTest()._payload())
+        item = dataset[0]
+        self.assertIn("pair_vector", item)
+        self.assertNotIn("anchor_history", item)
+        batch = pairwise_association_collate_fn([item])
+        self.assertEqual(tuple(batch["pair_vector"].shape), (1, 15))
+
+    def test_replay_vectors_bypass_history_encoder(self):
+        class NoEncodingModel:
+            def encode(self, *args, **kwargs):
+                raise AssertionError("Replay vectors must not be re-encoded")
+        vector = torch.arange(15, dtype=torch.float32).reshape(1, 15)
+        actual = train_pairwise_association._pair_vectors_from_batch(
+            NoEncodingModel(), {"pair_vector": vector}, torch.device("cpu")
+        )
+        self.assertTrue(torch.equal(actual, vector))
+
     def test_precompute_forwards_online_history_metadata(self):
         calls = []
 

@@ -67,6 +67,24 @@ def safe_max(vals: List[float]) -> float:
     return float(max(vals)) if vals else 0.0
 
 
+def percentile(vals: List[float], q: float) -> float:
+    if not vals:
+        return 0.0
+    ordered = sorted(float(v) for v in vals)
+    position = (len(ordered) - 1) * float(q)
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return ordered[lower]
+    alpha = position - lower
+    return ordered[lower] * (1.0 - alpha) + ordered[upper] * alpha
+
+
+def wrapped_abs_angle_error(left: float, right: float) -> float:
+    delta = float(left) - float(right)
+    return abs(delta - 2.0 * math.pi * round(delta / (2.0 * math.pi)))
+
+
 def estimate_samples(tracklet_len: int, history_len: int, rollout_steps: int) -> int:
     need = history_len + rollout_steps
     if tracklet_len < need:
@@ -81,12 +99,15 @@ def resolve_class_min_window(
     min_history_len: int,
     min_rollout_steps: int,
     class_window_cfg: Dict[str, Any],
+    include_short_histories: bool = False,
 ) -> tuple[int, int]:
     track_name = category_to_tracking_name(category)
     cfg = (class_window_cfg or {}).get(track_name, {})
     hist_min = int(cfg.get("MIN_HISTORY_LEN", min_history_len))
     roll_min = int(cfg.get("MIN_ROLLOUT_STEPS", min_rollout_steps))
     hist_min = max(1, min(hist_min, history_len))
+    if include_short_histories:
+        hist_min = 1
     roll_min = max(1, min(roll_min, rollout_steps))
     return hist_min, roll_min
 
@@ -122,7 +143,14 @@ def main() -> int:
         "min_history_len": min_history_len,
         "min_rollout_steps": min_rollout_steps,
         "adaptive_windows": adaptive_windows,
+        "include_short_histories": bool(data_cfg.get("INCLUDE_SHORT_HISTORIES", False)),
+        "fusion_valid_frames": 0,
+        "fusion_fake_frames": 0,
+        "unmatched_detection_candidates": 0,
+        "association_only_tracklets": 0,
     }
+    scene_ids = set()
+    source_splits: Dict[str, int] = defaultdict(int)
 
     per_class: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
         "tracklets": 0,
@@ -138,10 +166,24 @@ def main() -> int:
         "tracklet_match_ratios": [],
         "matched_scores": [],
         "all_scores": [],
+        "match_distances": [],
+        "position_errors_xy": [],
+        "velocity_errors_xy": [],
+        "yaw_errors": [],
+        "miss_streaks": [],
+        "fusion_valid_frames": 0,
+        "fusion_fake_frames": 0,
+        "unmatched_detection_candidates": 0,
     })
 
     need = history_len + rollout_steps
     for trk in tracklets:
+        if trk.get("association_only", False):
+            overall["association_only_tracklets"] += 1
+            overall["unmatched_detection_candidates"] += sum(
+                len(fr.get("unmatched_detections", []) or []) for fr in trk.get("frames", [])
+            )
+            continue
         cls = trk.get("category", "unknown")
         hist_min_cls, roll_min_cls = resolve_class_min_window(
             category=cls,
@@ -150,16 +192,20 @@ def main() -> int:
             min_history_len=min_history_len,
             min_rollout_steps=min_rollout_steps,
             class_window_cfg=class_window_cfg,
+            include_short_histories=bool(data_cfg.get("INCLUDE_SHORT_HISTORIES", False)),
         )
         adaptive_need = hist_min_cls + roll_min_cls
         frames = trk.get("frames", [])
         cls_stat = per_class[cls]
+        scene_ids.add(str(trk.get("scene_id", "")))
+        source_splits[str(trk.get("source_split", "unknown"))] += 1
         cls_stat["tracklets"] += 1
         cls_stat["tracklet_lengths"].append(len(frames))
 
         matched_cnt = 0
         score_vals = []
         matched_score_vals = []
+        current_miss_streak = 0
         for fr in frames:
             cls_stat["frames"] += 1
             overall["frames"] += 1
@@ -168,9 +214,45 @@ def main() -> int:
                 cls_stat["matched_frames"] += 1
                 overall["matched_frames"] += 1
                 matched_cnt += 1
+                if current_miss_streak:
+                    cls_stat["miss_streaks"].append(current_miss_streak)
+                    current_miss_streak = 0
+
+                match_distance = fr.get("match_distance")
+                if isinstance(match_distance, (int, float)) and math.isfinite(float(match_distance)):
+                    cls_stat["match_distances"].append(float(match_distance))
+                det_xyz = fr.get("det_global_xyz")
+                gt_xyz = fr.get("gt_global_xyz")
+                if det_xyz is not None and gt_xyz is not None:
+                    cls_stat["position_errors_xy"].append(math.hypot(
+                        float(det_xyz[0]) - float(gt_xyz[0]),
+                        float(det_xyz[1]) - float(gt_xyz[1]),
+                    ))
+                det_velocity = fr.get("det_velocity")
+                gt_velocity = fr.get("gt_velocity")
+                if det_velocity is not None and gt_velocity is not None:
+                    cls_stat["velocity_errors_xy"].append(math.hypot(
+                        float(det_velocity[0]) - float(gt_velocity[0]),
+                        float(det_velocity[1]) - float(gt_velocity[1]),
+                    ))
+                if fr.get("det_yaw") is not None and fr.get("gt_yaw") is not None:
+                    cls_stat["yaw_errors"].append(wrapped_abs_angle_error(
+                        float(fr["det_yaw"]), float(fr["gt_yaw"])
+                    ))
             else:
                 cls_stat["miss_frames"] += 1
                 overall["miss_frames"] += 1
+                current_miss_streak += 1
+
+            if bool(fr.get("fusion_valid", False)):
+                cls_stat["fusion_valid_frames"] += 1
+                overall["fusion_valid_frames"] += 1
+            if bool(fr.get("fusion_is_fake", False)):
+                cls_stat["fusion_fake_frames"] += 1
+                overall["fusion_fake_frames"] += 1
+            candidate_count = len(fr.get("unmatched_detections", []) or [])
+            cls_stat["unmatched_detection_candidates"] += candidate_count
+            overall["unmatched_detection_candidates"] += candidate_count
 
             obs = fr.get("obs_feature_12", None)
             score = None
@@ -182,6 +264,9 @@ def main() -> int:
                 score_vals.append(float(score))
                 if is_matched:
                     matched_score_vals.append(float(score))
+
+        if current_miss_streak:
+            cls_stat["miss_streaks"].append(current_miss_streak)
 
         match_ratio = float(matched_cnt / len(frames)) if frames else 0.0
         cls_stat["tracklet_match_ratios"].append(match_ratio)
@@ -206,6 +291,8 @@ def main() -> int:
         "overall": {
             **overall,
             "matched_ratio": float(overall["matched_frames"] / overall["frames"]) if overall["frames"] else 0.0,
+            "scenes": len(scene_ids),
+            "source_splits": dict(sorted(source_splits.items())),
         },
         "per_class": {},
     }
@@ -234,6 +321,18 @@ def main() -> int:
             "score_matched_min": safe_min(stat["matched_scores"]),
             "score_matched_mean": safe_mean(stat["matched_scores"]),
             "score_matched_max": safe_max(stat["matched_scores"]),
+            "match_distance_p50": percentile(stat["match_distances"], 0.50),
+            "match_distance_p90": percentile(stat["match_distances"], 0.90),
+            "match_distance_p95": percentile(stat["match_distances"], 0.95),
+            "match_distance_p99": percentile(stat["match_distances"], 0.99),
+            "position_error_xy_mean": safe_mean(stat["position_errors_xy"]),
+            "velocity_error_xy_mean": safe_mean(stat["velocity_errors_xy"]),
+            "yaw_error_mean": safe_mean(stat["yaw_errors"]),
+            "miss_streak_mean": safe_mean(stat["miss_streaks"]),
+            "miss_streak_max": safe_max(stat["miss_streaks"]),
+            "fusion_valid_frames": stat["fusion_valid_frames"],
+            "fusion_fake_frames": stat["fusion_fake_frames"],
+            "unmatched_detection_candidates": stat["unmatched_detection_candidates"],
         }
 
     out_text = json.dumps(summary, indent=2, ensure_ascii=False)

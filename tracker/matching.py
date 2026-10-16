@@ -10,6 +10,7 @@ import lap
 import numpy as np
 
 from tracker.cost_function import *
+from tracker.compat_utils import resolve_bev_cost_state
 from utils.utils import mask_tras_dets
 from utils.debug_log import emit_debug_line
 
@@ -647,6 +648,8 @@ def _export_inference_pair_cache_groups(
             thresholds=export_thresholds,
             include_embeddings=cache_cfg.get("INCLUDE_EMBEDDINGS", True),
             include_pair_vectors=cache_cfg.get("INCLUDE_PAIR_VECTORS", True),
+            max_candidates_per_group=cache_cfg.get("MAX_CANDIDATES_PER_GROUP", 0),
+            candidate_cost_margin=cache_cfg.get("CANDIDATE_COST_MARGIN"),
         )
         stage = "callback"
         callback(groups)
@@ -871,12 +874,14 @@ def cost_calculate_general(trajs, dets, cfg, transform_matrix, is_rv=False):
 
     for t, trk in enumerate(trajs):
         for d, det in enumerate(dets):
-            trk_category = cfg["CATEGORY_MAP_TO_NUMBER"][trajs[0].bboxes[-1].category]
+            trk_category = cfg["CATEGORY_MAP_TO_NUMBER"][trk.bboxes[-1].category]
             match_type = "BEV"
             if is_rv:
                 match_type = "RV"
             cost_mode = cfg["MATCHING"][match_type]["COST_MODE"][trk_category]
             cost_state = cfg["MATCHING"][match_type]["COST_STATE"][trk_category]
+            if not is_rv:
+                cost_state = resolve_bev_cost_state(cfg, trk_category, cost_state)
             cost_state_predict_ratio = cfg["THRESHOLD"]["COST_STATE_PREDICT_RATION"][
                 trk_category
             ]
@@ -982,6 +987,9 @@ def cost_calculate_uncertainty_aware(
     # ---- compute combined cost per pair ----
     for t, trk in enumerate(trajs):
         cf = cal_flags[t]
+        if (cfg.get("LEARNED_MOTION_MATCHING", {}) or {}).get("ENABLED", False):
+            class_id = cfg["CATEGORY_MAP_TO_NUMBER"][trk.bboxes[-1].category]
+            cf = resolve_bev_cost_state(cfg, class_id, cf)
         for d, det in enumerate(dets):
             cost_matrix[t, d] = cal_uncertainty_aware_cost(
                 trk, det, cfg,

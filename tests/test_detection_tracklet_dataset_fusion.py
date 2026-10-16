@@ -80,6 +80,92 @@ def _frame(
 
 
 class DetectionTrackletDatasetFusionTest(unittest.TestCase):
+    def test_short_history_flag_supervises_startup_without_GT_initialization(self):
+        dataset = self._dataset_from_frames(
+            [self._simple_frame(i) for i in range(4)],
+            history_source="fusion", init_state_source="fusion", include_short_histories=True,
+        )
+        startup = dataset[0]
+        self.assertEqual(int(startup["history_mask"].sum()), 1)
+        self.assertEqual(int(startup["effective_history_len"]), 1)
+        self.assertAlmostEqual(startup["obs_current_state_pos"][0].item(), 10.0)
+        self.assertNotEqual(startup["gt_current_state_pos"][0].item(), 10.0)
+
+    def test_short_history_rebirth_never_includes_previous_lifecycle(self):
+        frames = [self._simple_frame(0), self._simple_frame(1, matched=False, valid=False),
+                  self._simple_frame(2, lifecycle=2), self._simple_frame(3, lifecycle=2)]
+        dataset = self._dataset_from_frames(frames, history_source="fusion", init_state_source="fusion", include_short_histories=True)
+        birth = next(dataset[index] for index, sample in enumerate(dataset.samples)
+                     if sample["current_frame"]["frame_id"] == 2)
+        self.assertEqual(int(birth["history_mask"].sum()), 1)
+        self.assertEqual(birth["track_history"][0].abs().sum().item(), 0.0)
+
+    def test_old_fusion_cache_is_rejected_when_state_contract_is_required(self):
+        with self.assertRaisesRegex(ValueError, "regenerate"):
+            self._dataset_from_frames(
+                [self._simple_frame(i) for i in range(3)],
+                history_source="fusion", init_state_source="fusion", required_state_output_mode="filter",
+            )
+        with self.assertRaisesRegex(ValueError, "startup/rebirth"):
+            self._dataset_from_frames(
+                [self._simple_frame(i) for i in range(3)], history_source="fusion", init_state_source="fusion",
+                required_fusion_schema_version=2,
+            )
+
+    def _simple_frame(self, index, *, matched=True, valid=True, lifecycle=1):
+        frame = _frame(
+            index, float(index), is_matched=matched,
+            det_xyz=[10.0 + index, 0.0, 1.0] if matched else None,
+            det_lwh=[4.0, 2.0, 1.5] if matched else None,
+            det_yaw=0.0 if matched else None, det_vel=[1.0, 0.0] if matched else None,
+            det_score=0.8 if matched else 0.0,
+            fusion_valid=valid, fusion_is_fake=not matched,
+            fusion_xyz=[10.0 + index, 0.0, 1.0] if valid else None,
+            fusion_lwh=[4.0, 2.0, 1.5] if valid else None,
+            fusion_yaw=0.0 if valid else None, fusion_vel=[1.0, 0.0] if valid else None,
+        )
+        frame["gt_global_xyz"] = [1000.0, 1000.0, 1000.0]
+        frame["fusion_lifecycle_id"] = lifecycle if valid else None
+        return frame
+
+    def _dataset_from_frames(self, frames, **kwargs):
+        with tempfile.NamedTemporaryFile(suffix=".pkl") as stream:
+            pickle.dump([{"instance_token": "a", "category": "car", "frames": frames}], stream)
+            stream.flush()
+            return DetectionTrackletDataset(
+                stream.name, history_len=2, rollout_steps=1,
+                require_current_match=False, min_history_match_ratio=0.0,
+                **kwargs,
+            )
+
+    def test_miss_window_uses_live_fusion_not_gt_and_correct_state(self):
+        ds = self._dataset_from_frames(
+            [self._simple_frame(0), self._simple_frame(1, matched=False), self._simple_frame(2)],
+            history_source="fusion", init_state_source="fusion",
+        )
+        self.assertEqual(len(ds), 1)
+        sample = ds[0]
+        self.assertEqual(sample["state_bucket"], "unmatched")
+        self.assertFalse(sample["current_is_matched"].item())
+        self.assertAlmostEqual(sample["obs_current_state_pos"][0].item(), 11.0)
+        self.assertAlmostEqual(sample["current_range"].item(), 11.0)
+        self.assertEqual(sample["history_match_mask"].tolist(), [True, False])
+
+    def test_invalid_fusion_and_raw_miss_cannot_initialize_from_gt(self):
+        frames = [self._simple_frame(0), self._simple_frame(1, matched=False, valid=False),
+                  self._simple_frame(2)]
+        fused = self._dataset_from_frames(frames, history_source="fusion", init_state_source="fusion")
+        raw = self._dataset_from_frames(frames, history_source="det", init_state_source="det")
+        self.assertEqual(len(fused), 0)
+        self.assertEqual(len(raw), 0)
+
+    def test_rebirth_requires_new_lifecycle_history(self):
+        frames = [self._simple_frame(0), self._simple_frame(1, lifecycle=2),
+                  self._simple_frame(2, lifecycle=2), self._simple_frame(3, lifecycle=2)]
+        ds = self._dataset_from_frames(frames, history_source="fusion", init_state_source="fusion")
+        self.assertEqual(len(ds), 1)
+        self.assertEqual(ds.samples[0]["current_frame"]["frame_id"], 2)
+
     def test_requires_fusion_fields_when_fusion_sources_enabled(self):
         tracklets = [{
             "instance_token": "inst_plain",

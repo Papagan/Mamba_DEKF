@@ -207,9 +207,43 @@ def normalize_tracker_compat_mode(mode) -> str:
     return str(mode).strip().lower()
 
 
+def uses_filter_state_output(cfg) -> bool:
+    """MCTrack lifecycle policy must never replace a learned filter's state.
+
+    Legacy geometry is allowed only for pure-DEKF baseline experiments.  An
+    explicit legacy request in a learned branch is an error, not a silent gate.
+    """
+    cfg = cfg or {}
+    mode = str(cfg.get("STATE_OUTPUT_MODE", "auto")).strip().lower()
+    if mode not in {"auto", "filter", "legacy_mctrack"}:
+        raise ValueError("STATE_OUTPUT_MODE must be auto, filter, or legacy_mctrack")
+    noise_cfg = cfg.get("DEKF_BASE_NOISE", cfg.get("BASE_NOISE", {})) or {}
+    learned = (
+        str(cfg.get("FILTER_MODE", "mamba")).lower() != "pure_dekf"
+        or bool((noise_cfg.get("MAMBA_STATE_RESIDUAL", {}) or {}).get("ENABLED", False))
+    )
+    if mode == "legacy_mctrack" and learned:
+        raise ValueError("legacy_mctrack state output cannot overwrite learned state; use filter")
+    return mode == "filter" or (mode == "auto" and learned)
+
+
 def initial_status_flag_for_mode(mode) -> int:
     mode = normalize_tracker_compat_mode(mode)
     return 1 if mode == "mctrack" else 0
+
+
+def resolve_bev_cost_state(cfg, class_id, fallback="Predict") -> str:
+    """Route learned forward geometry independently of MCTrack lifecycle."""
+    states = ((cfg.get("MATCHING", {}) or {}).get("BEV", {}) or {}).get("COST_STATE", {})
+    state = states.get(class_id, states.get(str(class_id), fallback))
+    learned = cfg.get("LEARNED_MOTION_MATCHING", {}) or {}
+    if learned.get("ENABLED", False) and str(cfg.get("FILTER_MODE", "mamba")).lower() != "pure_dekf":
+        state = learned.get("COST_STATE", "Predict")
+        if state not in {"Predict", "Fusion"}:
+            raise ValueError("LEARNED_MOTION_MATCHING.COST_STATE must be Predict or Fusion")
+    if state not in {"Predict", "BackPredict", "Fusion"}:
+        raise ValueError(f"Unsupported BEV COST_STATE={state!r}")
+    return state
 
 
 def score_for_unmatched_fake_bbox(last_real_score: float, unmatch_length: int, mode) -> float:
@@ -280,7 +314,7 @@ def classify_single_stage_birth(
 
 def use_mctrack_exact_unmatch_update(cfg, category_num: int) -> bool:
     compat_mode = normalize_tracker_compat_mode((cfg or {}).get("TRACKER_COMPAT_MODE", "default"))
-    if compat_mode != "mctrack":
+    if compat_mode != "mctrack" and (cfg or {}).get("STATE_OUTPUT_MODE") != "filter":
         return False
     if not bool((cfg or {}).get("MCTRACK_EXACT_UNMATCH_UPDATE", False)):
         return False
@@ -290,7 +324,7 @@ def use_mctrack_exact_unmatch_update(cfg, category_num: int) -> bool:
 
 def use_mctrack_exact_matched_update(cfg, category_num: int) -> bool:
     compat_mode = normalize_tracker_compat_mode((cfg or {}).get("TRACKER_COMPAT_MODE", "default"))
-    if compat_mode != "mctrack":
+    if compat_mode != "mctrack" and (cfg or {}).get("STATE_OUTPUT_MODE") != "filter":
         return False
     if not bool((cfg or {}).get("MCTRACK_EXACT_MATCHED_UPDATE", False)):
         return False
@@ -300,7 +334,7 @@ def use_mctrack_exact_matched_update(cfg, category_num: int) -> bool:
 
 def extract_bbox_history_fields(bbox, compat_mode):
     compat_mode = normalize_tracker_compat_mode(compat_mode)
-    if compat_mode == "mctrack":
+    if compat_mode == "mctrack" or getattr(bbox, "filter_state_output", False):
         xyz_fusion = getattr(bbox, "global_xyz_lwh_yaw_fusion", None)
         vel_fusion = getattr(bbox, "global_velocity_fusion", None)
         lwh_fusion = getattr(bbox, "lwh_fusion", None)

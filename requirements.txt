@@ -23,7 +23,7 @@ torch>=1.12.0
 #   - Linux x86_64
 # Install with:  pip install mamba-ssm
 # If mamba-ssm is unavailable, the code auto-falls back to GRU.
-mamba-ssm>=1.2.0; python_version>="3.8"
+mamba-ssm>=2.2.0; python_version>="3.8"
 
 # ============================================================
 # Dataset-specific (install as needed)

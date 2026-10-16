@@ -151,6 +151,23 @@ def _resolve_train_noise_audit_state(
     return "unmatched"
 
 
+def _resolve_train_state_buckets(batch, batch_size, fallback_state):
+    """Use each window's actual latest observation state for head routing."""
+    states = batch.get("state_bucket")
+    if states is None:
+        matched = batch.get("current_is_matched")
+        if matched is not None:
+            if hasattr(matched, "tolist"):
+                matched = matched.tolist()
+            states = ["matched" if bool(value) else "unmatched" for value in matched]
+        else:
+            states = [fallback_state] * batch_size
+    states = list(states)
+    if len(states) != batch_size or any(state not in {"matched", "unmatched"} for state in states):
+        raise ValueError("Training state buckets must align with the batch and be matched/unmatched")
+    return states
+
+
 def _record_train_noise_audit_samples(
     noise_audit,
     *,
@@ -204,13 +221,14 @@ def _record_train_noise_audit_samples(
         prior_r_ori=_to_list(prior_r_ori),
     )
 
-    for class_name, sample in zip(class_names, samples):
+    audit_states = [audit_state] * len(class_names) if isinstance(audit_state, str) else list(audit_state)
+    for class_name, sample, sample_state in zip(class_names, samples, audit_states):
         noise_audit.add_sample(
             split="train",
             mode=sample["mode"],
             class_id=sample["class_id"],
             class_name=class_name,
-            state=audit_state,
+            state=sample_state,
             history_len=sample["history_len"],
             families=sample["families"],
             prior_families=sample["prior_families"],
@@ -715,13 +733,11 @@ def training_step(
     emit_sample_metrics: bool = False,
 ) -> tuple:
     """
-    Multi-step KF rollout training with noisy teacher forcing.
+    Multi-step KF rollout with detector/fusion initialization and GT targets.
 
-    Mamba runs ONCE to predict Q/R/kappa from the history window.
-    The KF is initialised from a NOISY GT state (simulating tracking
-    uncertainty), then runs K predict-update steps. Noisy GT measurements
-    are fed to KF.update (teacher forcing), but the NLL loss at each step
-    compares predictions to CLEAN GT.
+    Mamba runs once per history window. Detection-driven batches initialize
+    from observed/fused states and use real future detections outside sampled
+    coast segments. Legacy GT-only batches retain noisy GT teacher forcing.
 
     Confidence warmup (epoch < warmup_epochs):
       Q/R/kappa are detached → constant noise → gradients only flow through
@@ -794,7 +810,10 @@ def training_step(
         obs_future_pos,
         obs_future_match,
     )
-    state_buckets = [audit_state] * B
+    state_buckets = _resolve_train_state_buckets(batch, B, audit_state)
+    detection_driven_mask = detection_driven_mask & torch.tensor(
+        [state == "matched" for state in state_buckets], device=device, dtype=torch.bool
+    )
 
     mamba_out = mamba(
         history,
@@ -808,7 +827,7 @@ def training_step(
         mode=branch_name,
     )
 
-    # ---- Step 2: Init KF from GT state at frame T (+ noise) ----
+    # ---- Step 2: Init KF from observed/fused state (+ training perturbations) ----
     if noise_cfg is None:
         noise_cfg = {
             "POS_STD_XY": [
@@ -879,7 +898,7 @@ def training_step(
         _record_train_noise_audit_samples(
             train_noise_audit,
             filter_mode=filter_mode,
-            audit_state=audit_state,
+            audit_state=state_buckets,
             categories=categories,
             class_ids=class_ids,
             history_mask=history_mask,
@@ -1147,10 +1166,9 @@ def training_step(
         # every rollout loss into the exact head consumed by online inference;
         # the tracker then replans that control from updated history each frame.
         motion_delta_k = mamba_out["delta_pos"]
-        motion_state_buckets = [
-            "unmatched" if bool(forced_coast_mask[idx, k].item()) else "matched"
-            for idx in range(B)
-        ]
+        # The control was produced by the head for each input window's state.
+        # Keep its gate consistent while reusing it over the coast horizon.
+        motion_state_buckets = list(state_buckets)
         pos_x_pred, siz_x_pred, ori_x_pred, motion_active_mask = apply_bounded_state_residuals(
             pos_x_pred,
             siz_x_pred,
@@ -1800,9 +1818,12 @@ def main():
             adaptive_windows=train_adaptive_windows,
             min_history_len=min_history_len,
             min_rollout_steps=min_rollout_steps,
-            class_window_cfg=class_window_cfg if train_adaptive_windows else {},
+            class_window_cfg=class_window_cfg,
             history_source=history_source,
             init_state_source=init_state_source,
+            required_state_output_mode=data_cfg.get("STATE_OUTPUT_MODE") if history_source == "fusion" else None,
+            include_short_histories=bool(data_cfg.get("INCLUDE_SHORT_HISTORIES", False)),
+            required_fusion_schema_version=data_cfg.get("FUSION_FEATURE_SCHEMA_VERSION") if history_source == "fusion" else None,
         )
         train_collate_fn = detection_tracklet_collate_fn
     else:
@@ -1811,7 +1832,7 @@ def main():
                                         adaptive_windows=train_adaptive_windows,
                                         min_history_len=min_history_len,
                                         min_rollout_steps=min_rollout_steps,
-                                        class_window_cfg=class_window_cfg if train_adaptive_windows else {})
+                                        class_window_cfg=class_window_cfg)
         train_collate_fn = tracklet_collate_fn
 
     if val_source == "det":
@@ -1824,9 +1845,12 @@ def main():
             adaptive_windows=val_adaptive_windows,
             min_history_len=min_history_len,
             min_rollout_steps=min_rollout_steps,
-            class_window_cfg=class_window_cfg if val_adaptive_windows else {},
+            class_window_cfg=class_window_cfg,
             history_source=history_source,
             init_state_source=init_state_source,
+            required_state_output_mode=data_cfg.get("STATE_OUTPUT_MODE") if history_source == "fusion" else None,
+            include_short_histories=bool(data_cfg.get("INCLUDE_SHORT_HISTORIES", False)),
+            required_fusion_schema_version=data_cfg.get("FUSION_FEATURE_SCHEMA_VERSION") if history_source == "fusion" else None,
         )
         val_collate_fn = detection_tracklet_collate_fn
     else:
@@ -1835,7 +1859,7 @@ def main():
                                       adaptive_windows=val_adaptive_windows,
                                       min_history_len=min_history_len,
                                       min_rollout_steps=min_rollout_steps,
-                                      class_window_cfg=class_window_cfg if val_adaptive_windows else {})
+                                      class_window_cfg=class_window_cfg)
         val_collate_fn = tracklet_collate_fn
 
     train_loader = DataLoader(
@@ -1892,15 +1916,19 @@ def main():
         num_classes=model_cfg.get("NUM_CLASSES", 10),
         min_diag_siz=model_cfg.get("MIN_DIAG_SIZ", 0.05),
         min_kappa=model_cfg.get("MIN_KAPPA", 0.1),
+        backbone_variant=model_cfg.get("BACKBONE", "mamba1"),
+        mamba2_headdim=model_cfg.get("MAMBA2_HEADDIM", 64),
+        mamba2_ngroups=model_cfg.get("MAMBA2_NGROUPS", 1),
         base_noise_cfg=cfg.get("BASE_NOISE", None),
     ).to(device)
-    backbone_type = "mamba_ssm" if getattr(mamba, "mamba_layers", None) is not None else "fallback_gru"
+    backbone_type = str(getattr(mamba, "backbone_type", "fallback_gru"))
     require_mamba_ssm = bool(train_cfg.get("REQUIRE_MAMBA_SSM", False))
-    if require_mamba_ssm and backbone_type != "mamba_ssm":
+    requested_backbone = str(model_cfg.get("BACKBONE", "mamba1")).strip().lower()
+    if require_mamba_ssm and backbone_type != requested_backbone:
         raise RuntimeError(
-            "TRAINING.REQUIRE_MAMBA_SSM=true but TemporalMamba was built with "
-            "fallback_gru. Verify `from mamba_ssm.modules.mamba_simple import Mamba` "
-            "works in the same Python environment used for training."
+            "TRAINING.REQUIRE_MAMBA_SSM=true but TemporalMamba could not build "
+            f"the requested {requested_backbone!r} backbone (actual={backbone_type!r}). "
+            "Verify the installed mamba-ssm version and CUDA build in the training environment."
         )
 
     n_params = sum(p.numel() for p in mamba.parameters() if p.requires_grad)
@@ -2045,6 +2073,11 @@ def main():
     closure_runtime_cfg = (cfg.get("BASE_NOISE", {}) or {}).get("MAMBA_CLOSURE", {}) or {}
     runtime_contract = {
         "tracker_compat_mode": train_tracker_compat_mode,
+        "state_output_mode": data_cfg.get("STATE_OUTPUT_MODE", "auto"),
+        "history_class_windows": class_window_cfg,
+        "include_short_histories": bool(data_cfg.get("INCLUDE_SHORT_HISTORIES", False)),
+        "fusion_feature_schema_version": data_cfg.get("FUSION_FEATURE_SCHEMA_VERSION"),
+        "orientation_covariance_mode": "prior_ratio_v2",
         "history_source": history_source,
         "init_state_source": init_state_source,
         "filter_mode": resolve_runtime_contract_filter_mode(cfg, train_tracker_compat_mode),

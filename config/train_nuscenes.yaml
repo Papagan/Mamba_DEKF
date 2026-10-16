@@ -18,11 +18,14 @@ DATA:
   HISTORY_SOURCE: fusion    # det / fusion
   INIT_STATE_SOURCE: fusion # det / fusion
   TRAIN_TRACKER_COMPAT_MODE: mctrack  # default / mctrack (saved into checkpoint runtime contract)
+  STATE_OUTPUT_MODE: filter # independent of MCTrack lifecycle; never overwrite learned state
+  FUSION_FEATURE_SCHEMA_VERSION: 2 # birth/rebirth angular velocity follows online initialization
   EXPECTED_BEV_COST_MODE: geometric   # saved into checkpoint runtime contract for inference-side consistency checks
   FUSION_MAX_PREDICT_LEN: 3 # used by tools/augment_tracklet_cache_with_fusion.py for local coast rollout
-  REQUIRE_CURRENT_MATCH: true
+  REQUIRE_CURRENT_MATCH: false # include live coasted histories; never initialize misses from GT
   MIN_HISTORY_MATCH_RATIO: 0.25
   TRAIN_ADAPTIVE_WINDOWS: true
+  INCLUDE_SHORT_HISTORIES: true # supervise startup/rebirth prefixes, including one-frame histories
   VAL_ADAPTIVE_WINDOWS: false
   MIN_HISTORY_LEN: 4
   MIN_ROLLOUT_STEPS: 2
@@ -65,36 +68,19 @@ DATA:
   CATEGORY_FILTER: null   # null = all categories; or ["car", "pedestrian"]
 
 # ---- Model (TemporalMamba) ----
-# Scale-up schemes (A=conservative, B=aggressive). Both keep input features same,
-# only Mamba backbone scales. MAMBA_LR must be adjusted inversely with depth.
-#
-# Current:   3 layers,  D_MODEL=64,  ~91K params,  MAMBA_LR=5e-5  (baseline)
-# Scheme A:  5 layers,  D_MODEL=64,  ~120K params, MAMBA_LR=3e-5  (recommended)
-# Scheme B:  6 layers,  D_MODEL=96,  ~250K params, MAMBA_LR=2e-5  (heavy, 2x memory)
-#
-# To switch: uncomment the desired block and comment the other.
+# Mamba-2 backbone. Parameter count is logged at startup because it depends on
+# d_state/headdim/ngroups and should not reuse the old Mamba-1 estimates.
 MODEL:
-  # ---- Baseline (3 layers, ~91K params) ----
-  # D_MODEL: 64
-  # D_STATE: 16
-  # D_CONV: 4
-  # EXPAND: 2
-  # N_MAMBA_LAYERS: 3
-  # EMBED_DIM: 32
-  # ---- Scheme A: conservative scale-up (5 layers, ~120K params, active) ----
+  BACKBONE: mamba2
+  # ---- Active Mamba-2 backbone ----
   D_MODEL: 96
-  D_STATE: 24
+  D_STATE: 64
   D_CONV: 4
   EXPAND: 2
+  MAMBA2_HEADDIM: 64
+  MAMBA2_NGROUPS: 1
   N_MAMBA_LAYERS: 6
   EMBED_DIM: 64
-  # ---- Scheme B: aggressive scale-up (higher MAMBA_LR risk → reduce to 2e-5) ----
-  # D_MODEL: 96
-  # D_STATE: 24
-  # D_CONV: 4
-  # EXPAND: 2
-  # N_MAMBA_LAYERS: 6
-  # EMBED_DIM: 64
   HISTORY_LEN: 8            # max history length; adaptive training may sample shorter valid suffixes
   INPUT_HISTORY_SOURCE: track # must match inference MAMBA.INPUT_HISTORY_SOURCE
   NUM_CLASSES: 7             # nuScenes tracking classes with independent closure heads
@@ -128,7 +114,7 @@ MAMBA_ASSOCIATION_PRIOR:
 ASSOCIATION_HEAD_TRAINING:
   ENABLED: true
   RUN_AFTER_MAIN: true
-  REQUIRE_FEATURE_SCHEMA_VERSION: 2
+  REQUIRE_FEATURE_SCHEMA_VERSION: 3
   TRAIN_PAIRWISE_PKL: /root/autodl-tmp/data/training_cache/nuscenes/mini/train_pairwise_assoc.pkl
   VAL_PAIRWISE_PKL: /root/autodl-tmp/data/training_cache/nuscenes/mini/val_pairwise_assoc.pkl
   OUTPUT: checkpoints/mamba_motion/best_assoc.pt
@@ -160,7 +146,7 @@ TRAINING:
   NUM_WORKERS: 4
   EPOCHS: 100
   LR: 5.0e-4                # base LR for projection/head layers; slightly lower to stabilise head/noise coupling
-  MAMBA_LR: 3.0e-5          # lower LR for Mamba SSM backbone (3e-5 for 5 layers)
+  MAMBA_LR: 3.0e-5          # conservative starting LR for the 6-layer Mamba-2 backbone
   WEIGHT_DECAY: 1.0e-4
   WARMUP_EPOCHS: 3             # LR scheduler warmup
   WARMUP_UNCERTAINTY_EPOCHS: 8 # detach Q/R/kappa longer so state backbone stabilises before uncertainty learning
@@ -264,8 +250,8 @@ BASE_NOISE:
     ENABLED: true
     MODE: prior_conditioned_multihead
     USE_CONDITIONAL_PRIOR: false
-    FORCE_COAST_PRIOR_ONLY: true
-    FORCE_PRIOR_STATES: ["matched"]
+    FORCE_COAST_PRIOR_ONLY: false
+    FORCE_PRIOR_STATES: []
     TRAIN_ALL_CLASS_STATES: true
     ACTIVE_CLASS_STATES: {}
     TRAIN_MATCHED_HEAD:
@@ -304,7 +290,7 @@ BASE_NOISE:
     ORI_TRANSITION_EPOCHS: 8
     ORI_STATE_WEIGHT: 1.0
     ORI_WRAPPED_NLL_WEIGHT: 1.0
-    ORI_SATURATION_REG_WEIGHT: 1.0e-5
+    ORI_SATURATION_REG_WEIGHT: 0.0 # closure uses bounded prior ratios, not a global kappa ceiling
     ORI_MAX_EFFECTIVE_KAPPA: 5.0
     PROFILES:
       stable_large:

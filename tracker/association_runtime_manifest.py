@@ -100,12 +100,11 @@ def _expected_association_runtime_contract(
         else:
             expected[field] = normalized
 
-    # This mirrors extract_bbox_history_fields(): mctrack consumes fused track
-    # states while the default compatibility path consumes detector states.
+    # Explicit filter output decouples fused history from lifecycle compatibility.
     tracker_compat_mode = expected.get("tracker_compat_mode")
     if tracker_compat_mode is not None:
         expected["history_source"] = (
-            "fusion" if tracker_compat_mode == "mctrack" else "det"
+            "fusion" if tracker_compat_mode == "mctrack" or runtime_cfg.get("STATE_OUTPUT_MODE") == "filter" else "det"
         )
 
     threshold_cfg = runtime_cfg.get("THRESHOLD", {}) or {}
@@ -170,6 +169,10 @@ def validate_association_runtime_contract(
         if field not in expected or field not in actual:
             continue
         if expected[field] != actual[field]:
+            if (field == "tracker_compat_mode"
+                    and checkpoint_contract.get("state_output_mode") == "filter"
+                    and (runtime_cfg or {}).get("STATE_OUTPUT_MODE") == "filter"):
+                continue # lifecycle ablations do not change the pair-vector state contract
             mismatches[field] = {
                 "expected": expected[field],
                 "actual": actual[field],

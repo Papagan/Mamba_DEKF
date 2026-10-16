@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from training.pairwise_association_cache import (
     build_pairwise_association_samples,
@@ -34,6 +35,29 @@ def _frame(sample_token, frame_id, x, y, *, matched=True, score=0.8, fusion_vali
 
 
 class PairwiseAssociationCacheTest(unittest.TestCase):
+    def test_bootstrap_mining_uses_the_same_learned_geometry_override(self):
+        from training.pairwise_association_cache import _runtime_matching_cost
+        current, future = _frame("s0", 0, 0., 0.), _frame("s1", 1, 1., 0.)
+        cfg = {"MATCHING": {"BEV": {"COST_STATE": {0: "BackPredict"}}},
+               "LEARNED_MOTION_MATCHING": {"ENABLED": True}}
+        with patch("training.pairwise_association_cache._runtime_geometric_cost", side_effect=[.2, .8]):
+            self.assertAlmostEqual(_runtime_matching_cost(current, future, future, "car", "det", cfg), .2)
+        cfg["LEARNED_MOTION_MATCHING"]["ENABLED"] = False
+        with patch("training.pairwise_association_cache._runtime_geometric_cost", side_effect=[.2, .8]):
+            self.assertAlmostEqual(_runtime_matching_cost(current, future, future, "car", "det", cfg), .8)
+
+    def test_class_window_caps_history_without_changing_vector_shape(self):
+        frames = [_frame(f"s{i}", i, float(i), 0.0) for i in range(10)]
+        samples, _ = build_pairwise_association_samples(
+            [{"instance_token": "bike", "category": "bicycle", "frames": frames}],
+            history_len=8, max_hard_negatives=0, max_easy_negatives=0,
+            class_window_cfg={"bicycle": {"MAX_HISTORY_LEN": 6}},
+        )
+        sample = next(item for item in samples if item["current_sample_token"] == "s8")
+        self.assertEqual(len(sample["anchor_history_12"]), 8)
+        self.assertEqual(sum(sample["anchor_history_mask"]), 6)
+        self.assertEqual(sample["anchor_history_12"][:2], [[0.0] * 12] * 2)
+
     def test_unmatched_detection_becomes_negative_candidate(self):
         frames = [_frame("s0", 0, 0.0, 0.0), _frame("s1", 1, 1.0, 0.0)]
         false_positive = _frame("s1", 1, 1.3, 0.0)
@@ -184,7 +208,7 @@ class PairwiseAssociationCacheTest(unittest.TestCase):
         self.assertAlmostEqual(anchor["anchor_current_range"], (12.0**2 + 10.0**2)**0.5)
         self.assertEqual(anchor["anchor_history_mask"], [False, True])
         self.assertEqual(anchor["anchor_history_match_mask"], [False, True])
-        self.assertEqual(anchor["feature_schema_version"], 2)
+        self.assertEqual(anchor["feature_schema_version"], 3)
         self.assertEqual(anchor["history_source"], "fusion")
 
     def test_fusion_history_is_relative_to_current_fused_track_position(self):
@@ -450,6 +474,50 @@ class PairwiseAssociationCacheTest(unittest.TestCase):
         self.assertEqual(bus_a_negatives[0]["negative_type"], "inference_topk")
         self.assertAlmostEqual(bus_a_negatives[0]["center_distance"], 3.0)
 
+    def test_inference_margin_can_rank_with_runtime_geometric_cost(self):
+        tracklets = [
+            {
+                "instance_token": "car-a",
+                "category": "car",
+                "frames": [_frame("s0", 0, 0.0, 0.0), _frame("s1", 1, 0.0, 0.0)],
+            },
+            {
+                "instance_token": "car-near-cost",
+                "category": "car",
+                "frames": [_frame("s0", 0, 5.0, 0.0), _frame("s1", 1, 2.0, 0.0)],
+            },
+            {
+                "instance_token": "car-far-cost",
+                "category": "car",
+                "frames": [_frame("s0", 0, 8.0, 0.0), _frame("s1", 1, 4.0, 0.0)],
+            },
+        ]
+
+        def fake_runtime_cost(_current, _future, candidate, _category, _source, _cfg):
+            return {0.0: 0.20, 2.0: 0.24, 4.0: 0.40}[candidate["det_global_xyz"][0]]
+
+        with patch(
+            "training.pairwise_association_cache._runtime_matching_cost",
+            side_effect=fake_runtime_cost,
+        ):
+            samples, _ = build_pairwise_association_samples(
+                tracklets,
+                history_len=2,
+                negative_mining_mode="inference_margin",
+                inference_margin_metric="runtime_geometric",
+                runtime_cost_config={"THRESHOLD": {}},
+                cost_margin_eps=0.05,
+                max_hard_negatives=4,
+                max_easy_negatives=0,
+            )
+
+        anchor_samples = [sample for sample in samples if sample["anchor_instance_token"] == "car-a"]
+        negatives = [sample for sample in anchor_samples if sample["label"] == 0]
+        self.assertEqual([sample["candidate_instance_token"] for sample in negatives], ["car-near-cost"])
+        self.assertEqual(negatives[0]["inference_margin_metric"], "runtime_geometric")
+        self.assertAlmostEqual(negatives[0]["candidate_mining_cost"], 0.24)
+        self.assertAlmostEqual(negatives[0]["cost_margin_gap"], 0.04)
+
     def test_limits_pairs_per_class_when_requested(self):
         tracklets = [
             {
@@ -470,8 +538,64 @@ class PairwiseAssociationCacheTest(unittest.TestCase):
             max_pairs_per_class={"car": 5},
         )
 
-        self.assertEqual(len(samples), 5)
-        self.assertEqual(summary["per_class"]["car"]["pairs"], 5)
+        self.assertEqual(len(samples), 4) # the last slot must not split an anchor group
+        self.assertEqual(summary["per_class"]["car"]["pairs"], 4)
+        by_anchor = {}
+        for sample in samples:
+            by_anchor.setdefault(sample["anchor_instance_token"], []).append(sample["label"])
+        self.assertTrue(all(sorted(labels) == [0, 1] for labels in by_anchor.values()))
+        reverse_samples, _ = build_pairwise_association_samples(
+            list(reversed(tracklets)), history_len=2, hard_negative_distance=10.0,
+            max_hard_negatives=1, max_easy_negatives=0,
+            max_pairs_per_class={"car": 5},
+        )
+        self.assertEqual(
+            {sample["anchor_instance_token"] for sample in samples},
+            {sample["anchor_instance_token"] for sample in reverse_samples},
+        )
+
+    def test_live_coasted_anchor_is_trained_as_unmatched(self):
+        frames = [
+            _frame("s0", 0, 0.0, 0.0, fusion_valid=True),
+            _frame("s1", 1, 1.0, 0.0, matched=False, fusion_valid=True),
+            _frame("s2", 2, 2.0, 0.0, fusion_valid=True),
+        ]
+        frames[1]["fusion_is_fake"] = True
+        samples, _ = build_pairwise_association_samples(
+            [{"instance_token": "a", "category": "car", "frames": frames}],
+            history_source="fusion", require_current_match=False,
+            max_hard_negatives=0, max_easy_negatives=0,
+        )
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0]["state_bucket"], "unmatched")
+        self.assertFalse(samples[0]["anchor_detection_driven"])
+        self.assertTrue(samples[0]["anchor_history_mask"][-1])
+        self.assertFalse(samples[0]["anchor_history_match_mask"][-1])
+
+    def test_ambiguous_candidate_is_not_mislabeled_as_a_negative(self):
+        frames = [_frame("s0", 0, 0.0, 0.0), _frame("s1", 1, 1.0, 0.0)]
+        duplicate = _frame("s1", 1, 1.01, 0.0)
+        duplicate.update(candidate_id="duplicate", possible_gt_tokens=["a"])
+        safe = _frame("s1", 1, 6.0, 0.0)
+        safe.update(candidate_id="safe", possible_gt_tokens=[])
+        frames[1]["unmatched_detections"] = [duplicate, safe]
+        samples, _ = build_pairwise_association_samples(
+            [{"instance_token": "a", "category": "car", "frames": frames}],
+            hard_negative_distance=10.0, max_hard_negatives=5, max_easy_negatives=0,
+        )
+        self.assertEqual({sample["candidate_instance_token"] for sample in samples}, {"a", "safe"})
+
+    def test_future_miss_can_produce_all_negative_group(self):
+        frames = [_frame("s0", 0, 0.0, 0.0), _frame("s1", 1, 1.0, 0.0, matched=False)]
+        safe = _frame("s1", 1, 6.0, 0.0)
+        safe["candidate_id"] = "false-positive"
+        frames[1]["unmatched_detections"] = [safe]
+        samples, _ = build_pairwise_association_samples(
+            [{"instance_token": "a", "category": "car", "frames": frames}],
+            require_future_match=False, hard_negative_distance=10.0,
+            max_hard_negatives=5, max_easy_negatives=0,
+        )
+        self.assertEqual([sample["label"] for sample in samples], [0])
 
     def test_summary_reports_per_class_pair_counts(self):
         samples = [

@@ -1,6 +1,11 @@
 import ast
 import pathlib
 import unittest
+from types import SimpleNamespace
+
+import numpy as np
+
+from tracker.compat_utils import resolve_bev_cost_state
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -35,6 +40,57 @@ class _FakeTorch:
 
 
 class RuntimeContractChecksTest(unittest.TestCase):
+    def test_runtime_geometry_uses_each_tracks_own_class_cost_state(self):
+        source_path = REPO_ROOT / "tracker" / "matching.py"
+        source = source_path.read_text(encoding="utf-8")
+        node = next(node for node in ast.parse(source).body
+                    if isinstance(node, ast.FunctionDef) and node.name == "cost_calculate_general")
+        namespace = {
+            "np": np,
+            "resolve_bev_cost_state": resolve_bev_cost_state,
+            "cal_rotation_gdiou_inbev": lambda _trk, _det, _cfg, cal_flag: 0.8 if cal_flag == "Predict" else 0.2,
+        }
+        exec(ast.get_source_segment(source, node), namespace)
+        cfg = {
+            "CATEGORY_MAP_TO_NUMBER": {"car": 0, "bicycle": 2},
+            "MATCHING": {"BEV": {
+                "COST_MODE": {0: "RO_GDIOU_3D", 2: "RO_GDIOU_3D"},
+                "COST_STATE": {0: "BackPredict", 2: "Predict"},
+            }},
+            "THRESHOLD": {"COST_STATE_PREDICT_RATION": {0: 0.5, 2: 0.5}},
+        }
+        tracks = [SimpleNamespace(bboxes=[SimpleNamespace(category=category)])
+                  for category in ("car", "bicycle")]
+        dets = [SimpleNamespace(category=category) for category in ("car", "bicycle")]
+        cost, _, _ = namespace["cost_calculate_general"](tracks, dets, cfg, None)
+        self.assertAlmostEqual(cost[0, 0], 0.8)
+        self.assertAlmostEqual(cost[1, 1], 0.2)
+        cfg["LEARNED_MOTION_MATCHING"] = {"ENABLED": True}
+        cost, _, _ = namespace["cost_calculate_general"](tracks, dets, cfg, None)
+        self.assertAlmostEqual(cost[0, 0], 0.2) # current prediction, not the legacy backprediction
+        cfg["FILTER_MODE"] = "pure_dekf"
+        cost, _, _ = namespace["cost_calculate_general"](tracks, dets, cfg, None)
+        self.assertAlmostEqual(cost[0, 0], 0.8) # pure baseline keeps its original policy
+        cfg["FILTER_MODE"] = "mamba_multihead_closure"
+        cfg["LEARNED_MOTION_MATCHING"]["ENABLED"] = False
+        cost, _, _ = namespace["cost_calculate_general"](tracks, dets, cfg, None)
+        self.assertAlmostEqual(cost[0, 0], 0.8)
+
+    def test_training_routes_mixed_matched_and_unmatched_windows_independently(self):
+        resolve = _load_functions(
+            REPO_ROOT / "training" / "train.py", ["_resolve_train_state_buckets"]
+        )["_resolve_train_state_buckets"]
+        self.assertEqual(
+            resolve({"state_bucket": ["matched", "unmatched"]}, 2, "matched"),
+            ["matched", "unmatched"],
+        )
+        self.assertEqual(
+            resolve({"current_is_matched": [False, True]}, 2, "matched"),
+            ["unmatched", "matched"],
+        )
+        with self.assertRaises(ValueError):
+            resolve({"state_bucket": ["matched"]}, 2, "matched")
+
     def test_closure_force_coast_prior_only_ast_wiring(self):
         module_path = REPO_ROOT / "kalmanfilter" / "mamba_adaptive_kf.py"
         source = module_path.read_text(encoding="utf-8")

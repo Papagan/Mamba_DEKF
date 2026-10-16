@@ -56,9 +56,22 @@ class DetectionTrackletDataset(Dataset):
         class_window_cfg: Dict | None = None,
         history_source: str = "det",
         init_state_source: str = "det",
+        required_state_output_mode: str | None = None,
+        include_short_histories: bool = False,
+        required_fusion_schema_version: int | None = None,
     ) -> None:
         with open(tracklet_pkl_path, "rb") as f:
             tracklets = pickle.load(f)
+        if required_state_output_mode is not None:
+            stale = [trk for trk in tracklets if not trk.get("association_only", False)
+                     and trk.get("fusion_state_output_mode") != required_state_output_mode]
+            if stale:
+                raise ValueError("Fusion cache state output contract changed; regenerate with augment_tracklet_cache_with_fusion.py")
+        if required_fusion_schema_version is not None and any(
+            not trk.get("association_only", False)
+            and trk.get("fusion_feature_schema_version") != required_fusion_schema_version for trk in tracklets
+        ):
+            raise ValueError("Fusion cache startup/rebirth semantics changed; regenerate with augment_tracklet_cache_with_fusion.py")
 
         self.history_source = str(history_source).strip().lower()
         self.init_state_source = str(init_state_source).strip().lower()
@@ -71,6 +84,7 @@ class DetectionTrackletDataset(Dataset):
         self.history_len = history_len
         self.rollout_steps = rollout_steps
         self.adaptive_windows = bool(adaptive_windows)
+        self.include_short_histories = bool(include_short_histories)
         self.min_history_len = int(min_history_len or history_len)
         self.min_rollout_steps = int(min_rollout_steps or rollout_steps)
         self.class_window_cfg = class_window_cfg or {}
@@ -93,6 +107,8 @@ class DetectionTrackletDataset(Dataset):
                 )
 
         for trk in tracklets:
+            if trk.get("association_only", False):
+                continue
             frames = trk["frames"]
             n = len(frames)
 
@@ -107,6 +123,11 @@ class DetectionTrackletDataset(Dataset):
                 class_window_cfg=self.class_window_cfg,
             )
             class_min_len = max(min_track_len, hist_min + roll_min)
+            if self.include_short_histories:
+                # Cover online startup/rebirth without weakening live-fusion,
+                # identity or observation-quality checks below.
+                hist_min = 1
+                class_min_len = max(min_track_len, hist_min + roll_min)
             if n < class_min_len:
                 continue
 
@@ -115,6 +136,25 @@ class DetectionTrackletDataset(Dataset):
                 history_frames = frames[start : i + 1]
                 current_frame = frames[i]
                 future_frames = frames[i + 1 : i + 1 + roll_max]
+
+                # Never initialize from GT when an observation does not exist.
+                # Miss-ending windows require a live detector-driven fusion state.
+                if self.init_state_source == "fusion":
+                    if not bool(current_frame.get("fusion_valid", False)):
+                        continue
+                elif not bool(current_frame["is_matched"]):
+                    continue
+                if self.history_source == "fusion":
+                    for boundary in range(len(history_frames) - 1, -1, -1):
+                        if not bool(history_frames[boundary].get("fusion_valid", False)):
+                            history_frames = history_frames[boundary + 1:]
+                            break
+                    lifecycle_id = current_frame.get("fusion_lifecycle_id")
+                    if lifecycle_id is not None:
+                        history_frames = [
+                            fr for fr in history_frames
+                            if fr.get("fusion_lifecycle_id") == lifecycle_id
+                        ]
 
                 if require_current_match and not bool(current_frame["is_matched"]):
                     continue
@@ -161,9 +201,13 @@ class DetectionTrackletDataset(Dataset):
                     "tracking_category": track_name,
                 })
 
+        self.state_counts = {"matched": 0, "unmatched": 0}
+        for sample in self.samples:
+            state = "matched" if sample["current_frame"]["is_matched"] else "unmatched"
+            self.state_counts[state] += 1
         print(
             f"[DetectionTrackletDataset] {len(self.samples)} samples from "
-            f"{len(tracklets)} tracklets (T={history_len}, K={rollout_steps})"
+            f"{len(tracklets)} tracklets (T={history_len}, K={rollout_steps}, states={self.state_counts}, short_histories={self.include_short_histories})"
         )
 
     def __len__(self) -> int:
@@ -194,11 +238,13 @@ class DetectionTrackletDataset(Dataset):
         cur_fusion_valid = bool(cur.get("fusion_valid", False))
         if self.init_state_source == "fusion" and cur_fusion_valid:
             ref_xyz = np.asarray(cur["fusion_global_xyz"], dtype=np.float32)
-        else:
+        elif cur["is_matched"] and cur["det_global_xyz"] is not None:
             ref_xyz = np.asarray(
-                cur["det_global_xyz"] if cur["is_matched"] and cur["det_global_xyz"] is not None else cur["gt_global_xyz"],
+                cur["det_global_xyz"],
                 dtype=np.float32,
             )
+        else:
+            raise ValueError("Cannot center a detection window without a detector/fusion state")
 
         selected_history_frames = s["history_frames"][-eff_history_len:]
         n_frames = len(selected_history_frames)
@@ -221,6 +267,9 @@ class DetectionTrackletDataset(Dataset):
                     history[offset] = feat
                     history_match_mask[offset] = True
                 history_mask[offset] = True
+
+        if n_frames:
+            history[T - n_frames, 10] = 0.0
 
         gt_current_pos = np.array([
             cur["gt_global_xyz"][0], cur["gt_global_xyz"][1], cur["gt_global_xyz"][2],
@@ -245,9 +294,7 @@ class DetectionTrackletDataset(Dataset):
             obs_current_siz = np.array(cur["det_lwh"], dtype=np.float32)
             obs_current_ori = np.array([cur["det_yaw"], cur["obs_feature_12"][10]], dtype=np.float32)
         else:
-            obs_current_pos = gt_current_pos.copy()
-            obs_current_siz = gt_current_siz.copy()
-            obs_current_ori = gt_current_ori.copy()
+            raise ValueError("A detection training window must have a valid observation/fusion initial state")
 
         gt_future_pos = np.zeros((K, 3), dtype=np.float32)
         gt_future_siz = np.zeros((K, 3), dtype=np.float32)
@@ -280,7 +327,7 @@ class DetectionTrackletDataset(Dataset):
             prev_ts = frm["timestamp"]
 
         matched_hist = history_match_mask.sum()
-        range_xyz = cur["det_global_xyz"] if cur["is_matched"] and cur["det_global_xyz"] is not None else ref_xyz
+        range_xyz = obs_current_pos[:3]
         current_range = float(np.linalg.norm(np.asarray(range_xyz[:2], dtype=np.float32)))
         current_speed = float(np.linalg.norm(obs_current_pos[3:5]))
         current_det_score = float(cur["det_score"])
@@ -315,6 +362,8 @@ class DetectionTrackletDataset(Dataset):
             "effective_history_len": torch.tensor(eff_history_len, dtype=torch.int64),
             "effective_rollout_steps": torch.tensor(eff_rollout_steps, dtype=torch.int64),
             "is_detection_driven": torch.tensor(True, dtype=torch.bool),
+            "current_is_matched": torch.tensor(bool(cur["is_matched"]), dtype=torch.bool),
+            "state_bucket": "matched" if bool(cur["is_matched"]) else "unmatched",
             "history_source": self.history_source,
             "init_state_source": self.init_state_source,
         }

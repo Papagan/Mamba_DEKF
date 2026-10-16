@@ -21,6 +21,9 @@ class BaseVersionTrackingDataset:
 
     def __getitem__(self, index):
         frame_info = self.scene_data[index]
+        required_policy = (self.cfg.get("INFERENCE_PAIR_CACHE", {}) or {}).get("REQUIRE_GT_POLICY_VERSION")
+        if required_policy is not None and (frame_info.get("audit_gt_policy") or {}).get("version") != required_policy:
+            raise ValueError("Replay GT identity policy changed; regenerate BaseVersion JSON with --audit_gt_enrichment")
         frame_id = frame_info["frame_id"]
         timestamp = frame_info["timestamp"]
         cur_sample_token = frame_info["cur_sample_token"]
@@ -71,5 +74,5 @@ class BaseVersionTrackingDataset:
             clean_bbox = dict(bbox)
             for token_name in ("gt_token", "instance_token", "annotation_token"):
                 clean_bbox.pop(token_name, None)
-            cur_frame.bboxes.append(BBox(frame_id, clean_bbox))
+            cur_frame.bboxes.append(BBox(int(frame_id), clean_bbox, timestamp=timestamp))
         return cur_frame

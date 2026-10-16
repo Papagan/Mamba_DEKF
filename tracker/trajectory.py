@@ -333,7 +333,7 @@ class Trajectory:
         fake_bbox.is_fake = True
         fake_bbox.frame_id = frame_id
 
-        if self._tracker_compat_mode == "mctrack":
+        if self._tracker_compat_mode == "mctrack" or getattr(fake_bbox, "filter_state_output", False):
             exact_fake_state = None
             if use_mctrack_exact_unmatch_update(self.cfg, self.category_num):
                 exact_fake_state = getattr(fake_bbox, "global_xyz_lwh_yaw_fake_update", None)
@@ -351,6 +351,10 @@ class Trajectory:
                 if exact_fake_state is not None and hasattr(fake_bbox, "global_velocity_fake_update"):
                     fake_bbox.global_velocity = list(fake_bbox.global_velocity_fake_update)
                     fake_bbox.global_velocity_fusion = list(fake_bbox.global_velocity_fake_update)
+                elif getattr(fake_bbox, "filter_state_output", False):
+                    velocity = getattr(fake_bbox, "global_velocity_predict", fake_bbox.global_velocity_fusion)
+                    fake_bbox.global_velocity = list(velocity)
+                    fake_bbox.global_velocity_fusion = list(velocity)
                 elif hasattr(fake_bbox, "global_velocity_fusion"):
                     fake_bbox.global_velocity = list(fake_bbox.global_velocity_fusion)
             else:

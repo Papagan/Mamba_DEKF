@@ -14,13 +14,15 @@ from pathlib import Path
 from pyquaternion import Quaternion
 from nuscenes.nuscenes import NuScenes
 from nuscenes.utils import splits
-from scipy.optimize import linear_sum_assignment
 from scipy.spatial.transform import Rotation as R
 from enum import IntEnum
 from typing import Tuple
 from PIL import Image
 from typing import List, Tuple, Union
 from shapely.geometry import MultiPoint, box
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from preprocess.identity_alignment import match_classwise, match_ambiguity_diagnostics
 
 
 AUDIT_GT_MATCH_DISTANCE_BY_CLASS = {
@@ -492,6 +494,8 @@ def enrich_detections_with_gt_identity(
     enabled=False,
     split="val",
     distance_by_class=None,
+    min_gt_sensor_points=1,
+    min_identity_margin=0.15,
 ):
     """Return clean detections and an optional aligned audit identity sidecar."""
     cleaned = []
@@ -513,6 +517,8 @@ def enrich_detections_with_gt_identity(
         instance_token = annotation.get("instance_token")
         translation = annotation.get("translation", ())
         if category is None or not instance_token or len(translation) < 2:
+            continue
+        if int(annotation.get("num_lidar_pts", 0)) + int(annotation.get("num_radar_pts", 0)) < min_gt_sensor_points:
             continue
         gt_annotations.append(
             (category, translation, instance_token)
@@ -540,28 +546,16 @@ def enrich_detections_with_gt_identity(
         if not detection_indices or not category_annotations:
             continue
 
-        cardinality_bound = min(len(detection_indices), len(category_annotations))
-        invalid_cost = (cardinality_bound + 1) * (float(gate) + 1.0)
-        distance_matrix = np.full(
-            (len(detection_indices), len(category_annotations)),
-            invalid_cost,
-            dtype=np.float64,
-        )
-        for row, detection_index in enumerate(detection_indices):
-            translation = cleaned[detection_index]["translation"]
-            for column, (_, gt_translation, _) in enumerate(category_annotations):
-                distance = math.hypot(
-                    float(translation[0]) - float(gt_translation[0]),
-                    float(translation[1]) - float(gt_translation[1]),
-                )
-                if math.isfinite(distance) and distance <= gate:
-                    distance_matrix[row, column] = distance
-
-        rows, columns = linear_sum_assignment(distance_matrix)
-        for row, column in zip(rows.tolist(), columns.tolist()):
-            if distance_matrix[row, column] <= gate:
-                detection_index = detection_indices[row]
-                audit_gt_tokens[detection_index] = category_annotations[column][2]
+        gt_items = [{"global_xyz": ann[1]} for ann in category_annotations]
+        det_items = [{"global_xyz": cleaned[index]["translation"]} for index in detection_indices]
+        matches, _, _ = match_classwise(gt_items, det_items, float(gate))
+        for gt_index, det_index, distance in matches:
+            margin = match_ambiguity_diagnostics(
+                gt_items, det_items, gt_index, det_index, distance
+            )["match_identity_margin"]
+            if min_identity_margin is not None and margin is not None and margin < min_identity_margin:
+                continue
+            audit_gt_tokens[detection_indices[det_index]] = category_annotations[gt_index][2]
 
     return cleaned, audit_gt_tokens
 
@@ -602,6 +596,8 @@ def nuscenes_main(
     split,
     *,
     audit_gt_enrichment=False,
+    audit_min_gt_sensor_points=1,
+    audit_min_identity_margin=0.15,
 ):
     start_time = time.time()
     dets_path = os.path.join(dets_path, detector, split + ".json")
@@ -668,6 +664,8 @@ def nuscenes_main(
                 dets_json["results"][cur_sample_token],
                 enabled=audit_gt_enrichment,
                 split=split,
+                min_gt_sensor_points=audit_min_gt_sensor_points,
+                min_identity_margin=audit_min_identity_margin,
             )
             bboxes = convert_baseversion_bboxes(
                 raw_dets, global2ego, cameras_transform_matrix
@@ -687,6 +685,12 @@ def nuscenes_main(
             }
             if audit_gt_tokens is not None:
                 scene_data["audit_gt_tokens"] = audit_gt_tokens
+            if audit_gt_enrichment and split != "test":
+                scene_data["audit_gt_policy"] = {
+                    "version": 2,
+                    "min_gt_sensor_points": audit_min_gt_sensor_points,
+                    "min_identity_margin": audit_min_identity_margin,
+                }
             scene_datas.append(scene_data)
 
             cur_sample_token = sample_info["next"]
@@ -724,6 +728,8 @@ def build_arg_parser():
         action="store_true",
         help="Attach detection-to-GT identities for offline shadow audit only.",
     )
+    parser.add_argument("--audit_min_gt_sensor_points", type=int, default=1)
+    parser.add_argument("--audit_min_identity_margin", type=float, default=0.15)
     return parser
 
 
@@ -736,6 +742,8 @@ def main(argv=None):
         args.save_path,
         args.split,
         audit_gt_enrichment=args.audit_gt_enrichment,
+        audit_min_gt_sensor_points=args.audit_min_gt_sensor_points,
+        audit_min_identity_margin=args.audit_min_identity_margin,
     )
 
 

@@ -166,9 +166,12 @@ class NoiseAuditTrainTest(unittest.TestCase):
         return _load_module_functions(
             REPO_ROOT / "training" / "losses.py",
             [
+                "_reduce_per_sample",
                 "wrap_to_pi_torch",
+                "wrapped_orientation_nll_per_sample",
                 "wrapped_orientation_nll",
                 "log_ratio_anchor_loss",
+                "circular_orientation_state_loss_per_sample",
                 "circular_orientation_state_loss",
                 "orientation_saturation_penalty",
             ],
@@ -315,6 +318,19 @@ class NoiseAuditTrainTest(unittest.TestCase):
         self.assertEqual(bucket["state"], "unmatched")
         self.assertEqual(bucket["history_len"], 4)
         self.assertAlmostEqual(bucket["ratios"]["q_pos"]["median"], 2.0)
+
+    def test_mixed_window_states_are_not_collapsed_into_one_audit_bucket(self):
+        record_samples = self._load_train_helpers()["_record_train_noise_audit_samples"]
+        acc = NoiseAuditAccumulator()
+        record_samples(
+            noise_audit=acc, filter_mode="mamba", audit_state=["matched", "unmatched"],
+            categories=["car", "car"], class_ids=[0, 0], history_mask=[[True], [True]],
+            q_pos=[1.0, 2.0], r_pos=[1.0, 2.0], r_siz=[1.0, 2.0], r_ori=[1.0, 2.0],
+            prior_q_pos=[1.0, 1.0], prior_r_pos=[1.0, 1.0],
+            prior_r_siz=[1.0, 1.0], prior_r_ori=[1.0, 1.0],
+        )
+        buckets = acc.to_summary()["buckets"]
+        self.assertEqual({bucket["state"] for bucket in buckets}, {"matched", "unmatched"})
 
     def test_call_path_helpers_project_training_modes_to_shared_state_axis(self):
         helpers = self._load_train_helpers()

@@ -8,6 +8,32 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class MambaMultiheadClosureConfigTest(unittest.TestCase):
+    def test_train_and_primary_runtime_use_compatible_mamba2_shapes(self):
+        train_cfg = yaml.safe_load(
+            (REPO_ROOT / "config" / "train_nuscenes.yaml").read_text(encoding="utf-8")
+        )
+        runtime_cfg = yaml.safe_load(
+            (
+                REPO_ROOT
+                / "config"
+                / "nuscenes_single_stage_mctrack_motion_residual_combo.yaml"
+            ).read_text(encoding="utf-8")
+        )
+        train_model = train_cfg["MODEL"]
+        runtime_model = runtime_cfg["MAMBA"]
+        for model_cfg in (train_model, runtime_model):
+            self.assertEqual(model_cfg["BACKBONE"], "mamba2")
+            self.assertIn(model_cfg["D_STATE"], {64, 128})
+            self.assertEqual(
+                model_cfg["D_MODEL"] * model_cfg["EXPAND"] % model_cfg["MAMBA2_HEADDIM"],
+                0,
+            )
+        for key in [
+            "BACKBONE", "D_MODEL", "D_STATE", "D_CONV", "EXPAND",
+            "MAMBA2_HEADDIM", "MAMBA2_NGROUPS", "N_MAMBA_LAYERS", "EMBED_DIM",
+        ]:
+            self.assertEqual(train_model[key], runtime_model[key])
+
     def test_train_config_contains_class_windows_for_all_7_classes(self):
         cfg = yaml.safe_load((REPO_ROOT / "config" / "train_nuscenes.yaml").read_text(encoding="utf-8"))
         self.assertEqual(cfg["FILTER_MODE"], "mamba_multihead_closure")
@@ -33,7 +59,8 @@ class MambaMultiheadClosureConfigTest(unittest.TestCase):
         closure_cfg = cfg["BASE_NOISE"]["MAMBA_CLOSURE"]
         self.assertFalse(closure_cfg["USE_CONDITIONAL_PRIOR"])
         self.assertTrue(closure_cfg["TRAIN_ALL_CLASS_STATES"])
-        self.assertEqual(closure_cfg["FORCE_PRIOR_STATES"], ["matched"])
+        self.assertFalse(closure_cfg["FORCE_COAST_PRIOR_ONLY"])
+        self.assertEqual(closure_cfg["FORCE_PRIOR_STATES"], [])
         self.assertEqual(closure_cfg["ACTIVE_CLASS_STATES"], {})
 
     def test_train_config_uses_recursive_motion_rollout_instead_of_one_step_auxiliary(self):
