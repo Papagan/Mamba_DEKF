@@ -1,5 +1,9 @@
 # Ubuntu 24.04 双 RTX 3090 环境配置（Python 3.14 / Driver 595.99.02）
 
+兼容性补充：以下 Python 3.14 / NumPy 2 方案不能视为完整 nuScenes 链路已验证方案。
+核查时官方 nuScenes SDK 仍要求 `numpy<2`。如果遇到 NumPy 1.x 编译扩展报错，
+先按 [NumPy 兼容性诊断](numpy_compatibility.md) 定位失败包，不要直接批量升级或降级依赖。
+
 本文针对远程机已安装 Ubuntu 24.04 x86_64、两张 RTX 3090、NVIDIA Linux 驱动 595.99.02 的情况。目标是运行本仓库当前 `config/train_nuscenes.yaml` 中的 Mamba-2 主干。命令默认使用 Miniforge/Conda 隔离 Python 环境；不要替换 Ubuntu 系统 Python。
 
 ## 1. 版本选择与兼容性说明

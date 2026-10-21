@@ -168,8 +168,8 @@ def transform_camera2lidar(camera_xyz, camera_orientation, lidar2camera):
     camera_xyz = camera_xyz.reshape((-1, 3))
     mat = np.ones(shape=(camera_xyz.shape[0], 4), dtype=np.float32)
     mat[:, 0:3] = camera_xyz[:, 0:3]
-    mat = np.mat(mat)
-    normal = np.mat(lidar2camera)
+    mat = np.asmatrix(mat)
+    normal = np.asmatrix(lidar2camera)
     normal = normal[0:3, 0:4]
     transformed_mat = normal * mat.T
     lidar_xyz = np.array(transformed_mat.T, dtype=np.float32)
@@ -323,7 +323,7 @@ def kitti_main(dataset_root, detections_root, detector, save_path, split):
             det_path = os.path.join(dets_path, frame_name)
             bboxes = convert_baseversion_bboxes(det_path, lidar2global, lidar2camera)
 
-            global2lidar = np.mat(lidar2global).I
+            global2lidar = np.asmatrix(lidar2global).I
             scene_data = {
                 "frame_id": frame_id,
                 "cur_sample_token": None,

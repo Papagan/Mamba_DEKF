@@ -79,8 +79,8 @@ class BBox:
         lidar_xyz = np.array(lidar_xyz).reshape((1, -1))
         ones = np.ones(shape=(lidar_xyz.shape[0], 1))
         lidar_xyz_expend = np.concatenate([lidar_xyz, ones], -1)
-        lidar_xyz_expend_mat = np.mat(lidar_xyz_expend)
-        lidar2camera_mat = np.mat(lidar2camera)
+        lidar_xyz_expend_mat = np.asmatrix(lidar_xyz_expend)
+        lidar2camera_mat = np.asmatrix(lidar2camera)
         lidar2camera_mat = lidar2camera_mat[0:3, 0:4]
         transformed_mat = lidar2camera_mat * lidar_xyz_expend_mat.T
         camera_xyz = np.array(transformed_mat.T, dtype=np.float32)[0].tolist()

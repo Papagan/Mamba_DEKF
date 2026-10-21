@@ -9,6 +9,10 @@
 
 先激活远程已有的 Mamba2 环境。两张卡都应通过实际主干的前向和反向：
 
+若提示 NumPy 1.x 编译扩展不能在 NumPy 2 下运行，先执行
+`python tools/check_numpy_environment.py --output numpy_environment.json`，
+处理报告中的失败扩展和依赖冲突，详见 [NumPy 兼容性说明](numpy_compatibility.md)。
+
 ```bash
 cd /home/alvin/demo/Mamba-DEKF
 python tools/verify_pipeline.py --device cuda:0 --require-cuda
