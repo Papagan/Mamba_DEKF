@@ -1,18 +1,35 @@
 
-## 当前数据生成、训练与验证命令
+## 双 3090：数据生成、训练与验证命令
 
+目录统一按 `/home/alvin/datasets/track_data/` 配置：`nuscenes/datasets/` 为 GT，
+`base_version/nuscenes/centerpoint/` 为转换后的检测，
+`training_cache/nuscenes/mini/` 为缓存，`checkpoints/mamba_motion/` 为权重和训练日志，
+`results/nuscenes/` 为跟踪结果。这里仅修改代码路径，没有移动远程文件。
+若检测、缓存或结果目录不是这个布局，先同步修改 train 和 eval 两份 YAML。
+
+先激活远程已有的 Mamba2 环境。两张卡都应通过实际主干的前向和反向：
+
+```bash
+cd /home/alvin/demo/Mamba-DEKF
+python tools/verify_pipeline.py --device cuda:0 --require-cuda
+python tools/verify_pipeline.py --device cuda:1 --require-cuda
+```
+
+没有 CUDA 时的 GRU 测试只验证接口，不能代替上述检查。
+
+```bash
 cd /home/alvin/demo/Mamba-DEKF
 set -e
 
-CACHE=/root/autodl-tmp/data/training_cache/nuscenes/mini
-DET=/root/autodl-tmp/data/base_version/nuscenes/centerpoint/val.json
+CACHE=/home/alvin/datasets/track_data/training_cache/nuscenes/mini
+DET=/home/alvin/datasets/track_data/base_version/nuscenes/centerpoint/val.json
 TRAIN_CFG=config/train_nuscenes.yaml
 EVAL_CFG=config/nuscenes_single_stage_mctrack_motion_residual_combo.yaml
 
 # 1. CenterPoint 检测 + nuScenes GT → 检测轨迹缓存
 python tools/build_centerpoint_mini_train_dataset.py \
   --det-json "$DET" \
-  --nusc-dataroot /root/autodl-tmp/data/nuscenes/datasets/ \
+  --nusc-dataroot /home/alvin/datasets/track_data/nuscenes/datasets/ \
   --nusc-version v1.0-trainval \
   --scene-split val \
   --max-scenes 0 \
@@ -58,8 +75,12 @@ python tools/audit_det_tracklet_cache.py \
   --output "$CACHE/train_fusion_audit.json"
 python tools/audit_pairwise_association_cache.py \
   --input "$CACHE/train_pairwise_assoc.pkl" \
+  --train-config "$TRAIN_CFG" \
   --output "$CACHE/train_pairwise_audit.json"
-python training/train.py --config "$TRAIN_CFG"
+python tools/audit_pairwise_association_cache.py \
+  --input "$CACHE/val_pairwise_assoc.pkl" --train-config "$TRAIN_CFG"
+OMP_NUM_THREADS=1 CUDA_VISIBLE_DEVICES=0,1 \
+  torchrun --standalone --nproc_per_node=2 training/train.py --config "$TRAIN_CFG"
 
 # 5. 必须用真实 tracker 历史完成关联头最终训练（需要带 audit_gt_tokens 的检测 JSON）
 python tools/finalize_association_replay.py \
@@ -67,7 +88,30 @@ python tools/finalize_association_replay.py \
   --cache-dir "$CACHE" --processes 4
 
 # 6. 在 nuScenes val 上运行跟踪与评估
-python main.py --dataset nuscenes --eval --config "$EVAL_CFG" -p 12
+CUDA_VISIBLE_DEVICES=0,1 python main.py --dataset nuscenes --eval --config "$EVAL_CFG" -p 4
+```
+
+`BATCH_SIZE=128` 是全局 batch，双卡每卡 64；学习率不额外翻倍。
+`NUM_WORKERS=4` 是每卡 worker 数，主机内存或 CPU 紧张时降为 2。
+CUDA 数据加载进程使用 spawn，符合 [PyTorch 对 NCCL 多 worker 加载的要求](https://docs.pytorch.org/docs/2.14/generated/torch.nn.parallel.DistributedDataParallel.html)；它会复制数据集到 worker，主机内存紧张时可设为 0。
+验证在 rank 0 上完整运行，只有 rank 0 写 checkpoint、TensorBoard 和启动后续关联训练。
+分类关联头阶段使用一张卡，真实回放/评估通过 `INFERENCE_GPU_IDS:auto` 将场景 worker 分配到可见 GPU。
+双卡训练使用各卡 batch 内的对比负样本，因而不保证与单卡 batch 128 数值等价。
+当前保持 FP32 滤波与损失，不开启全局 FP16，以免影响矩阵求逆和协方差计算。
+短序列、小模型的双卡通信成本可能抵消收益；以日志中的完整 epoch 时间比较，不能预设两倍提速。
+
+断点续训使用完整的 `checkpoint_epochN.pt`，它包含 optimizer 和 scheduler；
+`best.pt` 用于推理，不是完整续训快照：
+
+```bash
+OMP_NUM_THREADS=1 CUDA_VISIBLE_DEVICES=0,1 \
+  torchrun --standalone --nproc_per_node=2 training/train.py \
+  --config config/train_nuscenes.yaml \
+  --resume /home/alvin/datasets/track_data/checkpoints/mamba_motion/checkpoint_epoch10.pt
+```
+
+单卡仍可用 `CUDA_VISIBLE_DEVICES=0 python training/train.py --config "$TRAIN_CFG"`。
+同一输出目录不要同时启动两次训练。
 
 训练配置已设为主训练结束后自动训练初始关联头，无需重复启动同一阶段；第 5 步的真实回放最终训练仍必须执行。检查 train_pairwise_summary.json 中的 unmatched_detection_negative_pairs，可确认新增负样本是否进入缓存。
 
@@ -111,7 +155,7 @@ python tools/finalize_association_replay.py \
 ```
 
 脚本只在临时的回放配置中允许初始权重，正式配置要求 `REQUIRE_TRAINING_SOURCE: tracker_replay`。
-最终权重直接写入正式配置的 `MAMBA_ASSOCIATION_HEAD.CHECKPOINT_PATH`，默认 `checkpoints/mamba_motion/best_assoc.pt`。
+最终权重直接写入正式配置的 `MAMBA_ASSOCIATION_HEAD.CHECKPOINT_PATH`，默认 `/home/alvin/datasets/track_data/checkpoints/mamba_motion/best_assoc.pt`。
 可以先加 `--dry-run` 只检查命令，不执行训练或推理。
 有独立验证回放时，追加 `--val-replay /path/to/held_out_replay.pkl`；默认仍保留此前约定的跑通实验复用策略，不代表泛化验证。
 

@@ -8,9 +8,9 @@ DATASET: "nuscenes"
 
 SPLIT: "val"
 DETECTOR: centerpoint
-DATASET_ROOT: "/root/autodl-tmp/data/nuscenes/datasets/"
-DETECTIONS_ROOT: "/root/autodl-tmp/data/base_version/nuscenes/"
-SAVE_PATH: "/root/autodl-tmp/results/nuscenes/"
+DATASET_ROOT: "/home/alvin/datasets/track_data/nuscenes/datasets/"
+DETECTIONS_ROOT: "/home/alvin/datasets/track_data/base_version/nuscenes/"
+SAVE_PATH: "/home/alvin/datasets/track_data/results/nuscenes/"
 TRACKING_MODE: 'ONLINE'
 FILTER_MODE: 'mamba_multihead_closure'
 TRACKER_COMPAT_MODE: 'mctrack'

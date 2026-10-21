@@ -21,6 +21,9 @@ from functools import partial
 from pathlib import Path
 from kalmanfilter.noise_audit import NoiseAuditAccumulator
 from tracker.base_tracker import Base3DTracker
+from tracker.device_runtime import (
+    resolve_inference_gpu_ids, initialize_inference_worker, result_run_directory,
+)
 from tracker.dirty_suppressor_audit import DirtySuppressorAuditAccumulator
 from tracker.association_head_audit import AssociationHeadAuditAccumulator
 from tracker.association_runtime_manifest import build_association_runtime_manifest
@@ -868,6 +871,7 @@ if __name__ == "__main__":
             cfg_path = cfg_path.replace(".yaml", "_offline.yaml")
 
     cfg = yaml.load(open(cfg_path, "r"), Loader=yaml.Loader)
+    inference_gpu_ids = resolve_inference_gpu_ids(cfg.get("INFERENCE_GPU_IDS"))
     _apply_inference_pair_cache_cli_overrides(
         cfg,
         output_path=args.inference_pair_cache_output,
@@ -884,10 +888,8 @@ if __name__ == "__main__":
         git_root=os.path.dirname(os.path.abspath(__file__)),
     )
 
-    save_path = os.path.join(
-        os.path.dirname(cfg["SAVE_PATH"]),
-        cfg["DATASET"],
-        datetime.now().strftime("%Y%m%d_%H%M%S"),
+    save_path = result_run_directory(
+        cfg["SAVE_PATH"], cfg["DATASET"], datetime.now().strftime("%Y%m%d_%H%M%S")
     )
     os.makedirs(save_path, exist_ok=True)
     cfg["SAVE_PATH"] = save_path
@@ -927,7 +929,14 @@ if __name__ == "__main__":
     scene_perf_stats = manager.dict()
     try:
         if args.process > 1:
-            pool = multiprocessing.Pool(args.process)
+            # CUDA contexts must be initialized independently in spawned workers.
+            pool = (
+                multiprocessing.get_context("spawn").Pool(
+                    args.process, initializer=initialize_inference_worker,
+                    initargs=(inference_gpu_ids,),
+                )
+                if inference_gpu_ids else multiprocessing.Pool(args.process)
+            )
             func = partial(
                 run,
                 scenes_data=data,
@@ -944,6 +953,7 @@ if __name__ == "__main__":
             pool.close()
             pool.join()
         else:
+            initialize_inference_worker(inference_gpu_ids[:1])
             for scene_id in tqdm(scene_lists, desc="Running scenes"):
                 run(
                     scene_id,

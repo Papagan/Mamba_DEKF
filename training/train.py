@@ -31,6 +31,9 @@ warnings.filterwarnings("ignore", message=".*epoch parameter.*")
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
+from torch.nn.parallel import DistributedDataParallel
+import torch.distributed as dist
 from torch.utils.tensorboard import SummaryWriter
 try:
     from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
@@ -60,6 +63,16 @@ except ImportError:
             if self.milestones and self.last_epoch >= int(self.milestones[0]):
                 idx = min(1, len(self.schedulers) - 1)
             self.schedulers[idx].step()
+
+        def state_dict(self):
+            return {"last_epoch": self.last_epoch, "milestones": self.milestones,
+                    "schedulers": [scheduler.state_dict() for scheduler in self.schedulers]}
+
+        def load_state_dict(self, state):
+            self.last_epoch = state["last_epoch"]
+            self.milestones = state["milestones"]
+            for scheduler, saved in zip(self.schedulers, state["schedulers"]):
+                scheduler.load_state_dict(saved)
 
 # Project root
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -113,6 +126,9 @@ from training.association_stage import (
 from kalmanfilter.mctrack_exact_update import (
     restore_exact_matched_components,
     validate_exact_update_contract,
+)
+from training.distributed import (
+    TrainingRollout, initialize_distributed, all_finite, NullWriter, reduce_epoch_metrics,
 )
 
 logger = logging.getLogger("train")
@@ -1739,15 +1755,20 @@ def main():
         build_association_training_args(cfg, config_path=args.config, device="cpu")
 
     # ---- Device ----
-    if args.device:
-        device = torch.device(args.device)
-    else:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if int(os.environ.get("WORLD_SIZE", "1")) > 1 and (
+        args.extract_only or cfg["DATA"].get("TRAIN_SOURCE", "gt") != "det"
+        or cfg["DATA"].get("VAL_SOURCE", cfg["DATA"].get("TRAIN_SOURCE", "gt")) != "det"
+    ):
+        raise ValueError("Generate caches with a single process before torchrun; DDP requires det caches")
+    device, rank, world_size = initialize_distributed(args.device)
+    distributed = world_size > 1
+    is_primary = rank == 0
+    torch.manual_seed(int(cfg.get("TRAINING", {}).get("SEED", 0)) + rank)
 
     # ---- Logging: console + file ----
     log_dir = cfg.get("TRAINING", {}).get("SAVE_DIR", "checkpoints/mamba_dekf/")
     os.makedirs(log_dir, exist_ok=True)
-    log_path = os.path.join(log_dir, "train.log")
+    log_path = os.path.join(log_dir, "train.log" if is_primary else f"train_rank{rank}.log")
     logger.setLevel(logging.INFO)
     if not logger.handlers:
         ch = logging.StreamHandler()
@@ -1760,6 +1781,7 @@ def main():
         logger.addHandler(fh)
     logger.info(f"Logging to {log_path}")
     logger.info(f"Device: {device}")
+    logger.info(f"Distributed workers: {world_size}; rank: {rank}")
 
     # ---- Extract GT tracklets ----
     data_cfg = cfg["DATA"]
@@ -1862,22 +1884,39 @@ def main():
                                       class_window_cfg=class_window_cfg)
         val_collate_fn = tracklet_collate_fn
 
+    # BATCH_SIZE is global: keep the optimizer batch unchanged when enabling DDP.
+    global_batch_size = int(train_cfg["BATCH_SIZE"])
+    if global_batch_size < world_size or global_batch_size % world_size:
+        raise ValueError("TRAINING.BATCH_SIZE must be divisible by the torchrun world size")
+    local_batch_size = global_batch_size // world_size
+    train_sampler = DistributedSampler(
+        train_dataset, num_replicas=world_size, rank=rank, shuffle=True,
+        seed=int(train_cfg.get("SEED", 0)),
+    ) if distributed else None
+    worker_count = int(train_cfg.get("NUM_WORKERS", 4))
+    worker_options = {"persistent_workers": True} if worker_count > 0 else {}
+    if worker_count > 0 and device.type == "cuda":
+        # NCCL/CUDA are not fork-safe after the rank has initialized its device.
+        worker_options["multiprocessing_context"] = "spawn"
     train_loader = DataLoader(
         train_dataset,
-        batch_size=train_cfg["BATCH_SIZE"],
-        shuffle=True,
-        num_workers=train_cfg.get("NUM_WORKERS", 4),
+        batch_size=local_batch_size,
+        shuffle=train_sampler is None,
+        sampler=train_sampler,
+        num_workers=worker_count,
         collate_fn=train_collate_fn,
-        pin_memory=True,
+        pin_memory=device.type == "cuda",
         drop_last=True,
+        **worker_options,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=train_cfg["BATCH_SIZE"],
         shuffle=False,
-        num_workers=train_cfg.get("NUM_WORKERS", 4),
+        num_workers=worker_count,
         collate_fn=val_collate_fn,
-        pin_memory=True,
+        pin_memory=device.type == "cuda",
+        **worker_options,
     )
     if len(train_loader) == 0:
         raise ValueError(
@@ -1997,7 +2036,7 @@ def main():
 
     # ---- TensorBoard ----
     tb_dir = os.path.abspath(os.path.join(log_dir, "tensorboard"))
-    writer = SummaryWriter(tb_dir, flush_secs=10)
+    writer = SummaryWriter(tb_dir, flush_secs=10) if is_primary else NullWriter()
     logger.info(f"TensorBoard logs → {tb_dir}  (view: tensorboard --logdir {tb_dir})")
 
     grad_clip = train_cfg.get("GRAD_CLIP_NORM", 1.0)
@@ -2063,13 +2102,19 @@ def main():
                 f"different param groups): {e}. Optimizer will start fresh."
             )
         start_epoch = ckpt.get("epoch", 0) + 1
+        if "scheduler_state_dict" in ckpt:
+            scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        else:
+            logger.warning("Legacy checkpoint lacks scheduler state; reconstructing LR schedule")
+            for _ in range(start_epoch):
+                scheduler.step()
         logger.info(f"Resumed from {args.resume}, epoch {start_epoch}")
         runtime_contract = ckpt.get("runtime_contract", None)
         if runtime_contract:
             logger.info(f"Checkpoint runtime_contract: {runtime_contract}")
 
     # ---- Training loop ----
-    best_val_loss = float("inf")
+    best_val_loss = float(ckpt.get("best_val_loss", float("inf"))) if args.resume else float("inf")
     closure_runtime_cfg = (cfg.get("BASE_NOISE", {}) or {}).get("MAMBA_CLOSURE", {}) or {}
     runtime_contract = {
         "tracker_compat_mode": train_tracker_compat_mode,
@@ -2105,10 +2150,18 @@ def main():
     }
     train_filter_mode = runtime_contract["filter_mode"]
     train_noise_audit_cfg = _build_noise_audit_cfg(cfg)
-    best_class_val_loss = {}
+    best_class_val_loss = dict(ckpt.get("best_class_val_loss", {})) if args.resume else {}
     per_class_min_samples = int(train_cfg.get("PER_CLASS_BEST_MIN_SAMPLES", 16))
+    rollout = TrainingRollout(mamba, loss_fn, training_step, device)
+    parallel_rollout = DistributedDataParallel(
+        rollout, device_ids=[device.index], output_device=device.index,
+        find_unused_parameters=True, broadcast_buffers=False,
+    ) if distributed else rollout
 
     for epoch in range(start_epoch, epochs):
+        if distributed:
+            dist.barrier()
+            train_sampler.set_epoch(epoch)
         mamba.train()
         train_noise_audit = _new_train_noise_audit_accumulator(train_noise_audit_cfg)
         epoch_loss = 0.0
@@ -2124,16 +2177,22 @@ def main():
         for batch_idx, batch in enumerate(train_loader):
             optimizer.zero_grad()
 
-            loss, detail = training_step(
-                mamba, batch, loss_fn, device, noise_cfg, base_noise_cfg,
+            loss = parallel_rollout(
+                batch, noise_cfg=noise_cfg, base_noise_cfg=base_noise_cfg,
                 epoch=epoch, warmup_epochs=warmup_epochs,
                 transition_epochs=transition_epochs,
                 vel_warmup_epochs=vel_warmup_epochs,
                 train_noise_audit=train_noise_audit,
                 filter_mode=train_filter_mode)
+            detail = rollout.detail
 
             # Check for NaN / Inf loss before backward
-            if torch.isnan(loss) or torch.isinf(loss):
+            if not all_finite([loss], device, distributed):
+                if distributed:
+                    raise FloatingPointError(
+                        f"Nonfinite loss on a DDP worker at epoch {epoch}, batch {batch_idx}; "
+                        "stopping all workers before backward"
+                    )
                 nan_count += 1
                 logger.warning(
                     f"NaN/Inf loss at epoch {epoch}, batch {batch_idx}. Skipping."
@@ -2144,12 +2203,7 @@ def main():
             loss.backward()
 
             # NaN / Inf guard on gradients — skip batch if any param has bad grad
-            grads_ok = True
-            for p in mamba.parameters():
-                if p.grad is not None:
-                    if torch.isnan(p.grad).any() or torch.isinf(p.grad).any():
-                        grads_ok = False
-                        break
+            grads_ok = all_finite((p.grad for p in mamba.parameters()), device, distributed)
             if not grads_ok:
                 nan_count += 1
                 logger.warning(
@@ -2182,6 +2236,13 @@ def main():
                 )
 
         scheduler.step()
+        if distributed:
+            epoch_detail, n_batches, nan_count = reduce_epoch_metrics(
+                epoch_detail, n_batches, nan_count, device)
+        if n_batches == 0:
+            raise RuntimeError("All training batches failed finite checks; refusing to save an untrained model")
+        if not is_primary:
+            continue
 
         # ---- Epoch summary ----
         dt_epoch = time.time() - t0
@@ -2328,6 +2389,9 @@ def main():
                 "epoch": epoch,
                 "model_state_dict": mamba.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
+                "best_val_loss": min(best_val_loss, val_total),
+                "best_class_val_loss": best_class_val_loss,
                 "train_loss": avg_train,
                 "val_loss": avg_val,
                 "runtime_contract": runtime_contract,
@@ -2380,6 +2444,12 @@ def main():
                 )
 
     writer.close()
+    # Destroy the process group before the single-process association stage.
+    if distributed:
+        dist.barrier()
+        dist.destroy_process_group()
+    if not is_primary:
+        return
     if not math.isfinite(best_val_loss):
         raise RuntimeError(
             "No finite validation checkpoint was saved; refusing to train Stage B "

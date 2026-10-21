@@ -72,20 +72,20 @@ python tools/verify_pipeline.py --ckpt checkpoints/mamba_dekf/best.pt
 
 The active training/evaluation flow assumes:
 
-- nuScenes metadata root: `/root/autodl-tmp/data/nuscenes/datasets/`
-- BaseVersion CenterPoint detections: `/root/autodl-tmp/data/base_version/nuscenes/centerpoint/`
+- nuScenes metadata root: `/home/alvin/datasets/track_data/nuscenes/datasets/`
+- BaseVersion CenterPoint detections: `/home/alvin/datasets/track_data/base_version/nuscenes/centerpoint/`
 
 At minimum, the following should exist:
 
 ```text
-/root/autodl-tmp/data/nuscenes/datasets/
+/home/alvin/datasets/track_data/nuscenes/datasets/
 ├── maps/
 ├── samples/
 ├── sweeps/
 ├── v1.0-trainval/
 └── v1.0-test/         # only needed when you evaluate test split
 
-/root/autodl-tmp/data/base_version/nuscenes/centerpoint/
+/home/alvin/datasets/track_data/base_version/nuscenes/centerpoint/
 └── val.json
 ```
 
@@ -103,10 +103,10 @@ Recommended command:
 
 ```bash
 python tools/build_centerpoint_mini_train_dataset.py \
-  --det-json /root/autodl-tmp/data/base_version/nuscenes/centerpoint/val.json \
-  --nusc-dataroot /root/autodl-tmp/data/nuscenes/datasets/ \
+  --det-json /home/alvin/datasets/track_data/base_version/nuscenes/centerpoint/val.json \
+  --nusc-dataroot /home/alvin/datasets/track_data/nuscenes/datasets/ \
   --nusc-version v1.0-trainval \
-  --output /root/autodl-tmp/data/training_cache/nuscenes/mini/train_det.pkl \
+  --output /home/alvin/datasets/track_data/training_cache/nuscenes/mini/train_det.pkl \
   --max-scenes 10 \
   --dist-th 2.0 \
   --min-frames 2 \
@@ -116,8 +116,8 @@ python tools/build_centerpoint_mini_train_dataset.py \
 
 What it produces:
 
-- tracklet cache: `/root/autodl-tmp/data/training_cache/nuscenes/mini/train_det.pkl`
-- summary json: `/root/autodl-tmp/data/training_cache/nuscenes/mini/train_det_summary.json`
+- tracklet cache: `/home/alvin/datasets/track_data/training_cache/nuscenes/mini/train_det.pkl`
+- summary json: `/home/alvin/datasets/track_data/training_cache/nuscenes/mini/train_det_summary.json`
 
 Important behavior:
 
@@ -140,8 +140,8 @@ Recommended command:
 
 ```bash
 python tools/augment_tracklet_cache_with_fusion.py \
-  --input /root/autodl-tmp/data/training_cache/nuscenes/mini/train_det.pkl \
-  --output /root/autodl-tmp/data/training_cache/nuscenes/mini/train_fusion.pkl \
+  --input /home/alvin/datasets/track_data/training_cache/nuscenes/mini/train_det.pkl \
+  --output /home/alvin/datasets/track_data/training_cache/nuscenes/mini/train_fusion.pkl \
   --train-config config/train_nuscenes.yaml
 ```
 
@@ -157,7 +157,7 @@ What it adds per frame:
 
 It also writes:
 
-- `/root/autodl-tmp/data/training_cache/nuscenes/mini/train_fusion_summary.json`
+- `/home/alvin/datasets/track_data/training_cache/nuscenes/mini/train_fusion_summary.json`
 
 ### 3. Audit the cache before training
 
@@ -171,9 +171,9 @@ Recommended command:
 
 ```bash
 python tools/audit_det_tracklet_cache.py \
-  --input /root/autodl-tmp/data/training_cache/nuscenes/mini/train_fusion.pkl \
+  --input /home/alvin/datasets/track_data/training_cache/nuscenes/mini/train_fusion.pkl \
   --train-config config/train_nuscenes.yaml \
-  --output /root/autodl-tmp/data/training_cache/nuscenes/mini/train_fusion_audit.json
+  --output /home/alvin/datasets/track_data/training_cache/nuscenes/mini/train_fusion_audit.json
 ```
 
 ### 4. Point the training config at the generated cache
@@ -184,8 +184,8 @@ Edit [config/train_nuscenes.yaml](/home/alvin/demo/Mamba-DEKF/config/train_nusce
 DATA:
   TRAIN_SOURCE: det
   VAL_SOURCE: det
-  TRAIN_TRACKLET_PKL: /root/autodl-tmp/data/training_cache/nuscenes/mini/train_fusion.pkl
-  VAL_TRACKLET_PKL: /root/autodl-tmp/data/training_cache/nuscenes/mini/val_fusion.pkl
+  TRAIN_TRACKLET_PKL: /home/alvin/datasets/track_data/training_cache/nuscenes/mini/train_fusion.pkl
+  VAL_TRACKLET_PKL: /home/alvin/datasets/track_data/training_cache/nuscenes/mini/val_fusion.pkl
   HISTORY_SOURCE: fusion
   INIT_STATE_SOURCE: fusion
 ```
@@ -217,12 +217,21 @@ Standard training:
 python training/train.py --config config/train_nuscenes.yaml
 ```
 
+For two RTX 3090 GPUs (global batch 128, 64 per GPU):
+
+```bash
+OMP_NUM_THREADS=1 CUDA_VISIBLE_DEVICES=0,1 \
+  torchrun --standalone --nproc_per_node=2 training/train.py --config config/train_nuscenes.yaml
+```
+
+See [remote commands](docs/new_command.md) for GPU preflight, migrated paths and required tracker replay.
+
 Resume training:
 
 ```bash
 python training/train.py \
   --config config/train_nuscenes.yaml \
-  --resume checkpoints/mamba_motion/checkpoint_epoch70.pt
+  --resume /home/alvin/datasets/track_data/checkpoints/mamba_motion/checkpoint_epoch70.pt
 ```
 
 Optional GT-only extraction mode:
@@ -235,16 +244,16 @@ python training/train.py \
 
 Training outputs:
 
-- periodic checkpoints in `checkpoints/mamba_motion/`
-- best checkpoint in `checkpoints/mamba_motion/best.pt`
-- per-class best checkpoints in `checkpoints/mamba_motion/best_class_{id}.pt`
+- periodic checkpoints in `/home/alvin/datasets/track_data/checkpoints/mamba_motion/`
+- best checkpoint in `/home/alvin/datasets/track_data/checkpoints/mamba_motion/best.pt`
+- per-class best checkpoints in `/home/alvin/datasets/track_data/checkpoints/mamba_motion/best_class_{id}.pt`
 - TensorBoard logs under the configured save directory
 
 The active motion objective uses 2–8 step rollouts. Seventy percent of training samples suppress future updates for a contiguous coast interval, and validation is fully open-loop. This prevents detector teacher forcing or covariance inflation from hiding state-mean prediction errors.
 
-After the motion stage, the configured association Stage B reuses `best.pt` as one frozen shared temporal backbone. It computes pair embeddings once, then trains and validates the seven category heads independently. Each category restores its own lowest-validation-loss weights before all heads are merged into `checkpoints/mamba_motion/best_assoc.pt`. Complete same-track candidate groups stay in one batch, and the objective combines balanced BCE, pair ranking, and listwise top-1 loss. `REQUIRE_ALL_CLASSES: true` makes the remote run fail explicitly if either split lacks samples for any configured category, instead of silently exporting an untrained head.
+After the motion stage, the configured association Stage B reuses `best.pt` as one frozen shared temporal backbone. It computes pair embeddings once, then trains and validates the seven category heads independently. Each category restores its own lowest-validation-loss weights before all heads are merged into `/home/alvin/datasets/track_data/checkpoints/mamba_motion/best_assoc.pt`. Complete same-track candidate groups stay in one batch, and the objective combines balanced BCE, pair ranking, and listwise top-1 loss. `REQUIRE_ALL_CLASSES: true` makes the remote run fail explicitly if either split lacks samples for any configured category, instead of silently exporting an untrained head.
 
-The runtime association head is configured as a bounded log-factor correction inside the existing geometric near-best gate. It remains in shadow mode until the per-class/state decision audit passes. The design and remote acceptance sequence are documented in [docs/neural_affinity_association.md](/home/alvin/demo/Mamba-DEKF/docs/neural_affinity_association.md).
+The runtime association head is configured as a bounded log-factor correction inside the geometric near-best gate. The active motion configuration enables it (`SHADOW_MODE: false`) and requires tracker-replay-trained weights. Complete the replay finalization in [docs/new_command.md](docs/new_command.md) before production evaluation.
 
 ### Class/State Closure Training
 
@@ -278,7 +287,7 @@ python main.py \
   -p 12
 ```
 
-To evaluate the learned residual-dynamics checkpoint, use the dedicated motion config. It already points to `checkpoints/mamba_motion/best.pt`:
+To evaluate the learned residual-dynamics checkpoint, use the dedicated motion config. It already points to `/home/alvin/datasets/track_data/checkpoints/mamba_motion/best.pt`:
 
 ```bash
 python main.py --dataset nuscenes --eval \
@@ -326,22 +335,22 @@ Build cache:
 
 ```bash
 python tools/build_centerpoint_mini_train_dataset.py \
-  --output /root/autodl-tmp/data/training_cache/nuscenes/mini/train_det.pkl
+  --output /home/alvin/datasets/track_data/training_cache/nuscenes/mini/train_det.pkl
 ```
 
 Augment cache:
 
 ```bash
 python tools/augment_tracklet_cache_with_fusion.py \
-  --input /root/autodl-tmp/data/training_cache/nuscenes/mini/train_det.pkl \
-  --output /root/autodl-tmp/data/training_cache/nuscenes/mini/train_fusion.pkl
+  --input /home/alvin/datasets/track_data/training_cache/nuscenes/mini/train_det.pkl \
+  --output /home/alvin/datasets/track_data/training_cache/nuscenes/mini/train_fusion.pkl
 ```
 
 Audit cache:
 
 ```bash
 python tools/audit_det_tracklet_cache.py \
-  --input /root/autodl-tmp/data/training_cache/nuscenes/mini/train_fusion.pkl \
+  --input /home/alvin/datasets/track_data/training_cache/nuscenes/mini/train_fusion.pkl \
   --train-config config/train_nuscenes.yaml
 ```
 

@@ -7,9 +7,9 @@ DATASET: "nuscenes"
 # dataset info
 SPLIT: "val" # val, test
 DETECTOR: centerpoint  # centerpoint, largekernel
-DATASET_ROOT: "/root/autodl-tmp/data/nuscenes/datasets/"
-DETECTIONS_ROOT: "/root/autodl-tmp/data/base_version/nuscenes/"
-SAVE_PATH: "/root/autodl-tmp/results/nuscenes/"
+DATASET_ROOT: "/home/alvin/datasets/track_data/nuscenes/datasets/"
+DETECTIONS_ROOT: "/home/alvin/datasets/track_data/base_version/nuscenes/"
+SAVE_PATH: "/home/alvin/datasets/track_data/results/nuscenes/"
 TRACKING_MODE: 'ONLINE' # ONLINE / GLOBAL
 IS_RV_MATCHING: False  # True / False
 FRAME_RATE: 2

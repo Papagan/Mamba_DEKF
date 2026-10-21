@@ -10,7 +10,7 @@ Focus:
 
 Usage:
   python tools/audit_det_tracklet_cache.py \
-    --input /root/autodl-tmp/data/training_cache/nuscenes/centerpoint_mini_train_from_val.pkl \
+    --input /home/alvin/datasets/track_data/training_cache/nuscenes/centerpoint_mini_train_from_val.pkl \
     --train-config config/train_nuscenes.yaml
 """
 

@@ -723,12 +723,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--det-json",
-        default="/root/autodl-tmp/data/base_version/nuscenes/centerpoint/val.json",
+        default="/home/alvin/datasets/track_data/base_version/nuscenes/centerpoint/val.json",
         help="Path to BaseVersion detection json.",
     )
     parser.add_argument(
         "--nusc-dataroot",
-        default="/root/autodl-tmp/data/nuscenes/datasets/",
+        default="/home/alvin/datasets/track_data/nuscenes/datasets/",
         help="nuScenes dataset root.",
     )
     parser.add_argument(
@@ -738,7 +738,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output",
-        default="/root/autodl-tmp/data/training_cache/nuscenes/centerpoint_mini_train_from_val.pkl",
+        default="/home/alvin/datasets/track_data/training_cache/nuscenes/centerpoint_mini_train_from_val.pkl",
         help="Output pickle path.",
     )
     parser.add_argument(

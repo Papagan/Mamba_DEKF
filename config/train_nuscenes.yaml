@@ -7,14 +7,14 @@ FILTER_MODE: mamba_multihead_closure   # explicit runtime-contract target for pr
 # ---- Data ----
 DATA:
   NUSC_VERSION: v1.0-trainval
-  NUSC_DATAROOT: /root/autodl-tmp/data/nuscenes/datasets/
+  NUSC_DATAROOT: /home/alvin/datasets/track_data/nuscenes/datasets/
   TRAIN_SPLIT: train
   VAL_SPLIT: val
   TRAIN_SOURCE: det         # gt / det
   VAL_SOURCE: det           # gt / det
-  TRACKLET_CACHE_DIR: /root/autodl-tmp/data/training_cache/nuscenes/
-  TRAIN_TRACKLET_PKL: /root/autodl-tmp/data/training_cache/nuscenes/mini/train_fusion.pkl  # training cache with fusion history
-  VAL_TRACKLET_PKL: /root/autodl-tmp/data/training_cache/nuscenes/mini/val_fusion.pkl      # held-out validation cache; generate before formal training
+  TRACKLET_CACHE_DIR: /home/alvin/datasets/track_data/training_cache/nuscenes/
+  TRAIN_TRACKLET_PKL: /home/alvin/datasets/track_data/training_cache/nuscenes/mini/train_fusion.pkl  # training cache with fusion history
+  VAL_TRACKLET_PKL: /home/alvin/datasets/track_data/training_cache/nuscenes/mini/val_fusion.pkl      # held-out validation cache; generate before formal training
   HISTORY_SOURCE: fusion    # det / fusion
   INIT_STATE_SOURCE: fusion # det / fusion
   TRAIN_TRACKER_COMPAT_MODE: mctrack  # default / mctrack (saved into checkpoint runtime contract)
@@ -115,17 +115,17 @@ ASSOCIATION_HEAD_TRAINING:
   ENABLED: true
   RUN_AFTER_MAIN: true
   REQUIRE_FEATURE_SCHEMA_VERSION: 3
-  TRAIN_PAIRWISE_PKL: /root/autodl-tmp/data/training_cache/nuscenes/mini/train_pairwise_assoc.pkl
-  VAL_PAIRWISE_PKL: /root/autodl-tmp/data/training_cache/nuscenes/mini/val_pairwise_assoc.pkl
-  OUTPUT: checkpoints/mamba_motion/best_assoc.pt
-  METRICS_OUTPUT: docs/pairwise_assoc_metrics.json
-  BACKBONE_CHECKPOINT: checkpoints/mamba_motion/best.pt
+  TRAIN_PAIRWISE_PKL: /home/alvin/datasets/track_data/training_cache/nuscenes/mini/train_pairwise_assoc.pkl
+  VAL_PAIRWISE_PKL: /home/alvin/datasets/track_data/training_cache/nuscenes/mini/val_pairwise_assoc.pkl
+  OUTPUT: /home/alvin/datasets/track_data/checkpoints/mamba_motion/best_assoc.pt
+  METRICS_OUTPUT: /home/alvin/datasets/track_data/checkpoints/mamba_motion/pairwise_assoc_metrics.json
+  BACKBONE_CHECKPOINT: /home/alvin/datasets/track_data/checkpoints/mamba_motion/best.pt
   FREEZE_BACKBONE: true
   PRECOMPUTE_EMBEDDINGS: true
   TRAIN_MODE: per_class          # independently optimize/select each class head on one frozen shared backbone
   CLASS_IDS: [0, 1, 2, 3, 4, 5, 6]
   REQUIRE_ALL_CLASSES: true      # never ship a randomly initialized category head silently
-  TENSORBOARD_DIR: checkpoints/mamba_motion/assoc_tb
+  TENSORBOARD_DIR: /home/alvin/datasets/track_data/checkpoints/mamba_motion/assoc_tb
   EPOCHS: 20
   BATCH_SIZE: 256
   NUM_WORKERS: 0
@@ -142,8 +142,9 @@ ASSOCIATION_HEAD_TRAINING:
 
 # ---- Training ----
 TRAINING:
-  BATCH_SIZE: 128
-  NUM_WORKERS: 4
+  BATCH_SIZE: 128             # global batch; torchrun with 2 GPUs uses 64 per GPU
+  NUM_WORKERS: 4              # per GPU; reduce to 2 if host RAM/CPU is constrained
+  SEED: 0
   EPOCHS: 100
   LR: 5.0e-4                # base LR for projection/head layers; slightly lower to stabilise head/noise coupling
   MAMBA_LR: 3.0e-5          # conservative starting LR for the 6-layer Mamba-2 backbone
@@ -154,7 +155,7 @@ TRAINING:
   GRAD_CLIP_NORM: 1.0
   LOG_EVERY: 50
   SAVE_EVERY: 10
-  SAVE_DIR: checkpoints/mamba_motion/
+  SAVE_DIR: /home/alvin/datasets/track_data/checkpoints/mamba_motion/
   REQUIRE_MAMBA_SSM: true        # fail fast if training would fall back to GRU
   AUTO_UNSEAL_EPOCH: 0           # disabled for bounded-residual closure training; avoid unrelated cost-mode mutations
   INFERENCE_CONFIG: config/nuscenes_single_stage_mctrack_motion_residual_combo.yaml

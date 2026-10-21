@@ -7,6 +7,7 @@
 | 组件 | 本教程选择 | 说明 |
 |---|---|---|
 | Python | 3.14（Conda 环境） | 不改系统 Python。项目依赖需逐项安装验证 |
+| NumPy | 2.3.2 或更新的兼容版本 | NumPy 2.3.2 起支持 Python 3.14；不要使用 `numpy<2` |
 | NVIDIA 驱动 | 已有 595.99.02 | 满足 CUDA 13.2 Update 1 的 Linux 驱动最低版本 595.45.04 |
 | CUDA Toolkit | 13.2 | 提供 `nvcc`、头文件和编译工具；不会安装/替换驱动 |
 | PyTorch | 2.13.0 + CUDA 13.2 wheel | PyTorch 官方提供的安装组合 |
@@ -111,13 +112,15 @@ PY
 
 ```bash
 cd ~/Mamba-DEKF
-python -m pip install "numpy>=1.22,<2"
+python -m pip install "numpy>=2.3.2"
 grep -Ev '^(torch|mamba-ssm)' requirements.txt > /tmp/mamba-dekf-requirements.txt
 python -m pip install -r /tmp/mamba-dekf-requirements.txt
 python -m pip install tensorboard
 ```
 
-`tensorboard` 单独安装是因为训练入口使用 `SummaryWriter`，但它未单独列在当前依赖文件中。若某个依赖报告“不支持 Python 3.14”或没有可用 wheel，不要强行改装系统 Python；先按第 10 节切换到项目的已验证环境。
+`tensorboard` 已列入当前依赖文件，上面的单独安装可省略。若某个依赖报告“不支持 Python 3.14”或没有可用 wheel，不要强行改装系统 Python；先按第 10 节切换环境。本文版本组合不代表已在当前远程机器完成实测。
+
+这里不限制 NumPy 小于 2：NumPy 2.3.2 起才支持 Python 3.14。NumPy 2.0 有 C ABI 和 API 变更，旧的二进制扩展或依赖可能需要升级；若安装/导入时报 ABI 错误，应升级对应依赖并验证，不要降级到 Python 3.14 不支持的 NumPy 1.x。
 
 ## 7. 从源码编译 Mamba-SSM
 
@@ -199,13 +202,22 @@ python training/train.py --config config/train_nuscenes.yaml
 
 ## 9. 双卡说明
 
-当前 `training/train.py` 默认选择一张 `cuda`，没有实现 `DistributedDataParallel` 或双卡训练逻辑。两张 3090 不会自动合并显存，也不会因为 `CUDA_VISIBLE_DEVICES` 同时列出两张卡就自动并行。选择第二张卡运行单卡任务：
+当前入口已支持 `torchrun` + DistributedDataParallel。两张 3090 不合并显存；全局 batch 128 分为每卡 64，主干同步梯度，rank 0 完整验证并写入权重：
+
+```bash
+python tools/verify_pipeline.py --device cuda:0 --require-cuda
+python tools/verify_pipeline.py --device cuda:1 --require-cuda
+OMP_NUM_THREADS=1 CUDA_VISIBLE_DEVICES=0,1 \
+  torchrun --standalone --nproc_per_node=2 training/train.py --config config/train_nuscenes.yaml
+```
+
+只运行 `python training/train.py` 仍为单卡；选择第二张卡：
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 python training/train.py --config config/train_nuscenes.yaml
 ```
 
-要使用双卡并行，需要在项目中实现并验证 DDP，再用 `torchrun` 启动。
+本地已用两个 CPU/Gloo 进程验证分布式条件分支和梯度同步；CUDA/NCCL、Mamba2 内核和实际吞吐需在远程验证。关联头仍单卡训练，回放场景 worker 可分配到两卡。路径、缓存重建和完整命令见 [new_command.md](new_command.md)。
 
 ## 10. 推荐回退：项目已验证的 Python 3.10 组合
 
@@ -218,6 +230,7 @@ python -m pip install --upgrade pip setuptools wheel packaging ninja
 conda install -y -c nvidia/label/cuda-12.1.0 cuda-toolkit
 export CUDA_HOME="$CONDA_PREFIX"
 export PATH="$CUDA_HOME/bin:$PATH"
+python -m pip install "numpy>=1.22,<2"
 python -m pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 \
   --index-url https://download.pytorch.org/whl/cu121
 ```

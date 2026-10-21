@@ -8,9 +8,10 @@ DATASET: "nuscenes"
 
 SPLIT: "val"
 DETECTOR: centerpoint
-DATASET_ROOT: "/root/autodl-tmp/data/nuscenes/datasets/"
-DETECTIONS_ROOT: "/root/autodl-tmp/data/base_version/nuscenes/"
-SAVE_PATH: "/root/autodl-tmp/results/nuscenes/"
+DATASET_ROOT: "/home/alvin/datasets/track_data/nuscenes/datasets/"
+DETECTIONS_ROOT: "/home/alvin/datasets/track_data/base_version/nuscenes/"
+SAVE_PATH: "/home/alvin/datasets/track_data/results/nuscenes/"
+INFERENCE_GPU_IDS: auto  # distribute spawned scene workers over visible GPUs
 TRACKING_MODE: 'ONLINE'
 FILTER_MODE: 'mamba_multihead_closure'
 TRACKER_COMPAT_MODE: 'mctrack'
@@ -79,7 +80,7 @@ CATEGORY_MAP_TO_NUMBER : {
 
 MAMBA:
   BACKBONE: mamba2
-  CHECKPOINT_PATH: "checkpoints/mamba_motion/best.pt"
+  CHECKPOINT_PATH: "/home/alvin/datasets/track_data/checkpoints/mamba_motion/best.pt"
   REQUIRE_CHECKPOINT: true
   REQUIRE_STATE_CONTRACT: true
   REQUIRE_SHORT_HISTORY_TRAINING: true
@@ -124,7 +125,7 @@ MAMBA_ASSOCIATION_PRIOR:
 
 MAMBA_ASSOCIATION_HEAD:
   ENABLED: true
-  CHECKPOINT_PATH: "checkpoints/mamba_motion/best_assoc.pt"
+  CHECKPOINT_PATH: "/home/alvin/datasets/track_data/checkpoints/mamba_motion/best_assoc.pt"
   REQUIRE_CHECKPOINT: true
   REQUIRE_BACKBONE_BINDING: true
   REQUIRE_TRAINING_SOURCE: tracker_replay # bootstrap weights are only for generating replay

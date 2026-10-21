@@ -17,6 +17,7 @@ tqdm
 # Deep Learning (Module A/B: Decoupled KF + Mamba)
 # ============================================================
 torch>=1.12.0
+tensorboard
 # mamba-ssm requires:
 #   - torch >= 2.0  (for Triton kernels)
 #   - CUDA toolkit matching your GPU
