@@ -1,0 +1,11 @@
+# Targeted repair for the reported Python 3.10 nuScenes 1.1.11 environment.
+# Install directly with -r. This does NOT reinstall Torch, CUDA, Mamba or causal-conv1d.
+# Do not use this Python-3.10 profile for Python 3.14.
+# SDK 1.1.11 requires matplotlib<3.6; its binary wheels need NumPy 1.x.
+numpy==1.26.4
+matplotlib==3.5.3
+nuscenes-devkit==1.1.11
+# OpenCV 5 requires NumPy>=2 on Python>=3.9; downgrade it in the same transaction.
+opencv-python==4.11.0.86
+# Fix collections.Iterable import on Python 3.10. NumPy 1.x also retains asfarray.
+motmetrics==1.4.0

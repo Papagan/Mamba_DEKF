@@ -1,5 +1,35 @@
 # NumPy 1.x 编译扩展与 NumPy 2.2.6 的兼容性
 
+## 已定位的远程环境（numpy_enviroment.json）
+
+报告显示 Python 3.10.22、NumPy 2.2.6、Torch 2.13.0+cu132。
+Torch↔NumPy 转换、SciPy、OpenCV、lap、pandas、Numba 和 Mamba 导入探针通过；尚不代表 CUDA 内核测试通过。
+失败有两处：Matplotlib 3.5.3 的 `_path` 扩展出现 NumPy ABI 错误，连带导致 nuScenes 导入失败；
+motmetrics 1.1.3 从 `collections` 导入 `Iterable`，不兼容 Python 3.10。
+
+这里需要区分 SDK 版本：[1.1.11 的元数据](https://pypi.org/pypi/nuscenes-devkit/1.1.11/json)
+限制 Matplotlib `<3.6`，但没有限制 NumPy `<2`，因此 `pip check` 可以通过而实际导入失败。
+[OpenCV 5.0.0.93](https://pypi.org/pypi/opencv-python/5.0.0.93/json) 在 Python >=3.9 下要求 NumPy >=2，
+不能仅降低 NumPy。仓库提供针对这个 Python 3.10 环境的协调修复组合，保留已安装的 Torch/CUDA/Mamba：
+
+```bash
+conda activate mamba-dekf
+python -m pip freeze > numpy-repair-before.txt
+python -m pip install --dry-run --upgrade -r requirements-nuscenes-py310.txt
+python -m pip install --upgrade -r requirements-nuscenes-py310.txt
+python tools/check_numpy_environment.py --output numpy_environment_after.json
+python tools/verify_pipeline.py --device cuda:0 --require-cuda
+python tools/verify_pipeline.py --device cuda:1 --require-cuda
+```
+
+该组合将 NumPy 改为 1.26.4、OpenCV 改为 4.11.0.86、motmetrics 改为 1.4.0；
+保留 nuScenes 1.1.11 和 Matplotlib 3.5.3。没有远程执行安装，完成后以上述诊断和 GPU 预检为准。
+`numpy-repair-before.txt` 仅是安装前版本清单，不是完整环境备份。
+后续安装通用依赖时加 `-c requirements-nuscenes-py310.txt`，避免又被升级回冲突组合。
+如果必须保留 NumPy 2.2.6，则需另选或维护兼容的 SDK/评估依赖，而非只升级 Matplotlib。
+
+## 通用诊断
+
 `A module that was compiled using NumPy 1.x cannot be run in NumPy 2...` 指向依赖扩展的二进制 ABI，
 不是模型权重格式。仅修改 Python 中的 NumPy 函数、忽略警告或更换 checkpoint 都不能修复它。
 [NumPy 官方说明](https://numpy.org/doc/stable/user/troubleshooting-importerror.html#downstream-importerror-attributeerror-or-c-api-abi-incompatibility)
